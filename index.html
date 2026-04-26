@@ -378,6 +378,59 @@ button.secondary.danger:hover { background: var(--accent); color: var(--paper); 
 .log-filter-pill:hover { color: var(--ink); }
 .log-filter-pill.active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 
+/* ── LOG TABLE ──
+   Tabular EO event stream. Fixed column layout so the operator,
+   subject, predicate, and value line up vertically across rows. */
+.log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  table-layout: fixed;
+}
+.log-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--paper-soft);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--rule);
+  font-weight: 500;
+  z-index: 1;
+}
+.log-table tbody tr {
+  cursor: pointer;
+  transition: background 0.08s;
+}
+.log-table tbody tr:hover { background: var(--paper-soft); }
+.log-table tbody tr.flash { animation: log-row-flash 1.2s ease-out; }
+@keyframes log-row-flash {
+  from { background: var(--accent-soft, rgba(176, 60, 36, 0.18)); }
+  to   { background: transparent; }
+}
+.log-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+  line-height: 1.45;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.log-table td.col-span    { width: 52px;  color: var(--ink-faint); text-align: right; font-size: 10px; }
+.log-table td.col-op      { width: 56px;  font-weight: 500; }
+.log-table td.col-pred    { width: 22%;   font-style: italic; color: var(--ink-soft); }
+.log-table td.col-cell    { width: 90px;  font-size: 10px; color: var(--ink-faint); }
+.log-table td.col-author  { width: 80px;  font-size: 9px;  color: var(--ink-faint); }
+.log-table td.col-source  { width: 14%;   font-size: 10px; color: var(--ink-faint); }
+.log-table td.col-subject { font-family: 'Newsreader', serif; font-size: 13px; color: var(--ink); }
+.log-table td.col-value   { font-family: 'Newsreader', serif; font-size: 13px; color: var(--ink); }
+.log-table .empty-cell { color: var(--ink-faint); font-style: italic; }
+
 .example-queries {
   display: flex;
   flex-wrap: wrap;
@@ -1373,15 +1426,31 @@ code {
       </div>
       <div class="pane-body" id="graph-body" style="padding: 0; overflow: hidden;">
         <div id="graph-empty" class="empty-state" style="padding: 40px;">No typed edges yet. Ingest a source and let phasepost classification run.</div>
-        <div id="graph-container" style="display: none; position: relative; height: 100%; width: 100%;">
-          <canvas id="graph-canvas" style="display: block; cursor: grab;"></canvas>
-          <div id="graph-tooltip" style="position: absolute; pointer-events: none; background: var(--ink); color: var(--paper); padding: 8px 12px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; border-radius: 2px; max-width: 320px; display: none; box-shadow: 0 4px 16px rgba(0,0,0,0.15); line-height: 1.5; z-index: 10;"></div>
-          <div id="graph-legend" style="position: absolute; top: 12px; right: 12px; background: var(--paper-soft); border: 1px solid var(--rule); padding: 10px 14px; font-size: 11px; max-width: 240px; max-height: calc(100% - 24px); overflow-y: auto;"></div>
-          <div id="graph-detail" style="position: absolute; bottom: 60px; left: 12px; background: var(--paper-soft); border: 1px solid var(--rule); padding: 10px 14px; font-size: 11px; max-width: 380px; display: none;"></div>
+        <div id="graph-container" style="display: none; flex-direction: column; height: 100%; width: 100%;">
+          <div id="graph-main" style="flex: 1; display: flex; min-height: 0;">
+            <div id="graph-canvas-wrap" style="flex: 1; position: relative; min-width: 0;">
+              <canvas id="graph-canvas" style="display: block; cursor: grab;"></canvas>
+            </div>
+            <!-- ── SIDE PANEL ──
+                 Replaces the floating tooltip and detail popovers.
+                 Top: hover info (tooltip content). Middle: legend.
+                 Bottom: selected-node detail. -->
+            <aside id="graph-side-panel" style="width: 320px; flex-shrink: 0; border-left: 1px solid var(--rule); background: var(--paper-soft); display: flex; flex-direction: column; overflow: hidden;">
+              <div style="padding: 10px 14px; border-bottom: 1px solid var(--rule);">
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:6px;">Hover</div>
+                <div id="graph-hover" style="font-family:'Newsreader',serif;font-size:12px;color:var(--ink-soft);font-style:italic;line-height:1.5;min-height:34px;">Hover a node or edge to inspect.</div>
+              </div>
+              <div id="graph-legend" style="padding: 10px 14px; font-size: 11px; border-bottom: 1px solid var(--rule); max-height: 38%; overflow-y: auto; scrollbar-width: thin;"></div>
+              <div id="graph-detail" style="padding: 10px 14px; font-size: 11px; flex: 1; overflow-y: auto; scrollbar-width: thin;">
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:6px;">Selected</div>
+                <div id="graph-detail-empty" style="font-family:'Newsreader',serif;font-size:12px;color:var(--ink-soft);font-style:italic;line-height:1.5;">Click a node to see its outgoing and incoming edges.</div>
+              </div>
+            </aside>
+          </div>
           <!-- ── SCRUBBER ── -->
           <!-- Sentence-span timeline. Drag the handle to walk the read
                from beginning to end. "Live" = follow ingest. -->
-          <div id="graph-scrubber" style="position: absolute; bottom: 0; left: 0; right: 0; background: var(--paper-soft); border-top: 1px solid var(--rule); padding: 8px 14px; display: flex; align-items: center; gap: 12px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--ink-soft);">
+          <div id="graph-scrubber" style="background: var(--paper-soft); border-top: 1px solid var(--rule); padding: 8px 14px; display: flex; align-items: center; gap: 12px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--ink-soft); flex-shrink: 0;">
             <span id="graph-scrubber-label" style="white-space: nowrap; min-width: 130px;">cursor: live</span>
             <input type="range" id="graph-scrubber-input" min="0" max="0" value="0" step="1" style="flex: 1; accent-color: var(--ink);" />
             <button id="graph-scrubber-live" class="pill clickable" style="font-size: 9px; padding: 3px 8px; letter-spacing: 0.06em;">live</button>
@@ -3342,6 +3411,10 @@ function appendEvent(ev) {
   // gets queued and will be classified by flushPendingClassifications()
   // once initEmpiricalIndex() resolves.
   classifyEvent(event);
+  // Real-time log update — bypasses the global render throttle so the
+  // EO event stream feels live. Other views still re-render on the
+  // throttled schedule via notifyDataChanged().
+  try { appendLogRowLive(event); } catch (e) { /* best-effort */ }
   // Live re-render, throttled. Active view rebuilds within ~350ms;
   // inactive views read fresh on next view-switch.
   notifyDataChanged();
@@ -8725,27 +8798,34 @@ function graphEdgeNear(sx, sy) {
   return best;
 }
 
-function showGraphTooltipForNode(n, cx, cy) {
-  const tt = document.getElementById('graph-tooltip');
-  if (!tt) return;
+// Hover details now feed into the side panel "hover" section instead
+// of a floating popover. This unifies tooltip + selection info into
+// one inspector and avoids covering parts of the canvas.
+function clearGraphHover() {
+  const el = document.getElementById('graph-hover');
+  if (!el) return;
+  el.innerHTML = `<span style="font-style:italic;color:var(--ink-soft);">Hover a node or edge to inspect.</span>`;
+}
+function showGraphTooltipForNode(n) {
+  const el = document.getElementById('graph-hover');
+  if (!el) return;
   const inEdges = GRAPH.links.filter(l => GRAPH.nodes[l.target] === n);
   const outEdges = GRAPH.links.filter(l => GRAPH.nodes[l.source] === n);
-  tt.innerHTML = `<div style="font-family:'Newsreader',serif;font-size:14px;margin-bottom:4px;">${escapeHtml(n.name)}</div>
-    <div style="opacity:0.85;">${outEdges.length} outgoing · ${inEdges.length} incoming · click to inspect</div>`;
-  tt.style.left = (cx + 14) + 'px';
-  tt.style.top = (cy + 14) + 'px';
-  tt.style.display = 'block';
+  el.innerHTML = `<div style="font-family:'Newsreader',serif;font-size:14px;color:var(--ink);margin-bottom:4px;">${escapeHtml(n.name)}</div>
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);font-style:normal;">${outEdges.length} outgoing · ${inEdges.length} incoming · click to inspect</div>`;
 }
-function showGraphTooltipForEdge(l, cx, cy) {
-  const tt = document.getElementById('graph-tooltip');
-  if (!tt) return;
+function showGraphTooltipForEdge(l) {
+  const el = document.getElementById('graph-hover');
+  if (!el) return;
   const a = GRAPH.nodes[l.source], b = GRAPH.nodes[l.target];
   const sourceTag = l.cellSource === 'embedding' ? ' [embedding fallback]' : '';
-  tt.innerHTML = `<div style="font-family:'Newsreader',serif;font-size:14px;margin-bottom:4px;">${escapeHtml(l.predicate)}</div>
-    <div style="opacity:0.85;">${escapeHtml(a.name)} → ${escapeHtml(b.name)}<br>cell: ${escapeHtml(l.cell || 'unclassified')}${sourceTag} · op: ${escapeHtml(l.op)}</div>`;
-  tt.style.left = (cx + 14) + 'px';
-  tt.style.top = (cy + 14) + 'px';
-  tt.style.display = 'block';
+  const c = phasepostColor(l.cell);
+  el.innerHTML = `<div style="font-family:'Newsreader',serif;font-size:14px;color:var(--ink);margin-bottom:4px;font-style:italic;">${escapeHtml(l.predicate)}</div>
+    <div style="font-family:'Newsreader',serif;font-size:12px;color:var(--ink);font-style:normal;line-height:1.5;">${escapeHtml(a.name)} <span style="color:var(--ink-faint);font-family:'IBM Plex Mono',monospace;font-size:10px;">→</span> ${escapeHtml(b.name)}</div>
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);font-style:normal;margin-top:4px;">
+      ${l.cell ? `<span style="padding:1px 5px;background:${c}20;color:${c};border:1px solid ${c}60;border-radius:2px;">${escapeHtml(l.cell)}</span>` : '<span style="opacity:0.6;">unclassified</span>'}${sourceTag}
+      <span style="margin-left:6px;opacity:0.8;">op: ${escapeHtml(l.op)}</span>
+    </div>`;
 }
 
 function selectGraphNode(idx) {
@@ -8753,13 +8833,14 @@ function selectGraphNode(idx) {
   const detail = document.getElementById('graph-detail');
   if (!detail) return;
   if (idx == null) {
-    detail.style.display = 'none';
+    detail.innerHTML = `<div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:6px;">Selected</div>
+      <div style="font-family:'Newsreader',serif;font-size:12px;color:var(--ink-soft);font-style:italic;line-height:1.5;">Click a node to see its outgoing and incoming edges.</div>`;
     return;
   }
   const n = GRAPH.nodes[idx];
   const inE = GRAPH.links.filter(l => l.target === idx);
   const outE = GRAPH.links.filter(l => l.source === idx);
-  let html = `<div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:4px;">selected entity</div>
+  let html = `<div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:6px;">Selected</div>
     <div style="font-family:'Newsreader',serif;font-size:15px;font-weight:500;margin-bottom:10px;">${escapeHtml(n.name)}</div>`;
   if (outE.length > 0) {
     html += `<div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-top:8px;margin-bottom:4px;">outgoing (${outE.length})</div>`;
@@ -8793,7 +8874,6 @@ function selectGraphNode(idx) {
 
 function wireGraphInteractions() {
   const cv = document.getElementById('graph-canvas');
-  const tt = document.getElementById('graph-tooltip');
   if (!cv) return;
 
   cv.addEventListener('mousedown', (e) => {
@@ -8831,11 +8911,12 @@ function wireGraphInteractions() {
     const idx = graphNodeAt(sx, sy);
     GRAPH.hoveredNode = idx >= 0 ? GRAPH.nodes[idx] : null;
     GRAPH.hoveredEdge = idx >= 0 ? null : graphEdgeNear(sx, sy);
-    if (GRAPH.hoveredNode) showGraphTooltipForNode(GRAPH.hoveredNode, e.clientX, e.clientY);
-    else if (GRAPH.hoveredEdge) showGraphTooltipForEdge(GRAPH.hoveredEdge, e.clientX, e.clientY);
-    else if (tt) tt.style.display = 'none';
+    if (GRAPH.hoveredNode) showGraphTooltipForNode(GRAPH.hoveredNode);
+    else if (GRAPH.hoveredEdge) showGraphTooltipForEdge(GRAPH.hoveredEdge);
+    else clearGraphHover();
     cv.style.cursor = (GRAPH.hoveredNode || GRAPH.hoveredEdge) ? 'pointer' : 'grab';
   });
+  cv.addEventListener('mouseleave', () => { clearGraphHover(); });
 
   window.addEventListener('mouseup', (e) => {
     if (GRAPH.draggingNode) {
@@ -8928,75 +9009,166 @@ const LOG_FILTER = {
   search: '',      // free text on subject/predicate/value
 };
 
-function eoFormatEvent(ev, offsets) {
+// Decompose an event into its EO-notation components — useful for both
+// the inline string form (eoFormatEvent) and the tabular log renderer
+// which needs the columns separately.
+function eoComponents(ev) {
   const p = ev.payload || {};
   const op = ev.op;
   const ent = id => STATE.entities.get(id);
-  const subjectStr = (() => {
-    const sid = p.subject || p.from;
-    if (sid && ent(sid)) return ent(sid).canonical;
-    return sid || '∅';
-  })();
+  // Subject/from (target)
+  const sid = p.subject || p.from || p.entity || p.target;
+  let subject = '';
+  if (sid && ent(sid)) subject = ent(sid).canonical;
+  else if (p.canonical) subject = p.canonical;
+  else if (sid) subject = String(sid);
+  // Predicate
   const predicate = p.predicate || p.relation || p.kind || '';
-  const valueStr = (() => {
-    const isEntity = p.valueIsEntity || p.toIsEntity;
-    const v = p.value !== undefined ? p.value : p.to;
-    if (isEntity && ent(v)) return ent(v).canonical;
-    if (v == null) return '∅';
-    return String(v);
-  })();
+  // Value/to (operand)
+  let value = '';
+  const isEntity = p.valueIsEntity || p.toIsEntity;
+  const v = p.value !== undefined ? p.value : p.to;
+  if (isEntity && ent(v)) value = ent(v).canonical;
+  else if (v != null) value = String(v);
+  else if (p.surface) value = p.surface;
+  else if (p.name) value = p.name;
+  return { op, subject, predicate, value };
+}
+
+function eoFormatEvent(ev, offsets) {
+  const p = ev.payload || {};
+  const op = ev.op;
+  const c = eoComponents(ev);
   // Canonical form: OP(subject, predicate, value)
   // For NUL events without subject/value, just render as OP(kind, surface)
   if (op === 'NUL') {
     return `NUL(${escapeHtml(p.kind || '')}, ${escapeHtml(p.surface || '')})`;
   }
-  if (op === 'INS' && !predicate) {
+  if (op === 'INS' && !c.predicate) {
+    // Entity instantiation: prefer canonical name; fall back to kind/name pair.
+    const label = c.subject || p.canonical || p.name || '';
+    if (label) return `INS(${escapeHtml(label)})`;
     return `INS(${escapeHtml(p.kind || '')}, ${escapeHtml(p.name || '')})`;
   }
-  return `${op}(${escapeHtml(subjectStr)}, ${escapeHtml(predicate)}, ${escapeHtml(valueStr)})`;
+  return `${op}(${escapeHtml(c.subject || '∅')}, ${escapeHtml(c.predicate)}, ${escapeHtml(c.value || '∅')})`;
+}
+
+// True for events that should NOT appear in the EO log. Per the
+// product rule: user-authored SIGs (reader marking surface mentions)
+// don't need to be recorded in EO notation. All other events are
+// recorded.
+function eventVisibleInLog(ev) {
+  if (ev.op === 'SIG' && (ev.authoredBy === 'reader' || ev.sourceId === 'reader')) return false;
+  return true;
+}
+
+// Cache the last render context so the incremental log appender knows
+// whether new events match the active filter and can be tacked on
+// directly, or whether a full re-render is required.
+const LOG_RENDER = {
+  lastG: 0,           // STATE.G length at last full render
+  filter: null,       // serialized snapshot of LOG_FILTER + counts at last render
+  cap: 500,
+  flashIds: new Set(),
+};
+
+function logFilterFingerprint() {
+  return `${LOG_FILTER.op || ''}|${LOG_FILTER.sourceId || ''}|${LOG_FILTER.search || ''}`;
+}
+
+function logEventPasses(ev, offsets) {
+  if (!eventVisibleInLog(ev)) return false;
+  if (LOG_FILTER.op && ev.op !== LOG_FILTER.op) return false;
+  if (LOG_FILTER.sourceId && ev.sourceId !== LOG_FILTER.sourceId) return false;
+  if (LOG_FILTER.search) {
+    const q = LOG_FILTER.search.toLowerCase();
+    const fmt = eoFormatEvent(ev, offsets).toLowerCase();
+    if (!fmt.includes(q)) return false;
+  }
+  return true;
+}
+
+function logRowHtml(ev, offsets, opColor) {
+  const c = opColor(ev.op);
+  const comp = eoComponents(ev);
+  const span = eventSpanPosition(ev, offsets);
+  const spanLabel = span >= 0 ? String(span) : '—';
+  const cell = ev.llmCell || (ev.empiricalCells?.[0]?.cell) || '';
+  const src = STATE.sources.get(ev.sourceId);
+  const srcLabel = src ? src.name : (ev.sourceId === 'reader' ? 'reader' : '');
+  const author = ev.authoredBy && ev.authoredBy !== 'system' ? ev.authoredBy : '';
+  const empty = `<span class="empty-cell">—</span>`;
+  const subject = comp.subject ? escapeHtml(comp.subject) : empty;
+  const predicate = comp.predicate ? escapeHtml(comp.predicate) : empty;
+  const value = comp.value ? escapeHtml(comp.value) : empty;
+  const flashCls = LOG_RENDER.flashIds.has(ev.id) ? ' flash' : '';
+  return `<tr class="log-row${flashCls}" data-event-id="${escapeHtml(ev.id)}">
+    <td class="col-span">${spanLabel}</td>
+    <td class="col-op" style="color:${c};">${escapeHtml(ev.op)}</td>
+    <td class="col-subject">${subject}</td>
+    <td class="col-pred">${predicate}</td>
+    <td class="col-value">${value}</td>
+    <td class="col-cell">${cell ? escapeHtml(cell) : ''}</td>
+    <td class="col-author">${author ? '[' + escapeHtml(author) + ']' : ''}</td>
+    <td class="col-source">${escapeHtml(srcLabel)}</td>
+  </tr>`;
+}
+
+function wireLogTable(el) {
+  el.querySelectorAll('.log-row[data-event-id]').forEach(line => {
+    if (line._wired) return;
+    line._wired = true;
+    line.addEventListener('click', () => {
+      const eid = line.getAttribute('data-event-id');
+      const ev = STATE.G.find(e => e.id === eid);
+      if (!ev || !ev.sourceId || ev.narrativePos == null) return;
+      showSourceSpanModal({
+        sourceEventId: ev.id,
+        sourceId: ev.sourceId,
+        sentenceIdx: ev.narrativePos.sentenceIdx,
+        spanText: ev.spanText || '',
+        authoredBy: ev.authoredBy,
+      });
+    });
+  });
+}
+
+function updateLogMeta(filteredCount, totalLogged) {
+  const meta = document.getElementById('log-meta');
+  if (!meta) return;
+  meta.textContent = `${filteredCount} of ${totalLogged} events · ${LOG_FILTER.op || 'all ops'}${LOG_FILTER.sourceId ? ' · filtered to source' : ''}`;
 }
 
 function renderLogView() {
   const el = document.getElementById('log-body');
-  const meta = document.getElementById('log-meta');
   if (!el) return;
-  if (STATE.G.length === 0) {
-    el.innerHTML = `<div class="empty-state">No events yet.</div>`;
-    if (meta) meta.textContent = 'empty';
-    return;
-  }
   const offsets = sourceSpanOffsets();
-
-  // Apply filters
-  const filtered = STATE.G.filter(ev => {
-    if (LOG_FILTER.op && ev.op !== LOG_FILTER.op) return false;
-    if (LOG_FILTER.sourceId && ev.sourceId !== LOG_FILTER.sourceId) return false;
-    if (LOG_FILTER.search) {
-      const q = LOG_FILTER.search.toLowerCase();
-      const fmt = eoFormatEvent(ev, offsets).toLowerCase();
-      if (!fmt.includes(q)) return false;
-    }
-    return true;
-  });
-
-  if (meta) meta.textContent = `${filtered.length} of ${STATE.G.length} events · ${LOG_FILTER.op || 'all ops'}${LOG_FILTER.sourceId ? ' · filtered to source' : ''}`;
-
-  // Operator color palette (reuse the graph palette)
   const opColor = op => phasepostColor(op + '(_)') || '#6a6358';
 
-  // Filter chips at top
+  // Pre-filter: visible events (user SIGs excluded), then user filters.
+  const visible = STATE.G.filter(eventVisibleInLog);
+  const filtered = visible.filter(ev => logEventPasses(ev, offsets));
+
+  if (visible.length === 0) {
+    el.innerHTML = `<div class="empty-state">No events yet.</div>`;
+    updateLogMeta(0, 0);
+    LOG_RENDER.lastG = STATE.G.length;
+    LOG_RENDER.filter = logFilterFingerprint();
+    return;
+  }
+
+  // Filter chips header
   const ops = ['NUL', 'SIG', 'INS', 'SEG', 'CON', 'SYN', 'ALT', 'SUP', 'REC', 'EVA', 'DEF'];
   let html = `<div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; align-items: center;">`;
   html += `<span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-right:6px;">filter:</span>`;
   html += `<button class="log-filter-pill${LOG_FILTER.op === null ? ' active' : ''}" data-op="">all</button>`;
   for (const op of ops) {
-    const count = STATE.G.filter(e => e.op === op).length;
+    const count = visible.filter(e => e.op === op).length;
     if (count === 0) continue;
     const c = opColor(op);
     const active = LOG_FILTER.op === op ? ' active' : '';
     html += `<button class="log-filter-pill${active}" data-op="${op}" style="border-color:${c};color:${c};">${op} <span style="opacity:0.6;">${count}</span></button>`;
   }
-  // Source filter
   if (STATE.sources.size > 1) {
     html += `<span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-left:12px;margin-right:6px;">source:</span>`;
     html += `<button class="log-filter-pill${LOG_FILTER.sourceId === null ? ' active' : ''}" data-source="">all</button>`;
@@ -9005,40 +9177,34 @@ function renderLogView() {
       html += `<button class="log-filter-pill${active}" data-source="${escapeHtml(id)}">${escapeHtml(src.name)}</button>`;
     }
   }
-  // Search
   html += `<input type="text" id="log-search" placeholder="search subject/predicate/value…" value="${escapeHtml(LOG_FILTER.search)}" style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 8px;border:1px solid var(--rule);background:var(--paper);min-width:220px;" />`;
   html += `</div>`;
 
-  // Event lines
-  html += `<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.65;">`;
-  // Cap at 500 events for performance; show oldest to newest by default
-  const cap = 500;
+  // Cap rows for performance — show the most recent.
+  const cap = LOG_RENDER.cap;
   const showing = filtered.slice(-cap);
   if (filtered.length > cap) {
-    html += `<div style="color: var(--ink-faint); font-style: italic; margin-bottom: 8px;">showing latest ${cap} of ${filtered.length} matching events</div>`;
+    html += `<div style="color: var(--ink-faint); font-style: italic; margin-bottom: 8px;font-family:'IBM Plex Mono',monospace;font-size:10px;">showing latest ${cap} of ${filtered.length} matching events</div>`;
   }
-  for (const ev of showing) {
-    const c = opColor(ev.op);
-    const span = eventSpanPosition(ev, offsets);
-    const spanLabel = span >= 0 ? String(span).padStart(4, ' ') : '   —';
-    const cell = ev.llmCell || (ev.empiricalCells?.[0]?.cell);
-    const cellTag = cell ? `<span style="color:var(--ink-faint);font-size:10px;margin-left:8px;">${escapeHtml(cell)}</span>` : '';
-    const src = STATE.sources.get(ev.sourceId);
-    const srcTag = src ? `<span style="color:var(--ink-faint);font-size:10px;margin-left:8px;">${escapeHtml(src.name)}</span>` : '';
-    const eo = eoFormatEvent(ev, offsets);
-    // Color the operator
-    const eoColored = eo.replace(/^(\w+)\(/, (m, op) => `<span style="color:${c};font-weight:500;">${op}</span>(`);
-    const author = ev.authoredBy === 'hypothesis' ? `<span style="color:var(--ink-faint);font-size:9px;margin-left:6px;">[hypothesis]</span>` :
-                   ev.authoredBy === 'reader' ? `<span style="color:var(--ink-faint);font-size:9px;margin-left:6px;">[reader]</span>` : '';
-    html += `<div class="log-line" data-event-id="${escapeHtml(ev.id)}" style="display:flex;align-items:baseline;padding:2px 6px;cursor:pointer;border-radius:2px;">
-      <span style="color:var(--ink-faint);min-width:48px;">${spanLabel}</span>
-      <span>${eoColored}</span>
-      ${cellTag}${author}${srcTag}
-    </div>`;
-  }
-  html += `</div>`;
+
+  html += `<div style="overflow-x:auto;">
+    <table class="log-table" id="log-table">
+      <thead><tr>
+        <th class="col-span" style="text-align:right;">#</th>
+        <th class="col-op">op</th>
+        <th class="col-subject">subject</th>
+        <th class="col-pred">predicate</th>
+        <th class="col-value">value</th>
+        <th class="col-cell">cell</th>
+        <th class="col-author">author</th>
+        <th class="col-source">source</th>
+      </tr></thead>
+      <tbody id="log-tbody">`;
+  for (const ev of showing) html += logRowHtml(ev, offsets, opColor);
+  html += `</tbody></table></div>`;
 
   el.innerHTML = html;
+  updateLogMeta(filtered.length, visible.length);
 
   // Wire filters
   el.querySelectorAll('.log-filter-pill[data-op]').forEach(b => {
@@ -9064,32 +9230,59 @@ function renderLogView() {
       }, 150);
     });
   }
-  // Click line → open source modal at the span
-  el.querySelectorAll('.log-line[data-event-id]').forEach(line => {
-    line.addEventListener('click', () => {
-      const eid = line.getAttribute('data-event-id');
-      const ev = STATE.G.find(e => e.id === eid);
-      if (!ev || !ev.sourceId || ev.narrativePos == null) {
-        // Off-timeline — just show event payload in a small inline popover.
-        // For now no-op; could show a non-source modal later.
-        return;
-      }
-      // Construct a grounding-shaped object so we can reuse showSourceSpanModal
-      showSourceSpanModal({
-        sourceEventId: ev.id,
-        sourceId: ev.sourceId,
-        sentenceIdx: ev.narrativePos.sentenceIdx,
-        spanText: ev.spanText || '',
-        authoredBy: ev.authoredBy,
-      });
-    });
-    line.addEventListener('mouseenter', () => {
-      line.style.background = 'var(--paper-soft)';
-    });
-    line.addEventListener('mouseleave', () => {
-      line.style.background = '';
-    });
-  });
+  wireLogTable(el);
+
+  LOG_RENDER.lastG = STATE.G.length;
+  LOG_RENDER.filter = logFilterFingerprint();
+  LOG_RENDER.flashIds.clear();
+}
+
+// Real-time append: called from appendEvent() when the log view is
+// active. Adds new rows to the existing table without redrawing the
+// whole view, and briefly flashes them so the eye can catch the
+// arrival. Falls back to a full re-render if the filter context has
+// changed since the last render.
+function appendLogRowLive(ev) {
+  if (STATE.activeView !== 'log') return;
+  if (!eventVisibleInLog(ev)) return;
+  const tbody = document.getElementById('log-tbody');
+  if (!tbody) {
+    // Table isn't mounted (e.g. previous render hit empty-state) — full render.
+    renderLogView();
+    return;
+  }
+  if (LOG_RENDER.filter !== logFilterFingerprint()) {
+    renderLogView();
+    return;
+  }
+  const offsets = sourceSpanOffsets();
+  if (!logEventPasses(ev, offsets)) {
+    // Even though it doesn't show up, the meta count of total visible
+    // events may have changed. Update header silently.
+    const visibleCount = STATE.G.filter(eventVisibleInLog).length;
+    const filteredCount = tbody.children.length;
+    updateLogMeta(filteredCount, visibleCount);
+    return;
+  }
+  const opColor = op => phasepostColor(op + '(_)') || '#6a6358';
+  LOG_RENDER.flashIds.add(ev.id);
+  tbody.insertAdjacentHTML('beforeend', logRowHtml(ev, offsets, opColor));
+  // Cap the table — drop the oldest row if we exceed the cap.
+  while (tbody.children.length > LOG_RENDER.cap) tbody.removeChild(tbody.firstChild);
+  wireLogTable(document.getElementById('log-body'));
+  // Update meta counter
+  const visibleCount = STATE.G.filter(eventVisibleInLog).length;
+  // We don't track filteredCount independently; recompute cheaply.
+  const filteredCount = visibleCount === STATE.G.filter(eventVisibleInLog).length && !LOG_FILTER.op && !LOG_FILTER.sourceId && !LOG_FILTER.search
+    ? visibleCount
+    : STATE.G.filter(e => logEventPasses(e, offsets)).length;
+  updateLogMeta(filteredCount, visibleCount);
+  // Auto-scroll to bottom so the latest event is visible.
+  const body = document.getElementById('log-body');
+  if (body) body.scrollTop = body.scrollHeight;
+  // Clear the flash class after the animation ends so future re-renders
+  // don't keep replaying it.
+  setTimeout(() => { LOG_RENDER.flashIds.delete(ev.id); }, 1300);
 }
 
 
