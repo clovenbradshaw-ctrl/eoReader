@@ -448,6 +448,662 @@ button.secondary.danger:hover { background: var(--accent); color: var(--paper); 
 }
 .example-q:hover { border-color: var(--accent); color: var(--accent); }
 
+/* ── LIBRARIAN TWO-PANE ─────────────────────────────────────────── */
+.librarian-body {
+  display: flex;
+  flex-direction: row;
+  padding: 0;
+  overflow: hidden;
+}
+.librarian-left {
+  flex: 1 1 55%;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 18px 22px 22px;
+  scrollbar-width: thin;
+}
+.librarian-left::-webkit-scrollbar { width: 6px; }
+.librarian-left::-webkit-scrollbar-thumb { background: var(--ink-ghost); }
+.librarian-divider {
+  flex: 0 0 1px;
+  background: var(--rule);
+  align-self: stretch;
+}
+.librarian-right {
+  flex: 1 1 45%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper-soft);
+}
+.librarian-right.collapsed { display: none; }
+.librarian-right-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--rule);
+}
+.librarian-right-header .label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0;
+}
+.librarian-right-close {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 14px;
+  color: var(--ink-faint);
+  background: none;
+  border: 1px solid var(--rule);
+  width: 22px; height: 22px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+.librarian-right-close:hover { color: var(--ink); border-color: var(--ink); }
+.evidence-pane {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px;
+  scrollbar-width: thin;
+}
+.evidence-pane::-webkit-scrollbar { width: 6px; }
+.evidence-pane::-webkit-scrollbar-thumb { background: var(--ink-ghost); }
+
+/* Narrow-width: stack vertically with right pane collapsible */
+@media (max-width: 920px) {
+  .librarian-body { flex-direction: column; }
+  .librarian-divider { display: none; }
+  .librarian-right { max-height: 50%; border-top: 1px solid var(--rule); }
+}
+
+/* ── CHAT TURN (left pane) ──────────────────────────────────────── */
+.chat-turn {
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border: 1px solid transparent;
+  border-left: 3px solid var(--rule);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.chat-turn:hover { border-left-color: var(--ink-soft); }
+.chat-turn.focused {
+  background: var(--paper-soft);
+  border-color: var(--rule);
+  border-left-color: var(--accent);
+}
+.chat-turn .turn-question-label,
+.chat-turn .turn-answer-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 4px;
+}
+.chat-turn .turn-question {
+  font-family: 'Newsreader', serif;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ink);
+  margin-bottom: 10px;
+}
+.chat-turn .turn-answer {
+  font-family: 'Newsreader', serif;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink);
+  font-style: italic;
+}
+.chat-turn .turn-answer.loading { color: var(--ink-faint); font-size: 12px; }
+.chat-turn .turn-meta {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  color: var(--ink-faint);
+  letter-spacing: 0.06em;
+  margin-top: 8px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.chat-turn .turn-meta .turn-meta-pill {
+  border: 1px solid var(--rule);
+  padding: 2px 6px;
+  background: var(--paper);
+}
+
+/* ── EVIDENCE PANE (right) ──────────────────────────────────────── */
+.evidence-pane .evidence-header {
+  font-family: 'Newsreader', serif;
+  font-size: 13px;
+  color: var(--ink-soft);
+  font-style: italic;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px dotted var(--rule);
+}
+.plan-trace { margin-bottom: 18px; }
+.plan-trace .label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 6px;
+}
+.plan-line {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--cursor);
+  padding: 6px 10px;
+  margin-bottom: 4px;
+  cursor: pointer;
+  color: var(--ink);
+  word-break: break-all;
+}
+.plan-line:hover { border-color: var(--cursor); }
+.plan-line.focused { background: var(--paper-soft); border-color: var(--cursor); }
+.plan-line .plan-meta {
+  display: block;
+  font-size: 9px;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+  margin-top: 2px;
+}
+
+.evidence-section { margin-bottom: 16px; }
+.evidence-section > .label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 8px;
+}
+
+/* Reader-response composer (per-turn and per-finding) */
+.reader-composer {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--paper);
+  border: 1px dashed var(--rule);
+}
+.reader-composer textarea {
+  width: 100%;
+  font-family: 'Newsreader', serif;
+  font-size: 13px;
+  border: 1px solid var(--rule);
+  background: var(--paper-soft);
+  padding: 6px 8px;
+  resize: vertical;
+  min-height: 50px;
+  box-sizing: border-box;
+}
+.reader-composer .reader-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.reader-composer .reader-submit {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+}
+.reader-composer .reader-submit:disabled { opacity: 0.4; cursor: not-allowed; }
+.reader-composer .reader-anchor {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+}
+.reader-toggle {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  background: none;
+  border: 1px solid var(--rule);
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.reader-toggle:hover { color: var(--ink); border-color: var(--ink); }
+.reader-authored {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  background: var(--accent-soft, #f3e6dc);
+  padding: 1px 5px;
+}
+
+/* ── TEMPLATED ANSWER (left pane, citation-bearing) ──────────────── */
+.turn-answer p.templated {
+  font-style: normal;
+  font-family: 'Newsreader', serif;
+  font-size: 15px;
+  line-height: 1.65;
+  margin: 0;
+  color: var(--ink);
+}
+.entity-link {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--ink-soft);
+  cursor: pointer;
+}
+.entity-link:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+sup.citation {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  color: var(--cursor);
+  cursor: pointer;
+  margin-left: 1px;
+  padding: 0 2px;
+  border: 1px solid transparent;
+}
+sup.citation:hover {
+  background: var(--paper-soft);
+  border-color: var(--cursor);
+  color: var(--accent);
+}
+
+/* ── TYPED-EDIT LAYER (visible smoothing markup) ────────────────── */
+/* Bracketed inserts use the journalism convention: editor-added words
+   appear in light brackets so the reader sees, at a glance, that the
+   word came from the editor and not the source. Hovering reveals the
+   edit kind. */
+.edit-insert {
+  color: var(--ink-soft);
+  background: var(--paper-soft);
+  border-bottom: 1px dotted var(--ink-ghost);
+  cursor: help;
+}
+.edit-insert::before, .edit-insert::after { /* the brackets are already in the text */ }
+.edit-substitute {
+  font-style: italic;
+  background: var(--paper-soft);
+  border-bottom: 1px dotted var(--cursor);
+  cursor: help;
+  position: relative;
+}
+.edit-substitute::after {
+  content: '↻';
+  font-size: 9px;
+  color: var(--cursor);
+  vertical-align: super;
+  margin-left: 1px;
+}
+.answer-mode-diff .edit-insert,
+.answer-mode-diff .edit-substitute { background: var(--paper); border-bottom-style: solid; }
+.answer-mode-diff .edit-substitute::before {
+  content: attr(data-original) ' → ';
+  color: var(--ink-faint);
+  font-style: normal;
+  text-decoration: line-through;
+  margin-right: 2px;
+}
+.answer-raw-companion {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--paper-soft);
+  border-left: 3px solid var(--ink-ghost);
+  font-family: 'Newsreader', serif;
+  font-size: 13px;
+  font-style: normal;
+  color: var(--ink-soft);
+}
+
+.edit-mode-pill {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  padding: 4px 8px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.edit-mode-pill:hover { color: var(--ink); border-color: var(--ink-soft); }
+.edit-mode-pill.active { background: var(--accent); color: var(--paper); border-color: var(--accent); }
+
+.edits-badge {
+  display: inline-block;
+  margin-left: 6px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--ink-faint);
+  padding: 1px 5px;
+  border: 1px solid var(--rule);
+  vertical-align: middle;
+}
+.edits-badge.pending { color: var(--cursor); border-color: var(--cursor); font-style: italic; }
+
+/* ── COMPILED-PLAN BADGES & CONFIDENCE ──────────────────────────── */
+.compiled-badge { color: var(--ink-soft); }
+.compiled-badge .conf {
+  font-weight: 500;
+}
+.compiled-badge .conf.ambiguous { color: var(--gap); }
+.compiled-badge .conf.low { color: var(--gap); }
+.compiled-badge .conf.medium { color: var(--cursor); }
+.muted { color: var(--ink-faint); }
+
+/* ── DISAMBIGUATION CHOOSER (right pane) ────────────────────────── */
+.evidence-section.disambig { background: var(--paper); padding: 12px; border: 1px solid var(--cursor); border-left-width: 3px; margin-bottom: 18px; }
+.disambig-cards { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.disambig-card {
+  font-family: inherit;
+  text-align: left;
+  background: var(--paper-soft);
+  border: 1px solid var(--rule);
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+.disambig-card:hover { border-color: var(--cursor); background: var(--paper); }
+.disambig-card:disabled { cursor: not-allowed; }
+.disambig-canonical {
+  font-family: 'Newsreader', serif;
+  font-size: 14px;
+  color: var(--ink);
+  margin-bottom: 2px;
+}
+.disambig-meta {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+
+/* ── CONSTRUCTION TRACE ─────────────────────────────────────────── */
+.construction-trace details summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 6px 0;
+}
+.construction-trace details summary::-webkit-details-marker { display: none; }
+.construction-trace details summary::before {
+  content: '▸ ';
+  color: var(--ink-faint);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+}
+.construction-trace details[open] summary::before { content: '▾ '; }
+.construction-trace .trace-body {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--paper);
+  border: 1px dashed var(--rule);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.construction-trace .trace-row { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 2px 0; }
+.construction-trace .trace-key { color: var(--ink-faint); letter-spacing: 0.04em; }
+.construction-trace .trace-val { color: var(--ink); }
+.construction-trace .trace-line { font-family: 'IBM Plex Mono', monospace; font-size: 11px; padding: 1px 0; word-break: break-all; }
+
+/* ── SUMMARY AFFORDANCE (frictional disclosure) ─────────────────── */
+.summary-affordance details summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 8px 12px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.summary-affordance details summary::-webkit-details-marker { display: none; }
+.summary-affordance details summary::before { content: '▸ '; color: var(--ink-faint); }
+.summary-affordance details[open] summary::before { content: '▾ '; }
+.summary-affordance .summary-warning {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--gap-soft);
+  border-left: 3px solid var(--gap);
+  font-family: 'Newsreader', serif;
+  font-size: 12px;
+  font-style: italic;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.summary-affordance .summary-generate {
+  margin-top: 8px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 6px 12px;
+  background: var(--paper-soft);
+  border: 1px solid var(--gap);
+  color: var(--gap);
+  cursor: pointer;
+}
+.summary-affordance .summary-generate:hover {
+  background: var(--gap);
+  color: var(--paper);
+}
+.summary-affordance .summary-generate:disabled { opacity: 0.5; cursor: not-allowed; }
+.summary-affordance .summary-body {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--paper-soft);
+  border: 1px dashed var(--rule);
+  font-family: 'Newsreader', serif;
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+.turn-summary {
+  margin-top: 12px;
+  padding: 8px 10px;
+  background: var(--paper-soft);
+  border-left: 3px solid var(--gap);
+}
+.turn-summary-warning {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--gap);
+  margin-bottom: 6px;
+}
+.turn-summary-body {
+  font-family: 'Newsreader', serif;
+  font-style: italic;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+/* ── CITATION MODAL UPGRADE ─────────────────────────────────────── */
+.modal-meta-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 14px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  background: var(--paper-soft);
+  border: 1px dashed var(--rule);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.modal-meta-key { color: var(--ink-faint); letter-spacing: 0.06em; text-transform: uppercase; margin-right: 6px; }
+.modal-meta-val { color: var(--ink); }
+.modal-meta-val.mono { font-family: 'IBM Plex Mono', monospace; font-size: 9px; }
+
+.modal-doc-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 6px;
+}
+.modal-doc {
+  max-height: 50vh;
+  overflow-y: auto;
+  border: 1px solid var(--rule);
+  padding: 10px 12px;
+  background: var(--paper);
+  scrollbar-width: thin;
+}
+.modal-doc::-webkit-scrollbar { width: 6px; }
+.modal-doc::-webkit-scrollbar-thumb { background: var(--ink-ghost); }
+.modal-doc-line {
+  display: flex;
+  gap: 10px;
+  padding: 2px 4px;
+  font-family: 'Newsreader', serif;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+.modal-doc-line.target {
+  background: var(--paper-soft);
+  border-left: 3px solid var(--accent);
+  padding-left: 8px;
+  color: var(--ink);
+  font-style: italic;
+}
+.modal-doc-idx {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  width: 36px;
+  text-align: right;
+}
+
+.modal-event-details {
+  margin-top: 14px;
+}
+.modal-event-details summary {
+  cursor: pointer;
+  list-style: none;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  padding: 6px 0;
+}
+.modal-event-details summary::-webkit-details-marker { display: none; }
+.modal-event-details summary::before { content: '▸ '; }
+.modal-event-details[open] summary::before { content: '▾ '; }
+.modal-event-details .modal-event-body {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--paper-soft);
+  border: 1px dashed var(--rule);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  line-height: 1.7;
+  display: grid;
+  gap: 4px;
+}
+.modal-event-body .status.active { color: var(--confirm, #4a7c59); }
+.modal-event-body .status.contested { color: var(--gap); }
+.modal-event-body .status.superseded { color: var(--supersede); }
+
+.modal-flag-row {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.modal-flag-btn {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding: 6px 12px;
+  background: var(--paper);
+  border: 1px solid var(--gap);
+  color: var(--gap);
+  cursor: pointer;
+}
+.modal-flag-btn:hover { background: var(--gap); color: var(--paper); }
+.modal-flag-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* ── LIVE KEYSTROKE RETRIEVAL ─────────────────────────────────── */
+.live-retrieval-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 14px;
+}
+.live-cand {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--ink-ghost);
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+.live-cand:hover { border-color: var(--cursor); border-left-color: var(--cursor); }
+.live-cand-head { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.live-cand-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--ink);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-cand-span {
+  font-family: 'Newsreader', serif;
+  font-style: italic;
+  font-size: 12px;
+  color: var(--ink-soft);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+.match-method {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border: 1px solid var(--rule);
+  background: var(--paper-soft);
+  color: var(--ink-faint);
+  flex-shrink: 0;
+}
+.match-method.alias { color: var(--ink-soft); border-color: var(--ink-soft); }
+.match-method.predicate { color: var(--cursor); border-color: var(--cursor); }
+.match-method.value { color: var(--accent); border-color: var(--accent); }
+.match-method.embedding { color: var(--gap); border-color: var(--gap); }
+.live-hint {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-style: italic;
+}
+
 /* ── PROJECTION RESULTS ─────────────────────────────────────────── */
 .projection {
   margin-top: 16px;
@@ -1332,11 +1988,24 @@ code {
         <div class="pane-title">Librarian · ask the corpus</div>
         <div class="pane-meta" id="query-meta">no corpus</div>
       </div>
-      <!-- Chat transcript accumulates above the composer.
-           Each turn = user question + librarian response (commentary + findings + source citations). -->
-      <div class="pane-body" id="query-results" style="display: flex; flex-direction: column; gap: 0; padding-bottom: 0;">
-        <div id="chat-transcript" style="flex: 1; overflow-y: auto; padding: 16px 20px;">
-          <div class="empty-state">Ingest a source, then ask the librarian. Answers come as commentary paired with cited findings and source spans.</div>
+      <!-- Two-pane librarian:
+           LEFT  = conversation (question + prose answer per turn)
+           RIGHT = evidence + EO plan trace for the focused turn -->
+      <div class="pane-body librarian-body" id="query-results">
+        <div class="librarian-left">
+          <div id="chat-transcript">
+            <div class="empty-state">Ingest a source, then ask the librarian. Answers come paired with the EO query plan that produced them.</div>
+          </div>
+        </div>
+        <div class="librarian-divider" aria-hidden="true"></div>
+        <div class="librarian-right">
+          <div class="librarian-right-header">
+            <div class="label">evidence · plan trace</div>
+            <button class="librarian-right-close" id="librarian-right-close" title="Hide evidence pane">×</button>
+          </div>
+          <div id="evidence-pane" class="evidence-pane">
+            <div class="empty-state">Click a turn on the left to inspect its findings and the EO plan that produced them.</div>
+          </div>
         </div>
       </div>
       <div class="query-composer" style="border-top: 1px solid var(--rule); background: var(--paper-soft);">
@@ -1350,7 +2019,11 @@ code {
           <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: 0.06em;">cursor:</span>
           <button class="cursor-pill active" data-cursor="now">now</button>
           <button class="cursor-pill" data-cursor="custom">custom...</button>
-          <button id="chat-clear" style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);background:none;border:1px solid var(--rule);padding:4px 8px;cursor:pointer;">clear</button>
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: 0.06em; margin-left:auto;">edits:</span>
+          <button class="edit-mode-pill active" data-edit-mode="edited" title="LLM stylistic smoothing on, brackets visible">edited</button>
+          <button class="edit-mode-pill" data-edit-mode="raw" title="Mechanical answer only — no LLM edits applied">raw</button>
+          <button class="edit-mode-pill" data-edit-mode="diff" title="Show every edit annotated">diff</button>
+          <button id="chat-clear" style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);background:none;border:1px solid var(--rule);padding:4px 8px;cursor:pointer;">clear</button>
         </div>
         <div class="example-queries" id="example-queries"></div>
       </div>
@@ -1960,6 +2633,21 @@ function normalizePredicate(verb) {
   return v;
 }
 
+// Lightweight inflection stripper for predicate matching: handles the
+// common cases the dictionary above doesn't cover. "marries" → "marri",
+// "loved" → "lov", "running" → "runn". Imperfect but lets the heuristic
+// match "marry" against the stored predicate "marries".
+function stripVerbInflection(w) {
+  let s = String(w || '').toLowerCase().trim();
+  if (!s) return s;
+  if (s.length > 4 && s.endsWith('ies')) return s.slice(0, -3) + 'y';
+  if (s.length > 3 && s.endsWith('ed')) return s.slice(0, -2);
+  if (s.length > 4 && s.endsWith('ing')) return s.slice(0, -3);
+  if (s.length > 3 && s.endsWith('es')) return s.slice(0, -2);
+  if (s.length > 3 && s.endsWith('s') && !s.endsWith('ss')) return s.slice(0, -1);
+  return s;
+}
+
 // Words that should never be relations on their own
 const NON_RELATION_WORDS = new Set([
   'previously','additionally','also','now','then','still','just',
@@ -2053,6 +2741,13 @@ const STATE = {
 
   // Reading cursor — which sentence ingest is currently working on
   currentlyProcessing: null,  // {sourceId, sentenceIdx, escalationDepth}
+
+  // Typed-edit layer toggles. editsEnabled gates whether the editor
+  // LLM call runs at all; editsRenderMode picks which view of the
+  // result the user sees ('raw' | 'edited' | 'diff'). Defaults: ON,
+  // edited-with-brackets (the journalism convention).
+  editsEnabled: true,
+  editsRenderMode: 'edited',
 };
 
 // Append an event to G with full coordinates
@@ -6766,9 +7461,24 @@ function computeIntegral(subjectId, cursor) {
     }
   }
 
-  // Apply RECs: mark superseded DEFs
-  // (For full impl, would walk REC chain; for v25, RECs only fire from
-  // reader actions which we'll add later)
+  // Apply RECs: walk the visible window for REC events targeting any
+  // DEF in our slot map. A REC carries { target: <def id>, predicate,
+  // newValue, newValueIsEntity } and supersedes the targeted DEF. This
+  // is the structural side of "reader feedback redefines things" —
+  // a REC from the 'reader' source disables the original value and
+  // promotes a new DEF (already minted as a separate event).
+  for (const ev of visibleEvents) {
+    if (ev.op !== 'REC') continue;
+    const tgt = ev.payload?.target;
+    if (!tgt) continue;
+    for (const defs of slotMap.values()) {
+      const hit = defs.find(d => d.id === tgt);
+      if (hit) {
+        hit.status = 'superseded';
+        hit.supersededBy = ev.id;
+      }
+    }
+  }
 
   // Convert slotMap into the standard format
   const out = {};
@@ -6907,12 +7617,22 @@ function weightDef(def, framingName) {
 function describeFraming(name) {
   return FRAMINGS[name]?.name || name;
 }
-// ─── QUERY ───────────────────────────────────────────────────────────
-// A query specifies subject + cursor + framing.
-// Result: structured findings + LLM commentary, always together.
+// ─── QUERY (EO-NATIVE) ───────────────────────────────────────────────
+// A librarian turn carries a *plan*: a list of EO query lines the
+// librarian ran against the corpus. Each line is one of
+//
+//   SIG(NUL)                    — identity, no slice (corpus overview)
+//   SIG(SEG(s, p, v))           — segment by subject/predicate/value (* = wild)
+//   SIG(SEG(s, p, v)) @grounding — same slice, request span text
+//
+// The plan is the auditable trace beneath every prose answer. The
+// *asking* never enters G — pure signal. Reader feedback (separate
+// path) is what actually appends events.
 
+// Resolve a token to an entity id by alias match (longest wins). Returns
+// null if nothing matches. Used by the heuristic plan generator and as
+// a sanity check on LLM-emitted SIG(SEG) lines.
 function resolveSubjectFromQuestion(question) {
-  // Try to find an entity whose name appears in the question
   const candidates = [];
   for (const [id, info] of STATE.entities) {
     if (!isEntityActive(id)) continue;
@@ -6929,338 +7649,1340 @@ function resolveSubjectFromQuestion(question) {
   return candidates[0]?.entity || null;
 }
 
-function findRelevantPredicates(question, cursor) {
-  const stopwords = new Set(['what','does','the','corpus','say','about','tell','me','how','is','are','a','an','of','to','and','or','in','on','for','with','do','have','has','was','were','where','when','who','why']);
-  const terms = question.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !stopwords.has(w));
-
-  const predicates = computePredicatesAt(cursor);
-  const matches = [];
-  for (const [predName, info] of predicates) {
-    const predLower = predName.toLowerCase();
-    let score = 0;
-    for (const term of terms) {
-      if (predLower.includes(term)) score += 3;
-      const stem = normalizePredicate(term);
-      if (stem && predLower.includes(stem)) score += 2;
-      for (const ex of info.examples) {
-        if (typeof ex.value === 'string' && ex.value.toLowerCase().includes(term)) score += 1;
-      }
+// Fuzzy entity resolution for an arbitrary string — tries exact alias,
+// then case-insensitive contains, then prefix. Used by the SIG(SEG)
+// executor to resolve subject/value strings emitted by the LLM.
+function resolveEntityRef(ref) {
+  if (!ref || ref === '*') return null;
+  if (typeof ref !== 'string') return null;
+  // Direct id?
+  if (STATE.entities.has(ref)) return STATE.entities.get(ref);
+  const r = ref.toLowerCase().trim();
+  if (!r) return null;
+  let bestExact = null, bestContains = null;
+  for (const [id, info] of STATE.entities) {
+    if (!isEntityActive(id)) continue;
+    for (const alias of info.aliases) {
+      const a = alias.toLowerCase();
+      if (a === r) { bestExact = info; break; }
+      if (!bestContains && (a.includes(r) || r.includes(a))) bestContains = info;
     }
-    if (score > 0) matches.push({ predicate: predName, score, count: info.count, info });
+    if (bestExact) break;
   }
-  matches.sort((a, b) => b.score - a.score || b.count - a.count);
-  return matches.slice(0, 5);
+  return bestExact || bestContains;
 }
 
-async function runQuery(question, cursor, framing, compareCursor = null) {
-  const subject = resolveSubjectFromQuestion(question);
+// ─── EO PLAN EXECUTOR ────────────────────────────────────────────────
+// Compact, structural results. No span text unless `withGrounding` is
+// set. Designed to be small in tokens so an on-device LLM can drill in
+// across multiple round-trips without blowing context.
+
+function executeEOPlan(plan) {
+  const cursor = plan.cursor || STATE.activeCursor;
+  const framing = plan.framing || STATE.activeFraming;
+  const body = plan.body || { op: 'NUL' };
+
+  if (body.op === 'NUL') {
+    // Corpus overview — top subjects by mass, top predicates, source list
+    const activeSrcs = [...STATE.sources.values()].filter(s => s.enabled !== false);
+    const subjMass = new Map();
+    for (const [id] of STATE.entities) {
+      if (!isEntityActive(id)) continue;
+      const defs = getAllDefsForSubject(id).map(filterDefToActive).filter(Boolean);
+      if (defs.length) subjMass.set(id, defs.length);
+    }
+    const topSubjects = [...subjMass.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([id, mass]) => ({ id, canonical: STATE.entities.get(id).canonical, mass }));
+    const predVocab = computePredicatesAt(cursor);
+    const topPredicates = [...predVocab.entries()]
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 10)
+      .map(([name, info]) => ({ predicate: name, n_subjects: info.subjects.size, n_defs: info.count }));
+    return {
+      kind: 'corpus-summary',
+      sources: activeSrcs.map(s => ({ id: s.id, name: s.name })),
+      n_entities: subjMass.size,
+      n_predicates: predVocab.size,
+      n_events: STATE.G.filter(isEventActive).length,
+      topSubjects, topPredicates,
+    };
+  }
+
+  if (body.op === 'SEG') {
+    const sRef = body.s;
+    const pRef = body.p;
+    const vRef = body.v;
+    const wantGrounding = !!plan.withGrounding;
+
+    // Resolve subject filter
+    let subjectIds = null;  // null = wildcard
+    if (sRef && sRef !== '*') {
+      const ent = resolveEntityRef(sRef);
+      if (ent) subjectIds = new Set([ent.id]);
+      else return { kind: 'slice', rows: [], note: `no entity matches subject "${sRef}"`, body };
+    }
+
+    // Resolve value filter (entity or substring)
+    let valueEntityId = null;
+    let valueSubstring = null;
+    if (vRef && vRef !== '*') {
+      const ent = resolveEntityRef(vRef);
+      if (ent) valueEntityId = ent.id;
+      else valueSubstring = String(vRef).toLowerCase();
+    }
+
+    // Walk visible DEFs through computeIntegral per-subject
+    const targetSubjects = subjectIds || (() => {
+      const all = new Set();
+      for (const [id] of STATE.entities) if (isEntityActive(id)) all.add(id);
+      return all;
+    })();
+
+    const rows = [];
+    for (const sid of targetSubjects) {
+      const integral = computeIntegral(sid, cursor);
+      for (const [pred, defs] of Object.entries(integral)) {
+        // Predicate filter: pRef can be '*' (any), a single name, or an
+        // array of names (class membership). Array hits any-of.
+        if (pRef && pRef !== '*') {
+          if (Array.isArray(pRef)) {
+            const lower = pred.toLowerCase();
+            const hit = pRef.some(name => lower === String(name).toLowerCase() || lower.includes(String(name).toLowerCase()));
+            if (!hit) continue;
+          } else {
+            if (pred.toLowerCase() !== String(pRef).toLowerCase() && !pred.toLowerCase().includes(String(pRef).toLowerCase())) continue;
+          }
+        }
+        for (const def of defs) {
+          // Skip superseded for default slice rendering — they're still
+          // walkable via the timeline cursor, but not the current value.
+          if (def.status === 'superseded') continue;
+          if (valueEntityId && def.value !== valueEntityId) continue;
+          if (valueSubstring && !String(def.value).toLowerCase().includes(valueSubstring)) continue;
+          const valStr = def.valueIsEntity ? (STATE.entities.get(def.value)?.canonical || def.value) : def.value;
+          const row = {
+            def_id: def.id,
+            subject_id: sid,
+            subject: STATE.entities.get(sid)?.canonical || sid,
+            predicate: pred,
+            value: valStr,
+            valueIsEntity: !!def.valueIsEntity,
+            n_events: def.grounding.length,
+            weight: weightDef(def, framing),
+            superposed: defs.filter(d => d.status !== 'superseded').length > 1,
+            contested: !!def.contested,
+            authors: [...new Set(def.grounding.map(g => g.authoredBy || (g.sourceId === 'reader' ? 'reader' : 'extracted')))],
+          };
+          if (wantGrounding) {
+            row.grounding = def.grounding.slice(0, 4).map(g => ({
+              span: g.spanText || '',
+              source: STATE.sources.get(g.sourceId)?.name || g.sourceId || '?',
+              authoredBy: g.authoredBy || (g.sourceId === 'reader' ? 'reader' : 'extracted'),
+            }));
+          }
+          rows.push(row);
+        }
+      }
+    }
+
+    // Sort: weight desc, then n_events desc
+    rows.sort((a, b) => b.weight - a.weight || b.n_events - a.n_events);
+
+    // Peer gaps: only when subject is bounded and predicate is wild
+    let peerGaps = [];
+    if (subjectIds && subjectIds.size === 1 && (!pRef || pRef === '*')) {
+      const sid = [...subjectIds][0];
+      peerGaps = computePeerGaps(sid, cursor).slice(0, 6);
+    }
+
+    return { kind: 'slice', rows, peerGaps, body, withGrounding: wantGrounding };
+  }
+
+  return { kind: 'unknown', body };
+}
+
+// Render an EO plan body as a canonical text line. Mirrors the LOG
+// view's notation so the audit trail looks the same wherever it shows.
+function formatPlanLine(plan) {
+  const body = plan.body || { op: 'NUL' };
+  let inner;
+  if (body.op === 'NUL') inner = 'NUL';
+  else if (body.op === 'SEG') {
+    const p = Array.isArray(body.p) ? `{${body.p.join('|')}}` : (body.p || '*');
+    inner = `SEG(${body.s || '*'}, ${p}, ${body.v || '*'})`;
+  }
+  else inner = body.op;
+  let line = `SIG(${inner})`;
+  const tags = [];
+  if (plan.withGrounding) tags.push('@grounding');
+  if (plan.cursor && plan.cursor.position && plan.cursor.position !== 'now') {
+    tags.push(`@cursor=${plan.cursor.timeline}/${plan.cursor.position}`);
+  }
+  if (plan.framing && plan.framing !== 'uniform') tags.push(`@framing=${plan.framing}`);
+  if (tags.length) line += ' ' + tags.join(' ');
+  return line;
+}
+
+// Parse an EO plan line emitted by the LLM. Lenient — accepts whitespace
+// and quoted args. Returns null on malformed input so the agent loop can
+// fall back gracefully.
+function parsePlanLine(line) {
+  const s = String(line || '').trim();
+  if (!s) return null;
+  // SIG(NUL) variant
+  let m = s.match(/^SIG\s*\(\s*NUL\s*\)\s*(.*)$/i);
+  if (m) return parsePlanTags({ body: { op: 'NUL' } }, m[1]);
+  // SIG(SEG(s, p, v)) variant
+  m = s.match(/^SIG\s*\(\s*SEG\s*\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*(.+?)\s*\)\s*\)\s*(.*)$/i);
+  if (m) {
+    const strip = x => x.replace(/^["'`]|["'`]$/g, '').trim();
+    return parsePlanTags({
+      body: { op: 'SEG', s: strip(m[1]), p: strip(m[2]), v: strip(m[3]) }
+    }, m[4]);
+  }
+  return null;
+}
+
+function parsePlanTags(plan, tail) {
+  if (!tail) return plan;
+  if (/@grounding\b/i.test(tail)) plan.withGrounding = true;
+  const cm = tail.match(/@cursor=([^\s]+)/i);
+  if (cm) {
+    const [tl, pos] = cm[1].split('/');
+    if (tl && pos) plan.cursor = { timeline: tl, position: pos };
+  }
+  const fm = tail.match(/@framing=([^\s]+)/i);
+  if (fm) plan.framing = fm[1];
+  return plan;
+}
+
+// Compact result formatter for feeding back into an on-device LLM.
+// Token-tight: one line per row, no JSON.
+function formatPlanResultForLLM(result) {
+  if (result.kind === 'corpus-summary') {
+    const lines = [];
+    lines.push(`# corpus: ${result.n_entities} entities, ${result.n_predicates} predicates, ${result.n_events} events, ${result.sources.length} sources`);
+    if (result.sources.length) lines.push(`sources: ${result.sources.map(s => s.name).join(' | ')}`);
+    if (result.topSubjects.length) lines.push(`top-subjects: ${result.topSubjects.map(s => `${s.canonical}(${s.mass})`).join(', ')}`);
+    if (result.topPredicates.length) lines.push(`top-predicates: ${result.topPredicates.map(p => `${p.predicate}×${p.n_subjects}`).join(', ')}`);
+    return lines.join('\n');
+  }
+  if (result.kind === 'slice') {
+    if (!result.rows.length && !result.peerGaps?.length) return `(empty slice${result.note ? ': ' + result.note : ''})`;
+    const lines = [];
+    for (const r of result.rows.slice(0, 12)) {
+      const flags = [];
+      if (r.superposed) flags.push('superposed');
+      if (r.contested) flags.push('contested');
+      if (r.authors.includes('reader')) flags.push('reader');
+      const flag = flags.length ? ` [${flags.join(',')}]` : '';
+      lines.push(`${r.subject} | ${r.predicate} → ${r.value} (n=${r.n_events})${flag}`);
+      if (result.withGrounding && r.grounding) {
+        for (const g of r.grounding) lines.push(`   "${(g.span || '').slice(0, 140)}" — ${g.source}`);
+      }
+    }
+    if (result.peerGaps?.length) {
+      lines.push(`gaps: ${result.peerGaps.map(g => `${g.predicate}(${g.peers_having_it}/${g.total_peers})`).join(', ')}`);
+    }
+    if (result.rows.length > 12) lines.push(`…${result.rows.length - 12} more rows`);
+    return lines.join('\n');
+  }
+  return JSON.stringify(result);
+}
+
+// Meta-question detector — used by the heuristic compiler to route
+// "what's this about?" / "summary" / "tell me everything" to overview.
+const META_QUESTION_RE = /\b(what(?:'s| is)? (?:this|here|in here|going on|all this)?|summari[sz]e|overview|tell me everything|what do (?:you|we) have|what'?s in here)\b/i;
+
+// Build a compact vocab card the LLM can use to fuzzy-match without
+// pulling content. One line per entity, one line per predicate. Capped
+// by mass so on-device models don't choke.
+function buildVocabCard() {
+  const lines = [];
+  const ents = [];
+  for (const [id, info] of STATE.entities) {
+    if (!isEntityActive(id)) continue;
+    const mass = getAllDefsForSubject(id).filter(filterDefToActive).length;
+    ents.push({ id, info, mass });
+  }
+  ents.sort((a, b) => b.mass - a.mass);
+  const cap = Math.min(ents.length, 24);
+  if (ents.length) lines.push('ENTITIES (id │ canonical │ aliases):');
+  for (const e of ents.slice(0, cap)) {
+    const aliases = e.info.aliases.filter(a => a !== e.info.canonical).slice(0, 4).join(', ');
+    lines.push(`  ${e.id} │ ${e.info.canonical}${aliases ? ' │ ' + aliases : ''}`);
+  }
+  if (ents.length > cap) lines.push(`  …${ents.length - cap} more entities (use SIG(SEG(*,*,*)) to see them)`);
+
+  const predVocab = computePredicatesAt(STATE.activeCursor);
+  const preds = [...predVocab.entries()].sort((a, b) => b[1].count - a[1].count);
+  if (preds.length) {
+    lines.push('PREDICATES (name × n-subjects):');
+    for (const [name, info] of preds.slice(0, 18)) {
+      lines.push(`  ${name} × ${info.subjects.size}`);
+    }
+  }
+  const srcs = [...STATE.sources.values()].filter(s => s.enabled !== false);
+  if (srcs.length) {
+    lines.push(`SOURCES: ${srcs.map(s => s.name).join(' | ')}`);
+  }
+  return lines.join('\n');
+}
+
+// ─── LLM AS QUERY COMPILER ────────────────────────────────────────────
+// The LLM does not answer. It compiles a natural-language question into a
+// structured traversal plan in a constrained JSON schema and steps out
+// of the way. The runtime executes the plan; templates render the
+// answer; citations carry the proof. The model never sees source text.
+//
+// Plan schema (validated before execution):
+//   {
+//     intent: "overview" | "portrait" | "relation_probe" | "attribute_probe" | "search",
+//     subject: { canonical|alias }   // optional, present for portrait/probe intents
+//     subject_candidates: [string]   // when ambiguous; runtime renders chooser
+//     predicate: string | null       // canonical predicate name or null for portrait/overview
+//     predicate_class: string | null // semantic class hint (resolved against clusters)
+//     object_filter: { value }       // optional; filter for relation_probe target
+//     time_window: null              // not yet wired beyond cursor
+//     sources: "all"                 // not yet wired beyond active toggles
+//     confidence: "high" | "medium" | "low" | "ambiguous"
+//     clarifying_question: string | null
+//     fallback: "show_spans" | "ask"
+//   }
+
+const LIBRARIAN_COMPILER_SYSTEM = `You compile natural-language questions about a corpus into structured JSON traversal plans. You do not answer. You translate the question into a plan and stop.
+
+Output: ONE JSON object. No prose around it. No markdown fences. No explanation.
+
+Schema:
+{
+  "intent": "overview" | "portrait" | "relation_probe" | "attribute_probe" | "search",
+  "subject": "<canonical entity name from registry>" | null,
+  "subject_candidates": ["<canonical name>", ...],
+  "predicate": "<exact predicate name from list>" | null,
+  "predicate_class": "<class label>" | null,
+  "object_filter": "<exact entity name or value substring>" | null,
+  "confidence": "high" | "medium" | "low" | "ambiguous",
+  "clarifying_question": "<one sentence>" | null,
+  "fallback": "show_spans" | "ask"
+}
+
+Intent reading:
+- "what's this about" / "summary" / "overview" → "overview"
+- "tell me about X" / "who is X" → "portrait" with subject=X
+- "who/what did X marry / employ / govern / write" → "relation_probe"
+- "how is X paid / funded / accountable" → "attribute_probe"
+- short keyword search → "search"
+
+Rules:
+- subject must come from the entity registry below. Do not invent names.
+- predicate must come from the predicate list, or be null. Use predicate_class to hint at family when no exact match exists.
+- If the question could refer to two or more entities, emit subject_candidates (full canonicals from registry) and confidence "ambiguous" and a clarifying_question.
+- If you can't compile confidently, emit confidence "low" and fallback "show_spans".
+- Never emit prose. Never explain. Never quote.
+
+Examples:
+
+Question: what's this about?
+{"intent":"overview","subject":null,"subject_candidates":[],"predicate":null,"predicate_class":null,"object_filter":null,"confidence":"high","clarifying_question":null,"fallback":"show_spans"}
+
+Question: tell me about Liz
+Registry shows: Elizabeth Bennet (Liz, Lizzy)
+{"intent":"portrait","subject":"Elizabeth Bennet","subject_candidates":[],"predicate":null,"predicate_class":null,"object_filter":null,"confidence":"high","clarifying_question":null,"fallback":"show_spans"}
+
+Question: who did Elizabeth marry
+Registry shows: Elizabeth Bennet, Elizabeth I
+{"intent":"relation_probe","subject":null,"subject_candidates":["Elizabeth Bennet","Elizabeth I"],"predicate":null,"predicate_class":"marriage","object_filter":null,"confidence":"ambiguous","clarifying_question":"Which Elizabeth did you mean?","fallback":"ask"}`;
+
+const PLAN_INTENTS = new Set(['overview', 'portrait', 'relation_probe', 'attribute_probe', 'search']);
+const PLAN_CONFIDENCES = new Set(['high', 'medium', 'low', 'ambiguous']);
+const PLAN_FALLBACKS = new Set(['show_spans', 'ask']);
+
+// Validate a candidate plan object. Returns { ok: bool, plan, error }.
+function validateCompiledPlan(obj) {
+  if (!obj || typeof obj !== 'object') return { ok: false, error: 'not an object' };
+  if (!PLAN_INTENTS.has(obj.intent)) return { ok: false, error: `invalid intent "${obj.intent}"` };
+  if (!PLAN_CONFIDENCES.has(obj.confidence)) return { ok: false, error: `invalid confidence "${obj.confidence}"` };
+  if (obj.fallback && !PLAN_FALLBACKS.has(obj.fallback)) return { ok: false, error: `invalid fallback "${obj.fallback}"` };
+  // Coerce optional fields to canonical shape
+  const plan = {
+    intent: obj.intent,
+    subject: typeof obj.subject === 'string' && obj.subject.trim() ? obj.subject.trim() : null,
+    subject_candidates: Array.isArray(obj.subject_candidates) ? obj.subject_candidates.filter(x => typeof x === 'string') : [],
+    predicate: typeof obj.predicate === 'string' && obj.predicate.trim() ? obj.predicate.trim() : null,
+    predicate_class: typeof obj.predicate_class === 'string' && obj.predicate_class.trim() ? obj.predicate_class.trim() : null,
+    object_filter: typeof obj.object_filter === 'string' && obj.object_filter.trim() ? obj.object_filter.trim() : null,
+    confidence: obj.confidence,
+    clarifying_question: typeof obj.clarifying_question === 'string' && obj.clarifying_question.trim() ? obj.clarifying_question.trim() : null,
+    fallback: obj.fallback || 'show_spans',
+  };
+  return { ok: true, plan };
+}
+
+// Try to extract a JSON object from raw model output, even if it
+// wrapped it in markdown fences or chatter.
+function extractJSONObject(raw) {
+  if (!raw) return null;
+  let s = String(raw).trim();
+  // Strip markdown fences
+  s = s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  // Find the first balanced { … }
+  const start = s.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0;
+  for (let i = start; i < s.length; i++) {
+    if (s[i] === '{') depth++;
+    else if (s[i] === '}') { depth--; if (depth === 0) {
+      const piece = s.slice(start, i + 1);
+      try { return JSON.parse(piece); } catch (e) { return null; }
+    } }
+  }
+  return null;
+}
+
+// Compile a question into a structured plan via the LLM. Returns a
+// validated plan or null if the model can't be used / produces garbage.
+// On invalid output we re-prompt once with the schema error attached;
+// after that we hand off to the heuristic compiler.
+async function compileQueryPlan(question) {
+  if (!isLLMReady()) return null;
+  const vocab = buildVocabCard();
+  const userMsg = `Registry:\n${vocab}\n\nQuestion: ${question}\n\nReturn the JSON plan only.`;
+  let raw;
+  try {
+    raw = await callLLM(LIBRARIAN_COMPILER_SYSTEM, userMsg, 280, 'librarian-compiler');
+  } catch (e) {
+    return null;
+  }
+  let obj = extractJSONObject(raw);
+  let v = obj ? validateCompiledPlan(obj) : { ok: false, error: 'no JSON found' };
+  if (!v.ok) {
+    // One re-prompt with schema error attached.
+    try {
+      const reMsg = userMsg + `\n\nPrevious response failed validation (${v.error}). Return ONLY a valid JSON object matching the schema.`;
+      const raw2 = await callLLM(LIBRARIAN_COMPILER_SYSTEM, reMsg, 280, 'librarian-compiler-retry');
+      obj = extractJSONObject(raw2);
+      v = obj ? validateCompiledPlan(obj) : { ok: false, error: 'no JSON found (retry)' };
+    } catch (e) { return null; }
+  }
+  return v.ok ? v.plan : null;
+}
+
+// ─── EMBEDDING-AUGMENTED ENTITY RESOLUTION ───────────────────────────
+// Embeddings rank, the graph answers. When alias matching misses, we
+// optionally fall back to cosine similarity against per-entity centroids
+// (mean of the entity's DEF embeddings). High threshold (0.75+) so we
+// don't silently mis-attribute spans. Every embedding-derived candidate
+// carries match_method='embedding' visibly through the UI.
+
+const ENTITY_CENTROID_THRESHOLD = 0.75;
+
+const ENTITY_CENTROID_CACHE = {
+  byId: new Map(),       // entityId → Float32Array centroid
+  builtAtCount: 0,       // STATE.G length when last built; rebuild on growth
+};
+
+// Build (or rebuild) the per-entity centroid index. Called lazily.
+function ensureEntityCentroids() {
+  if (EMBEDDER.status !== 'ready') return false;
+  if (ENTITY_CENTROID_CACHE.builtAtCount === STATE.G.length) return true;
+  ENTITY_CENTROID_CACHE.byId.clear();
+  for (const [id] of STATE.entities) {
+    if (!isEntityActive(id)) continue;
+    const defs = getAllDefsForSubject(id);
+    const vecs = [];
+    for (const def of defs) {
+      // Use the originating event's embedding when available
+      for (const g of def.grounding) {
+        const vec = EMBEDDING_STORE.byEventId.get(g.sourceEventId);
+        if (vec) vecs.push(vec);
+      }
+    }
+    if (!vecs.length) continue;
+    // Average int8 vectors → float32 centroid (then renormalize)
+    const dim = vecs[0].length;
+    const acc = new Float32Array(dim);
+    for (const v of vecs) {
+      for (let i = 0; i < dim; i++) acc[i] += v[i];
+    }
+    let norm = 0;
+    for (let i = 0; i < dim; i++) { acc[i] /= vecs.length; norm += acc[i] * acc[i]; }
+    norm = Math.sqrt(norm) || 1;
+    for (let i = 0; i < dim; i++) acc[i] /= norm;
+    ENTITY_CENTROID_CACHE.byId.set(id, acc);
+  }
+  ENTITY_CENTROID_CACHE.builtAtCount = STATE.G.length;
+  return true;
+}
+
+// Cosine similarity between Float32 query vector and Int8 centroid (the
+// store quantizes for space; centroids are Float32 but we re-quantize
+// on the fly when comparing). Both should be L2-normalized.
+function cosineFloat32Int8(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * (b[i] / QUANT_SCALE);
+  return dot;
+}
+function cosineFloat32Float32(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  return dot;
+}
+
+// Resolve a query string to candidate entities by embedding centroid.
+// Returns an array of { id, info, score, method } sorted by score desc.
+async function resolveEntitiesByEmbedding(query, k = 3) {
+  if (EMBEDDER.status !== 'ready') return [];
+  if (!ensureEntityCentroids()) return [];
+  const qVec = await embedText(query);
+  if (!qVec) return [];
+  const out = [];
+  for (const [id, centroid] of ENTITY_CENTROID_CACHE.byId) {
+    const score = cosineFloat32Float32(qVec, centroid);
+    if (score >= ENTITY_CENTROID_THRESHOLD) {
+      out.push({ id, info: STATE.entities.get(id), score, method: 'embedding' });
+    }
+  }
+  out.sort((a, b) => b.score - a.score);
+  return out.slice(0, k);
+}
+
+// ─── PREDICATE-CLASS CLUSTERING ───────────────────────────────────────
+// Predicate names are emergent ("marries", "married-to", "wedded"). We
+// cluster them by embedding similarity into stable classes so the
+// compiler can emit a class hint and the runtime can resolve to all
+// member predicates. Rebuilds on data-change; cached otherwise.
+
+const PREDICATE_CLUSTER_THRESHOLD = 0.65;  // cosine
+const PREDICATE_CLUSTER_CACHE = {
+  classes: [],          // [{label, members:[predName], centroid:Float32Array}]
+  builtAtPredCount: 0,
+};
+
+async function ensurePredicateClasses() {
+  if (EMBEDDER.status !== 'ready') return false;
+  const predVocab = computePredicatesAt(STATE.activeCursor);
+  if (PREDICATE_CLUSTER_CACHE.builtAtPredCount === predVocab.size) return true;
+  const preds = [...predVocab.keys()];
+  if (!preds.length) {
+    PREDICATE_CLUSTER_CACHE.classes = [];
+    PREDICATE_CLUSTER_CACHE.builtAtPredCount = 0;
+    return true;
+  }
+  // Embed each predicate name. Cap to avoid LLM hammering on big corpora.
+  const cap = Math.min(preds.length, 80);
+  const embedded = [];
+  for (let i = 0; i < cap; i++) {
+    const v = await embedText(preds[i].replace(/-/g, ' '));
+    if (v) embedded.push({ name: preds[i], vec: v });
+  }
+  // Greedy single-pass clustering
+  const classes = [];
+  for (const e of embedded) {
+    let bestClass = null, bestSim = 0;
+    for (const c of classes) {
+      const sim = cosineFloat32Float32(e.vec, c.centroid);
+      if (sim > bestSim) { bestSim = sim; bestClass = c; }
+    }
+    if (bestClass && bestSim >= PREDICATE_CLUSTER_THRESHOLD) {
+      bestClass.members.push(e.name);
+      // update centroid (running mean)
+      const n = bestClass.members.length;
+      const dim = bestClass.centroid.length;
+      for (let i = 0; i < dim; i++) bestClass.centroid[i] = ((n - 1) * bestClass.centroid[i] + e.vec[i]) / n;
+      // renormalize
+      let norm = 0;
+      for (let i = 0; i < dim; i++) norm += bestClass.centroid[i] * bestClass.centroid[i];
+      norm = Math.sqrt(norm) || 1;
+      for (let i = 0; i < dim; i++) bestClass.centroid[i] /= norm;
+    } else {
+      classes.push({ label: e.name, members: [e.name], centroid: e.vec.slice() });
+    }
+  }
+  PREDICATE_CLUSTER_CACHE.classes = classes;
+  PREDICATE_CLUSTER_CACHE.builtAtPredCount = predVocab.size;
+  return true;
+}
+
+// Resolve a predicate_class hint to a set of predicate names. Tries
+// label match first, then embedding-distance to each cluster's centroid.
+async function resolvePredicateClass(classHint) {
+  if (!classHint) return [];
+  const cls = PREDICATE_CLUSTER_CACHE.classes;
+  if (!cls.length) return [];
+  // Direct label match
+  for (const c of cls) {
+    if (c.label.toLowerCase() === String(classHint).toLowerCase()) return [...c.members];
+    if (c.members.some(m => m.toLowerCase() === String(classHint).toLowerCase())) return [...c.members];
+  }
+  // Embedding match
+  if (EMBEDDER.status !== 'ready') return [];
+  const v = await embedText(String(classHint).replace(/-/g, ' '));
+  if (!v) return [];
+  let best = null, bestSim = 0;
+  for (const c of cls) {
+    const sim = cosineFloat32Float32(v, c.centroid);
+    if (sim > bestSim) { bestSim = sim; best = c; }
+  }
+  return (best && bestSim >= PREDICATE_CLUSTER_THRESHOLD) ? [...best.members] : [];
+}
+
+// Heuristic plan compiler — deterministic, used when the LLM is
+// unavailable or the compiler can't produce a valid plan twice.
+// Maps a question to the same shape so the runtime is uniform.
+function heuristicCompiledPlan(question) {
+  const q = String(question).trim();
+  const subject = resolveSubjectFromQuestion(q);
+  const isMeta = META_QUESTION_RE.test(q) || (!subject && q.length < 30);
+  if (isMeta) {
+    return {
+      intent: 'overview',
+      subject: null, subject_candidates: [],
+      predicate: null, predicate_class: null, object_filter: null,
+      confidence: 'high', clarifying_question: null, fallback: 'show_spans',
+    };
+  }
   if (!subject) {
     return {
-      kind: 'pre-distinction',
-      question, cursor, framing, compareCursor,
-      message: 'No subject in this question matches any entity in the corpus.',
+      intent: 'search',
+      subject: null, subject_candidates: [],
+      predicate: null, predicate_class: null, object_filter: null,
+      confidence: 'low', clarifying_question: null, fallback: 'show_spans',
     };
   }
-
-  const integral = computeIntegral(subject.id, cursor);
-  const peerGaps = computePeerGaps(subject.id, cursor);
-  const relevantPredicates = findRelevantPredicates(question, cursor);
-
-  // Direct hits: predicates the question matched, this subject HAS
-  const directHits = [];
-  for (const m of relevantPredicates) {
-    if (integral[m.predicate]) {
-      directHits.push({ predicate: m.predicate, defs: integral[m.predicate] });
+  // Subject resolved — pick a predicate by keyword if possible
+  const predVocab = computePredicatesAt(STATE.activeCursor);
+  const stopwords = new Set(['what','does','the','corpus','say','about','tell','me','how','is','are','a','an','of','to','and','or','in','on','for','with','do','have','has','was','were','where','when','who','why','this','that','these','those','did','will']);
+  const terms = q.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !stopwords.has(w));
+  let bestPred = null;
+  for (const [predName] of predVocab) {
+    const pl = predName.toLowerCase();
+    const plStem = stripVerbInflection(pl);
+    for (const term of terms) {
+      const ts = stripVerbInflection(term);
+      if (pl.includes(term) || pl.includes(ts) || plStem.includes(term) || plStem.includes(ts)) {
+        bestPred = predName; break;
+      }
+      if (normalizePredicate(term) && pl.includes(normalizePredicate(term))) {
+        bestPred = predName; break;
+      }
     }
+    if (bestPred) break;
   }
-
-  // Asked-about gaps: predicates the question matched, this subject DOES NOT have
-  const askedAboutGaps = [];
-  for (const m of relevantPredicates) {
-    if (integral[m.predicate]) continue;
-    const peerGap = peerGaps.find(g => g.predicate === m.predicate);
-    if (peerGap) {
-      askedAboutGaps.push(peerGap);
-    } else {
-      askedAboutGaps.push({
-        predicate: m.predicate,
-        peers_having_it: 0,
-        total_peers: 0,
-        peer_examples: [],
-        corpusWide: true,
-      });
-    }
-  }
-
-  // Compare-cursor counterfactual
-  let comparison = null;
-  if (compareCursor) {
-    const compareIntegral = computeIntegral(subject.id, compareCursor);
-    comparison = {
-      cursor: compareCursor,
-      integral: compareIntegral,
-      diff: diffIntegrals(integral, compareIntegral),
-    };
-  }
-
+  // WH-question shape detection drives intent: who/what/how typically
+  // mean the user wants a specific slot value (probe), where/when also.
+  const wh = /\b(who|what|how|when|where)\b/i.test(q);
   return {
-    kind: askedAboutGaps.length > 0 && directHits.length === 0 ? 'gap-finding' :
-          (directHits.length > 0 ? 'direct-hit' : 'portrait'),
-    question, cursor, framing, compareCursor,
-    subject,
-    relevantPredicates,
-    directHits,
-    askedAboutGaps,
-    integral,
-    peerGaps,
-    comparison,
+    intent: bestPred ? (wh ? 'relation_probe' : 'attribute_probe') : 'portrait',
+    subject: subject.canonical,
+    subject_candidates: [],
+    predicate: bestPred,
+    predicate_class: null,
+    object_filter: null,
+    confidence: 'medium',
+    clarifying_question: null,
+    fallback: 'show_spans',
   };
 }
 
-function diffIntegrals(curr, prev) {
-  const out = { added: [], removed: [], changed: [] };
-  for (const pred of Object.keys(curr)) {
-    if (!prev[pred]) out.added.push(pred);
-    else if (curr[pred].length !== prev[pred].length) out.changed.push(pred);
+// Translate a validated compiled plan into a SIG(SEG)/SIG(NUL) EO plan.
+// Async because predicate-class expansion and embedding-based subject
+// fallback can both require LLM-loaded resources. Returns null when
+// the plan needs disambiguation before execution.
+async function compiledToEOPlan(compiled, cursor, framing) {
+  if (compiled.intent === 'overview' || (!compiled.subject && !compiled.subject_candidates.length && !compiled.predicate && !compiled.predicate_class)) {
+    return { body: { op: 'NUL' }, cursor, framing };
   }
-  for (const pred of Object.keys(prev)) {
-    if (!curr[pred]) out.removed.push(pred);
+  if (compiled.confidence === 'ambiguous' && compiled.subject_candidates.length > 1 && !compiled.subject) {
+    return null;
   }
-  return out;
-}
+  let subjectStr = compiled.subject || compiled.subject_candidates[0] || null;
 
-// Build the structured findings payload for the LLM commentary call
-function buildCommentaryPayload(result) {
-  if (result.kind === 'pre-distinction') return result.message;
-  const lines = [];
-  lines.push(`Subject: ${result.subject.canonical}`);
-
-  if (result.relevantPredicates && result.relevantPredicates.length > 0) {
-    lines.push(`Question matched predicates: ${result.relevantPredicates.map(p => p.predicate).join(', ')}`);
-  }
-
-  if (result.directHits.length > 0) {
-    lines.push('');
-    lines.push('Direct findings (predicates matched, this subject HAS):');
-    for (const hit of result.directHits) {
-      for (const def of hit.defs) {
-        const valStr = def.valueIsEntity ? STATE.entities.get(def.value)?.canonical : def.value;
-        const weight = weightDef(def, result.framing);
-        const isSuperposed = hit.defs.length > 1;
-        lines.push(`  ${hit.predicate}: ${valStr} [${def.grounding.length} events, framing-weight ${weight.toFixed(2)}${isSuperposed ? ', SUPERPOSED with ' + (hit.defs.length - 1) + ' other(s)' : ''}]`);
+  // Embedding-based subject resolution when alias misses. Sets
+  // compiled.subject_match_method = 'embedding' visibly.
+  if (!subjectStr && compiled.intent !== 'search' && EMBEDDER.status === 'ready') {
+    // We need a query string for embedding — fall back to using the
+    // compiled clarifying_question or the predicate as a hint. Skip if
+    // there's nothing usable.
+    const hint = compiled.clarifying_question || compiled.predicate || compiled.predicate_class;
+    if (hint) {
+      const cands = await resolveEntitiesByEmbedding(hint, 3);
+      if (cands.length === 1 && cands[0].score >= ENTITY_CENTROID_THRESHOLD) {
+        subjectStr = cands[0].info.canonical;
+        compiled.subject = subjectStr;
+        compiled.subject_match_method = 'embedding';
+        compiled.subject_match_score = cands[0].score;
+      } else if (cands.length > 1) {
+        // Ambiguous via embedding — bubble back to the chooser
+        compiled.subject_candidates = cands.map(c => c.info.canonical);
+        compiled.confidence = 'ambiguous';
+        compiled.subject_match_method = 'embedding';
+        return null;
       }
     }
   }
+  // Default mark for alias-resolved subjects
+  if (subjectStr && !compiled.subject_match_method) compiled.subject_match_method = 'alias';
 
-  if (result.askedAboutGaps.length > 0) {
-    lines.push('');
-    lines.push('Asked-about gaps (predicates matched, this subject DOES NOT have):');
-    for (const g of result.askedAboutGaps) {
-      if (g.corpusWide) {
-        lines.push(`  ${g.predicate}: corpus-wide silence (no subject in corpus has this predicate)`);
-      } else {
-        const peerNames = g.peer_examples.map(id => STATE.entities.get(id)?.canonical || id).join(', ');
-        lines.push(`  ${g.predicate}: peer gap — ${g.peers_having_it}/${g.total_peers} similar subjects have it (${peerNames}); this subject does not`);
-      }
+  // Predicate filter: prefer exact name; otherwise expand class to
+  // member set; otherwise wildcard.
+  let pFilter = '*';
+  if (compiled.predicate) {
+    pFilter = compiled.predicate;
+  } else if (compiled.predicate_class) {
+    const members = await resolvePredicateClass(compiled.predicate_class);
+    if (members.length) {
+      pFilter = members;
+      compiled.predicate_match_method = 'class_embedding';
     }
   }
 
-  // Other filled predicates not asked about (top 6 by weight)
-  const askedSet = new Set([
-    ...result.directHits.map(h => h.predicate),
-    ...result.askedAboutGaps.map(g => g.predicate),
-  ]);
-  const otherFilled = [];
-  for (const [pred, defs] of Object.entries(result.integral)) {
-    if (askedSet.has(pred)) continue;
-    for (const def of defs) {
-      const w = weightDef(def, result.framing);
-      otherFilled.push({ pred, def, weight: w });
-    }
-  }
-  otherFilled.sort((a, b) => b.weight - a.weight);
-
-  if (otherFilled.length > 0) {
-    lines.push('');
-    lines.push('Other filled predicates for this subject:');
-    for (const item of otherFilled.slice(0, 6)) {
-      const valStr = item.def.valueIsEntity ? STATE.entities.get(item.def.value)?.canonical : item.def.value;
-      lines.push(`  ${item.pred}: ${valStr} [${item.def.grounding.length} events]`);
-    }
-  }
-
-  if (result.comparison) {
-    lines.push('');
-    lines.push(`Comparison cursor (${describeCursor(result.comparison.cursor)}):`);
-    lines.push(`  Predicates added since: ${result.comparison.diff.added.join(', ') || '(none)'}`);
-    lines.push(`  Predicates with new values since: ${result.comparison.diff.changed.join(', ') || '(none)'}`);
-  }
-
-  return lines.join('\n');
+  if (!subjectStr) return { body: { op: 'NUL' }, cursor, framing };
+  return {
+    body: {
+      op: 'SEG',
+      s: subjectStr,
+      p: pFilter,
+      v: compiled.object_filter || '*',
+    },
+    cursor, framing,
+    withGrounding: true,
+  };
 }
-// ─── RENDER ──────────────────────────────────────────────────────────
 
-function renderQueryResult(result) {
-  // Append a new turn block to the chat transcript. Each turn has a
-  // unique id so the librarian commentary callback can update the
-  // right block when its async LLM call returns.
+// ─── LIBRARIAN TURN ──────────────────────────────────────────────────
+// One question → one turn. A turn carries:
+//   compiled  — the validated JSON plan from the compiler (LLM or heuristic)
+//   plans     — the EO query lines actually executed (for the audit trail)
+//   answer    — the templated, mechanically-assembled answer (HTML, with
+//               hyperlinked entities and citation markers). Never LLM
+//               prose. The "summarize this" affordance generates LLM
+//               prose separately and stores it in `summary` without
+//               replacing `answer`.
+//   summary   — optional opt-in LLM-prose explanation, separate from
+//               the citation-bearing answer
+
+async function runLibrarianTurn(question, cursor, framing, opts = {}) {
+  const turnId = 'turn-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
+
+  // 1. Compile question → structured JSON plan
+  let compiled = null;
+  let usedCompiler = false;
+  if (isLLMReady() && !opts.heuristicOnly) {
+    usedCompiler = true;
+    compiled = await compileQueryPlan(question);
+  }
+  if (!compiled) {
+    compiled = heuristicCompiledPlan(question);
+  }
+
+  // 2. If ambiguous, pause execution — the renderer shows a chooser.
+  //    The chooser callback re-runs runLibrarianTurn with a resolved
+  //    subject prepended to the question (or directly via opts.subject).
+  if (compiled.confidence === 'ambiguous' &&
+      compiled.subject_candidates.length > 1 &&
+      !compiled.subject &&
+      !opts.subject) {
+    return {
+      turnId, question, cursor, framing,
+      compiled,
+      plans: [],
+      answer: null,
+      summary: null,
+      pending_disambiguation: true,
+      usedCompiler,
+      timestamp: Date.now(),
+    };
+  }
+
+  // Allow the chooser to pin a subject and re-run with everything else
+  // from compiled intact.
+  if (opts.subject) compiled = { ...compiled, subject: opts.subject, confidence: 'high', subject_candidates: [] };
+
+  // 3. Translate compiled → EO plan, execute. Lazily refresh the
+  //    predicate-class index if the corpus has changed.
+  if (EMBEDDER.status === 'ready') {
+    try { await ensurePredicateClasses(); } catch (e) { /* clusters stay stale */ }
+  }
+  const eoPlan = await compiledToEOPlan(compiled, cursor, framing);
+
+  // If embedding-resolution bumped subject_candidates back, re-check
+  // disambiguation status and surface the chooser.
+  if (!eoPlan && compiled.confidence === 'ambiguous' && compiled.subject_candidates.length > 1) {
+    return {
+      turnId, question, cursor, framing,
+      compiled,
+      plans: [],
+      answer: null,
+      summary: null,
+      pending_disambiguation: true,
+      usedCompiler,
+      timestamp: Date.now(),
+    };
+  }
+
+  const plans = [];
+  if (eoPlan) {
+    const result = executeEOPlan(eoPlan);
+    plans.push({ plan: eoPlan, result, line: formatPlanLine(eoPlan) });
+  }
+
+  // 4. Templated answer — mechanical assembly from rows
+  const answer = assembleTemplatedAnswer(compiled, plans[0]?.result);
+
+  return {
+    turnId, question, cursor, framing,
+    compiled,
+    plans,
+    answer,            // HTML string with hyperlinks + citation markers
+    summary: null,     // populated only by user-clicked "summarize this"
+    summaryWarning: null,
+    pending_disambiguation: false,
+    usedCompiler,
+    timestamp: Date.now(),
+  };
+}
+
+// ─── TEMPLATED ANSWER ASSEMBLY ───────────────────────────────────────
+// Mechanical, dictionary-driven sentence assembly from runtime rows.
+// Stiff on purpose — every word is either from the graph or from a
+// hard-coded connective vocabulary. No LLM in this path.
+//
+// Output: an HTML string with hyperlinked entities and citation markers.
+// Citation markers look like `<sup class="cite" data-def-id=… data-g=…>[1]</sup>`
+// and the click handler routes them to the source-span modal.
+
+const CITE_CONNECTIVES = {
+  according_to: 'according to',
+  per: 'per',
+  silent_on: 'The corpus is silent on',
+  also_says: 'Another source instead names',
+  contested: 'contested',
+  reader_note: 'a reader notes',
+};
+
+// Predicate shape inference — emergent predicates can take many forms:
+//   verb-shaped:  "marries", "governs", "founded"      → "<S> <pred> <V>."
+//   relational:   "is-spouse-of", "is-employed-by"     → "<S> is <noun-of-pred> <V>."
+//   attributive:  "has-trait", "has-character"         → "<S> is described as <V>."
+//   has-X:        "has-budget", "has-address"          → "<S>'s <X> is <V>."
+//   property-of:  bare nominal predicate ("budget")    → "<S>'s <pred> is <V>."
+function inferPredicateShape(pred) {
+  const p = String(pred || '').toLowerCase().trim();
+  if (!p) return 'attributive';
+  if (p.startsWith('is-') || p.startsWith('was-') || p.endsWith('-of') || p.endsWith('-by') || p.endsWith('-to') || p.endsWith('-with')) return 'relational';
+  if (p.startsWith('has-')) return 'has_x';
+  // Heuristic: if it looks like a single verb (no hyphens, ends in
+  // common verb endings), treat as verb.
+  if (!p.includes('-') && /(s|ed|ing|es)$/.test(p)) return 'verb';
+  if (!p.includes('-')) return 'property';
+  return 'attributive';
+}
+
+// Render a predicate as a natural-language fragment. For "is-spouse-of"
+// → "spouse of". For "has-budget" → "budget". For "marries" → "marries".
+function readablePredicate(pred) {
+  const p = String(pred || '');
+  const shape = inferPredicateShape(p);
+  if (shape === 'has_x') return p.replace(/^has-/, '').replace(/-/g, ' ');
+  if (shape === 'relational') return p.replace(/^is-/, '').replace(/^was-/, 'was ').replace(/-/g, ' ');
+  return p.replace(/-/g, ' ');
+}
+
+// Build an entity hyperlink — clickable, opens the entity inspector.
+function entityLink(entityIdOrCanonical) {
+  if (!entityIdOrCanonical) return '';
+  let id = entityIdOrCanonical;
+  let canonical = entityIdOrCanonical;
+  if (STATE.entities.has(entityIdOrCanonical)) {
+    canonical = STATE.entities.get(entityIdOrCanonical).canonical;
+  } else {
+    // Resolve canonical → id
+    for (const [eid, info] of STATE.entities) {
+      if (info.canonical === entityIdOrCanonical) { id = eid; break; }
+    }
+  }
+  return `<a class="entity-link" data-entity-id="${escapeHtml(id)}" href="#" title="Show this entity in the inspector">${escapeHtml(canonical)}</a>`;
+}
+
+// Citation marker — superscript bracketed number, click opens modal.
+function citationMarker(defId, groundingIdx, n) {
+  return `<sup class="citation" data-def-id="${escapeHtml(defId)}" data-grounding-idx="${groundingIdx}" tabindex="0" title="Show the cited source span">[${n}]</sup>`;
+}
+
+// Render a single value (scalar or entity) as inline HTML.
+function renderValueInline(def) {
+  if (def.valueIsEntity) {
+    const ent = STATE.entities.get(def.value);
+    return entityLink(ent ? ent.id : def.value);
+  }
+  return escapeHtml(String(def.value));
+}
+
+// Find the best primary grounding for a def — prefer non-reader,
+// most-recent. Returns { def, groundingIdx } for citation purposes.
+function primaryGroundingFor(def) {
+  if (!def || !def.grounding || !def.grounding.length) return null;
+  // Prefer non-reader sources for the primary citation; reader notes
+  // get rendered separately so the reader's voice is visibly distinct.
+  let bestIdx = 0;
+  for (let i = 0; i < def.grounding.length; i++) {
+    const g = def.grounding[i];
+    const isReader = g.authoredBy === 'reader' || g.sourceId === 'reader';
+    if (!isReader) { bestIdx = i; break; }
+  }
+  return { def, groundingIdx: bestIdx };
+}
+
+// Assemble a templated answer for a portrait-shaped result (one
+// subject, multiple predicates).
+function templatePortrait(result, compiled) {
+  if (!result || !result.rows.length) {
+    return `<p class="templated">${CITE_CONNECTIVES.silent_on} ${entityLink(compiled.subject)}.</p>`;
+  }
+  const subj = result.rows[0].subject;
+  const subjLink = entityLink(result.rows[0].subject_id);
+  // Group rows by predicate; render the heaviest 4
+  const byPred = new Map();
+  for (const r of result.rows) {
+    if (!byPred.has(r.predicate)) byPred.set(r.predicate, []);
+    byPred.get(r.predicate).push(r);
+  }
+  const order = [...byPred.entries()].sort((a, b) => {
+    const wa = Math.max(...a[1].map(r => r.weight));
+    const wb = Math.max(...b[1].map(r => r.weight));
+    return wb - wa;
+  }).slice(0, 4);
+  const sentences = [];
+  for (const [pred, rs] of order) {
+    sentences.push(renderPredicateClause(subj, subjLink, pred, rs));
+  }
+  return `<p class="templated">${sentences.join(' ')}</p>`;
+}
+
+// Assemble a templated answer for a probe-shaped result (one subject,
+// one predicate slot — the user wants that slot's value).
+function templateProbe(result, compiled) {
+  if (!result || !result.rows.length) {
+    if (compiled.predicate) {
+      return `<p class="templated">${CITE_CONNECTIVES.silent_on} ${entityLink(compiled.subject)}'s ${escapeHtml(readablePredicate(compiled.predicate))}.</p>`;
+    }
+    return `<p class="templated">${CITE_CONNECTIVES.silent_on} ${entityLink(compiled.subject)}.</p>`;
+  }
+  const subj = result.rows[0].subject;
+  const subjLink = entityLink(result.rows[0].subject_id);
+  // Filter to rows matching the asked predicate if compiler picked one
+  let rows = result.rows;
+  if (compiled.predicate) {
+    rows = result.rows.filter(r => r.predicate === compiled.predicate);
+    if (!rows.length) rows = result.rows;
+  }
+  // Group by predicate; usually just the one
+  const byPred = new Map();
+  for (const r of rows) {
+    if (!byPred.has(r.predicate)) byPred.set(r.predicate, []);
+    byPred.get(r.predicate).push(r);
+  }
+  const sentences = [];
+  for (const [pred, rs] of byPred) {
+    sentences.push(renderPredicateClause(subj, subjLink, pred, rs));
+  }
+  return `<p class="templated">${sentences.join(' ')}</p>`;
+}
+
+// Core sentence renderer for one (subject, predicate, [defs]) tuple.
+// Handles superposition by rendering one primary value plus a
+// "Another source instead names…" suffix.
+function renderPredicateClause(subjCanonical, subjLink, pred, rs) {
+  // Sort by weight descending; rs are slice rows, already ranked
+  const ranked = [...rs].sort((a, b) => b.weight - a.weight);
+  const primary = ranked[0];
+  const alternates = ranked.slice(1);
+  const primaryDef = (() => {
+    for (const defs of STATE.defs.values()) {
+      const f = defs.find(d => d.id === primary.def_id);
+      if (f) return f;
+    }
+    return null;
+  })();
+  const primaryCite = primaryDef ? primaryGroundingFor(primaryDef) : null;
+  const valueHtml = primaryDef ? renderValueInline(primaryDef) : escapeHtml(String(primary.value));
+  const cite = primaryCite ? citationMarker(primary.def_id, primaryCite.groundingIdx, 1) : '';
+  const shape = inferPredicateShape(pred);
+  let main;
+  if (shape === 'verb') {
+    main = `${subjLink} ${escapeHtml(pred)} ${valueHtml}${cite}.`;
+  } else if (shape === 'relational') {
+    main = `${subjLink} is ${escapeHtml(readablePredicate(pred))} ${valueHtml}${cite}.`;
+  } else if (shape === 'has_x') {
+    main = `${subjLink}'s ${escapeHtml(readablePredicate(pred))} is ${valueHtml}${cite}.`;
+  } else if (shape === 'property') {
+    main = `${subjLink}'s ${escapeHtml(pred)} is ${valueHtml}${cite}.`;
+  } else {
+    main = `${subjLink} is described as ${valueHtml}${cite} for ${escapeHtml(pred)}.`;
+  }
+  // Superposition / contested handling: append "Another source instead names…"
+  if (alternates.length > 0) {
+    const alt = alternates[0];
+    const altDef = (() => {
+      for (const defs of STATE.defs.values()) {
+        const f = defs.find(d => d.id === alt.def_id);
+        if (f) return f;
+      }
+      return null;
+    })();
+    const altCite = altDef ? primaryGroundingFor(altDef) : null;
+    const altValHtml = altDef ? renderValueInline(altDef) : escapeHtml(String(alt.value));
+    const altMarker = altCite ? citationMarker(alt.def_id, altCite.groundingIdx, 2) : '';
+    main += ` ${CITE_CONNECTIVES.also_says} ${altValHtml}${altMarker}${alt.contested ? ' (' + CITE_CONNECTIVES.contested + ')' : ''}.`;
+  }
+  return main;
+}
+
+// Templated answer for an overview (corpus summary) intent.
+function templateOverview(result) {
+  if (!result || result.kind !== 'corpus-summary') return '<p class="templated">No corpus loaded.</p>';
+  if (result.n_entities === 0) {
+    return `<p class="templated">The corpus is empty. Ingest a source to begin.</p>`;
+  }
+  const sources = result.sources.map(s => escapeHtml(s.name)).join(', ');
+  const subjs = result.topSubjects.slice(0, 3).map(s => entityLink(s.id)).join(', ');
+  const preds = result.topPredicates.slice(0, 5).map(p => escapeHtml(p.predicate)).join(', ');
+  const parts = [];
+  parts.push(`The corpus draws on ${result.sources.length} source${result.sources.length === 1 ? '' : 's'} (${sources}), tracking ${result.n_entities} entit${result.n_entities === 1 ? 'y' : 'ies'} across ${result.n_predicates} predicate${result.n_predicates === 1 ? '' : 's'}.`);
+  if (subjs) parts.push(`Top subjects by mass: ${subjs}.`);
+  if (preds) parts.push(`Common predicates: ${preds}.`);
+  return `<p class="templated">${parts.join(' ')}</p>`;
+}
+
+// Top-level dispatcher — picks template by intent.
+function assembleTemplatedAnswer(compiled, result) {
+  if (!compiled) return null;
+  if (compiled.intent === 'overview') return templateOverview(result);
+  if (compiled.intent === 'portrait') return templatePortrait(result, compiled);
+  if (compiled.intent === 'relation_probe' || compiled.intent === 'attribute_probe') return templateProbe(result, compiled);
+  if (compiled.intent === 'search') {
+    if (!result || !result.rows?.length) return `<p class="templated">No findings match. Try a more specific question, or ${CITE_CONNECTIVES.silent_on.toLowerCase()} this query.</p>`;
+    return templatePortrait(result, compiled);
+  }
+  return null;
+}
+
+// ─── RENDER (TWO-PANE) ───────────────────────────────────────────────
+// Left pane = conversation. Each turn = question + prose answer +
+// compact meta. Click a turn → it focuses and the right pane shows the
+// plan trace + findings + reader composer for that turn.
+//
+// LIBRARIAN_TURNS is the source of truth for what's on screen; both
+// panes re-render from it. Turns persist across the session.
+
+const LIBRARIAN_TURNS = [];
+let FOCUSED_TURN_ID = null;
+let FOCUSED_PLAN_INDEX = 0;  // which plan line within the focused turn
+
+function appendLibrarianTurn(turn) {
+  LIBRARIAN_TURNS.push(turn);
+  FOCUSED_TURN_ID = turn.turnId;
+  FOCUSED_PLAN_INDEX = 0;
+  renderLibrarianTranscript();
+  renderEvidencePane();
+  // Scroll left pane to show the new turn
+  const left = document.querySelector('.librarian-left');
+  if (left) left.scrollTop = left.scrollHeight;
+}
+
+function updateLibrarianTurn(turnId, updater) {
+  const t = LIBRARIAN_TURNS.find(x => x.turnId === turnId);
+  if (!t) return;
+  updater(t);
+  renderLibrarianTranscript();
+  if (FOCUSED_TURN_ID === turnId) renderEvidencePane();
+}
+
+function focusLibrarianTurn(turnId, planIdx = 0) {
+  FOCUSED_TURN_ID = turnId;
+  FOCUSED_PLAN_INDEX = planIdx;
+  renderLibrarianTranscript();
+  renderEvidencePane();
+  // Show the right pane if the user collapsed it
+  const right = document.querySelector('.librarian-right');
+  if (right) right.classList.remove('collapsed');
+}
+
+function renderLibrarianTranscript() {
   const transcript = document.getElementById('chat-transcript');
   if (!transcript) return;
-  // Remove the empty-state if present
-  const empty = transcript.querySelector('.empty-state');
-  if (empty) empty.remove();
+  if (LIBRARIAN_TURNS.length === 0) {
+    transcript.innerHTML = `<div class="empty-state">Ingest a source, then ask the librarian. Answers come assembled from the graph with citations to the source spans they came from.</div>`;
+    return;
+  }
+  let html = '';
+  for (const t of LIBRARIAN_TURNS) {
+    const isFocused = t.turnId === FOCUSED_TURN_ID;
+    const planSummary = t.plans.map(p => p.line).slice(0, 1).join(' · ') + (t.plans.length > 1 ? ` · +${t.plans.length - 1} more` : '');
 
-  const turnId = 'turn-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
-  const block = document.createElement('div');
-  block.className = 'chat-turn';
-  block.setAttribute('data-turn-id', turnId);
-  block.style.cssText = 'margin-bottom: 28px; padding-bottom: 16px; border-bottom: 1px solid var(--rule);';
+    // Body: pending → loading; ambiguous → chooser stub; otherwise the
+    // templated answer. If the typed-edit layer has produced a
+    // validated edited version and the global mode is 'edited' (or
+    // 'diff'), we render that instead. The 'raw' mode always shows
+    // the canonical mechanical answer.
+    let answerHtml;
+    if (t.pending) {
+      answerHtml = `<div class="turn-answer loading">walking the graph…</div>`;
+    } else if (t.pending_disambiguation) {
+      const cands = (t.compiled?.subject_candidates || []).map(c => escapeHtml(c)).join(' or ');
+      answerHtml = `<div class="turn-answer loading">${escapeHtml(t.compiled?.clarifying_question || 'Which one did you mean?')} — ${cands || 'see chooser at right'}</div>`;
+    } else if (t.answer) {
+      const mode = STATE.editsRenderMode || 'edited';
+      const haveEdits = !!(t.editedAnswer && t.edits && t.edits.length);
+      let bodyHTML;
+      if (haveEdits && mode === 'diff') {
+        // Diff mode shows the edited version with edits annotated for
+        // hover-explain — the visual signal is preserved (brackets
+        // around inserts, italic/highlight on substitutions).
+        bodyHTML = `<div class="answer-mode-diff">${t.editedAnswer}</div>`;
+        bodyHTML += `<div class="answer-raw-companion"><span class="muted">raw:</span> ${t.answer}</div>`;
+      } else if (haveEdits && mode === 'edited') {
+        bodyHTML = t.editedAnswer;
+      } else {
+        // mode === 'raw', or no edits available yet
+        bodyHTML = t.answer;
+      }
+      const editsBadge = haveEdits
+        ? `<span class="edits-badge" data-turn-id="${escapeHtml(t.turnId)}">${t.edits.length} edit${t.edits.length === 1 ? '' : 's'}${mode === 'edited' ? '' : ' · ' + mode}</span>`
+        : (t.editsRequested && !t.editsError ? `<span class="edits-badge pending">editor working…</span>` : '');
+      answerHtml = `<div class="turn-answer">${bodyHTML}${editsBadge ? ' ' + editsBadge : ''}</div>`;
+    } else {
+      answerHtml = `<div class="turn-answer loading">no findings — see right pane for spans matching this query</div>`;
+    }
 
-  // ── User question (their voice, marked) ──
-  const userBlock = `
-    <div style="margin-bottom: 12px;">
-      <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:4px;">you</div>
-      <div style="font-family:'Newsreader',serif;font-size:15px;line-height:1.5;color:var(--ink);">${escapeHtml(result.question)}</div>
-    </div>`;
-
-  if (result.kind === 'pre-distinction') {
-    block.innerHTML = userBlock + `
-      <div class="commentary-card">
-        <div class="label">Librarian</div>
-        <div class="commentary-body">${escapeHtml(result.message)}</div>
+    // Optional summary panel: only shown when the user has revealed it.
+    let summaryBlock = '';
+    if (t.summary) {
+      summaryBlock = `<div class="turn-summary">
+        <div class="turn-summary-warning">⚠ LLM-generated summary · may smooth over distinctions or introduce drift. The cited answer above is the structural truth.</div>
+        <div class="turn-summary-body">${escapeHtml(t.summary)}</div>
       </div>`;
-    transcript.appendChild(block);
-    transcript.scrollTop = transcript.scrollHeight;
+    }
+
+    // Compiled-plan badge: shows the intent + confidence + match method
+    // for each candidate so the user can read the architecture at a glance
+    let compiledBadge = '';
+    if (t.compiled) {
+      const c = t.compiled;
+      const conf = c.confidence === 'high' ? '' : ` · <span class="conf ${c.confidence}">${c.confidence}</span>`;
+      const subjMatch = (c.subject_match_method && c.subject_match_method !== 'alias')
+        ? ` · subject via ${c.subject_match_method}`
+        : '';
+      compiledBadge = `<span class="turn-meta-pill compiled-badge">intent: ${escapeHtml(c.intent)}${conf}${subjMatch}</span>`;
+    }
+
+    html += `
+      <div class="chat-turn${isFocused ? ' focused' : ''}" data-turn-id="${escapeHtml(t.turnId)}">
+        <div class="turn-question-label">you</div>
+        <div class="turn-question">${escapeHtml(t.question)}</div>
+        <div class="turn-answer-label">librarian</div>
+        ${answerHtml}
+        ${summaryBlock}
+        <div class="turn-meta">
+          ${compiledBadge}
+          <span class="turn-meta-pill">${escapeHtml(planSummary || 'no plan')}</span>
+          <span>cursor: ${escapeHtml(describeCursor(t.cursor))}</span>
+          <span>framing: ${escapeHtml(describeFraming(t.framing))}</span>
+        </div>
+      </div>`;
+  }
+  transcript.innerHTML = html;
+
+  // Wire turn focus
+  transcript.querySelectorAll('.chat-turn').forEach(el => {
+    el.addEventListener('click', (e) => {
+      // Don't intercept clicks on entity links or citation markers
+      if (e.target.closest('.entity-link') || e.target.closest('.citation')) return;
+      focusLibrarianTurn(el.getAttribute('data-turn-id'));
+    });
+  });
+
+  // Wire entity-link clicks → entity inspector (currently jumps to inspect view)
+  transcript.querySelectorAll('.entity-link').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = el.getAttribute('data-entity-id');
+      if (!id) return;
+      // For now: jump to inspect view. Future: dedicated inspector modal.
+      if (typeof switchView === 'function') switchView('inspect');
+      STATE.selectedEntityId = id;
+      if (typeof renderInspectView === 'function') renderInspectView();
+    });
+  });
+
+  // Wire citation clicks → source modal
+  transcript.querySelectorAll('.citation').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openCitationFromMarker(el);
+    });
+  });
+}
+
+// Open the citation modal from a `<sup class="citation">` element.
+function openCitationFromMarker(el) {
+  const defId = el.getAttribute('data-def-id');
+  const gIdx = parseInt(el.getAttribute('data-grounding-idx'), 10);
+  let def = null;
+  for (const defs of STATE.defs.values()) {
+    const f = defs.find(d => d.id === defId);
+    if (f) { def = f; break; }
+  }
+  if (def && def.grounding[gIdx]) showSourceSpanModal(def.grounding[gIdx], { def });
+}
+
+function renderEvidencePane() {
+  const pane = document.getElementById('evidence-pane');
+  if (!pane) return;
+  const turn = LIBRARIAN_TURNS.find(t => t.turnId === FOCUSED_TURN_ID);
+  if (!turn) {
+    pane.innerHTML = `<div class="empty-state">Click a turn on the left to inspect its findings, the citations behind every claim, and the construction trace.</div>`;
     return;
   }
 
-  let html = userBlock;
-  html += `<div class="projection">`;
-  html += `<div class="projection-meta">
-    subject: <strong>${escapeHtml(result.subject.canonical)}</strong>
-    · cursor: <span class="pos">${escapeHtml(describeCursor(result.cursor))}</span>
-    · framing: <span class="frame">${escapeHtml(describeFraming(result.framing))}</span>
+  let html = `<div class="evidence-header">${escapeHtml(turn.question)}</div>`;
+
+  // ── Disambiguation chooser (rendered when the compiler bailed) ──
+  if (turn.pending_disambiguation && turn.compiled) {
+    html += `<div class="evidence-section disambig">
+      <div class="label">${escapeHtml(turn.compiled.clarifying_question || 'Which one did you mean?')}</div>
+      <div class="disambig-cards">`;
+    for (const cand of turn.compiled.subject_candidates) {
+      const ent = (() => {
+        for (const [id, info] of STATE.entities) {
+          if (info.canonical === cand) return info;
+        }
+        return null;
+      })();
+      const meta = ent ? `${getAllDefsForSubject(ent.id).filter(filterDefToActive).length} claims` : 'unknown entity';
+      const aliasLine = ent ? ent.aliases.filter(a => a !== ent.canonical).slice(0, 3).join(', ') : '';
+      html += `<button class="disambig-card" data-candidate="${escapeHtml(cand)}">
+        <div class="disambig-canonical">${escapeHtml(cand)}</div>
+        <div class="disambig-meta">${escapeHtml(meta)}${aliasLine ? ' · ' + escapeHtml(aliasLine) : ''}</div>
+      </button>`;
+    }
+    html += `</div></div>`;
+  }
+
+  // ── Construction trace (collapsible "show me how this was built") ──
+  // Always present once compiled exists. Default collapsed; reveal toggles
+  // a body that walks question → compiled plan → executed EO line(s) →
+  // candidates by method → ranking → spans → template.
+  if (turn.compiled) {
+    html += renderConstructionTrace(turn);
+  }
+
+  // ── Plan trace (clickable EO lines) ──
+  if (turn.plans.length > 0) {
+    html += `<div class="plan-trace">
+      <div class="label">EO query plan${turn.plans.length > 1 ? ' · ' + turn.plans.length + ' lines' : ''}</div>`;
+    turn.plans.forEach((p, idx) => {
+      const focused = idx === FOCUSED_PLAN_INDEX;
+      const rowCount = p.result?.kind === 'slice' ? p.result.rows.length : (p.result?.kind === 'corpus-summary' ? p.result.topSubjects.length : 0);
+      html += `<div class="plan-line${focused ? ' focused' : ''}" data-plan-idx="${idx}">
+        ${escapeHtml(p.line)}
+        <span class="plan-meta">${p.result.kind === 'corpus-summary' ? `corpus overview · ${p.result.n_entities} entities, ${p.result.n_predicates} predicates` : `${rowCount} row${rowCount === 1 ? '' : 's'}${p.result.peerGaps?.length ? ' · ' + p.result.peerGaps.length + ' gap(s)' : ''}`}</span>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  // ── Findings for focused plan (the rows that back the templated answer) ──
+  const focusedPlan = turn.plans[FOCUSED_PLAN_INDEX] || turn.plans[0];
+  if (focusedPlan) {
+    html += renderEvidenceForPlan(focusedPlan, turn);
+  }
+
+  // ── Optional explanatory summary (deliberately frictional) ──
+  // Hidden by default behind a disclosure. The warning is visible
+  // *before* the user can reveal the summary, so the gravity stays
+  // pointed at the citation-bearing answer.
+  html += `<div class="evidence-section summary-affordance">
+    <div class="label">explanatory summary <span class="muted">· LLM-generated · use sparingly</span></div>
+    <details class="summary-details">
+      <summary>${turn.summary ? 'Show generated summary' : 'Generate explanatory summary'}</summary>
+      <div class="summary-warning">
+        ⚠ This will use an LLM to phrase the cited findings in flowing prose. The original cited answer above is the structural truth — this is just an explanatory tool, like a research assistant talking through what they read. It may smooth over distinctions, mis-summarize superpositions, or introduce drift. Do not rely on it without checking against the citations.
+      </div>
+      ${turn.summary ?
+        `<div class="summary-body">${escapeHtml(turn.summary)}</div>` :
+        `<button class="summary-generate" data-turn-id="${escapeHtml(turn.turnId)}">Generate summary anyway</button>`}
+    </details>
   </div>`;
 
-  // Commentary placeholder (per-turn ID so the async LLM callback can find it)
-  const commentaryBodyId = `commentary-body-${turnId}`;
-  html += `
-    <div class="commentary-card">
-      <div class="label">Librarian</div>
-      <div class="commentary-body" id="${commentaryBodyId}">
-        ${isLLMReady() ? '<span class="commentary-loading">walking the graph…</span>' : `<span class="commentary-loading">${escapeHtml(backendNotReadyMessage())} — structured findings only (configure a backend in Settings to enable librarian commentary)</span>`}
-      </div>
-    </div>`;
-
-  // Direct hits
-  if (result.directHits.length > 0) {
-    html += `<div class="findings-section">
-      <div class="label">Direct findings · question matched, this subject HAS</div>`;
-    for (const hit of result.directHits) {
-      const isSuperposed = hit.defs.length > 1;
-      for (const def of hit.defs) {
-        html += renderDefRow(def, hit.predicate, true, isSuperposed, hit.defs.length);
-      }
-    }
-    html += `</div>`;
-  }
-
-  // Asked-about gaps
-  if (result.askedAboutGaps.length > 0) {
-    html += `<div class="findings-section">
-      <div class="label">Gaps · question matched, this subject DOES NOT have</div>`;
-    for (const g of result.askedAboutGaps) {
-      let valHtml;
-      if (g.corpusWide) {
-        valHtml = `<em>corpus-wide silence — no subject in the corpus has this predicate</em>`;
-      } else {
-        const peerNames = g.peer_examples.map(id => STATE.entities.get(id)?.canonical || id).join(', ');
-        valHtml = `<em>peer gap — ${g.peers_having_it} of ${g.total_peers} peer subjects have it (${escapeHtml(peerNames)})</em>`;
-      }
-      html += `<div class="def-row gap expanded">
-        <div class="head">
-          <div class="predicate">${escapeHtml(g.predicate)}</div>
-          <div class="value">${valHtml}</div>
-          <div class="meta">∅ events</div>
-        </div>
-      </div>`;
-    }
-    html += `</div>`;
-  }
-
-  // Other filled predicates
-  const askedSet = new Set([
-    ...result.directHits.map(h => h.predicate),
-    ...result.askedAboutGaps.map(g => g.predicate),
-  ]);
-  const otherFilled = [];
-  for (const [pred, defs] of Object.entries(result.integral)) {
-    if (askedSet.has(pred)) continue;
-    for (const def of defs) {
-      otherFilled.push({ pred, def, defs });
-    }
-  }
-  // Sort by framing weight
-  otherFilled.sort((a, b) => weightDef(b.def, result.framing) - weightDef(a.def, result.framing));
-
-  if (otherFilled.length > 0) {
-    html += `<div class="findings-section">
-      <div class="label">Other things the corpus says about this subject</div>`;
-    for (const item of otherFilled.slice(0, 12)) {
-      const isSuperposed = item.defs.length > 1;
-      html += renderDefRow(item.def, item.pred, false, isSuperposed, item.defs.length);
-    }
-    html += `</div>`;
-  }
-
-  // Other peer-relative gaps
-  const otherGaps = result.peerGaps.filter(g => !askedSet.has(g.predicate));
-  if (otherGaps.length > 0) {
-    html += `<div class="findings-section">
-      <div class="label">Other peer-relative gaps for this subject</div>`;
-    for (const g of otherGaps.slice(0, 6)) {
-      const peerNames = g.peer_examples.map(id => STATE.entities.get(id)?.canonical || id).join(', ');
-      html += `<div class="def-row gap">
-        <div class="head">
-          <div class="predicate">${escapeHtml(g.predicate)}</div>
-          <div class="value"><em>${g.peers_having_it}/${g.total_peers} peers have it (${escapeHtml(peerNames)})</em></div>
-          <div class="meta">∅ events</div>
-        </div>
-      </div>`;
-    }
-    html += `</div>`;
-  }
-
-  // Comparison (counterfactual)
-  if (result.comparison) {
-    html += `<div class="findings-section">
-      <div class="label">Counterfactual · vs ${escapeHtml(describeCursor(result.comparison.cursor))}</div>
-      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--ink-soft); padding: 10px; background: var(--paper); border: 1px dashed var(--rule);">
-        Predicates new since: <strong>${result.comparison.diff.added.join(', ') || '(none)'}</strong><br>
-        Predicates with new values: <strong>${result.comparison.diff.changed.join(', ') || '(none)'}</strong>
-      </div>
+  // ── Per-turn reader composer (free-form note) ──
+  if (focusedPlan) {
+    html += `<div class="evidence-section">
+      <div class="label">add reader note · enters the corpus as a source</div>
+      ${renderReaderComposer({ turnId: turn.turnId, planLine: focusedPlan.line })}
     </div>`;
   }
 
-  html += `</div>`;
-  block.innerHTML = html;
-  block._commentaryBodyId = commentaryBodyId;  // exposed for caller
-  block._turnId = turnId;
-  transcript.appendChild(block);
-  transcript.scrollTop = transcript.scrollHeight;
+  pane.innerHTML = html;
 
-  STATE.lastQueryResult = result;  // remember for re-render after feedback
+  // ── Wire interactions ──
 
-  // Wire grounding expansion (clicking the def row) — scoped to this turn
-  block.querySelectorAll('.def-row[data-key]').forEach(row => {
+  // Disambiguation: clicking a candidate re-runs the turn with the
+  // subject pinned, replacing the pending turn in place.
+  pane.querySelectorAll('.disambig-card').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const cand = btn.getAttribute('data-candidate');
+      if (!cand) return;
+      btn.disabled = true;
+      btn.style.opacity = '0.5';
+      try {
+        const real = await runLibrarianTurn(turn.question, turn.cursor, turn.framing, { subject: cand });
+        updateLibrarianTurn(turn.turnId, t => {
+          t.compiled = real.compiled;
+          t.plans = real.plans;
+          t.answer = real.answer;
+          t.pending_disambiguation = false;
+        });
+        if (STATE.editsEnabled && real.answer) {
+          fireEditorForTurn(turn.turnId).catch(e => console.warn('[editor]', e));
+        }
+      } catch (err) {
+        btn.disabled = false;
+        btn.style.opacity = '';
+        console.error('[disambig]', err);
+      }
+    });
+  });
+
+  // Construction-trace toggle is a native <details>; nothing to wire.
+
+  // Plan-line click → focus that plan
+  pane.querySelectorAll('.plan-line').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const idx = parseInt(el.getAttribute('data-plan-idx'), 10);
+      focusLibrarianTurn(FOCUSED_TURN_ID, idx);
+    });
+  });
+
+  // Def-row click → expand grounding
+  pane.querySelectorAll('.def-row[data-key]').forEach(row => {
     row.addEventListener('click', (e) => {
-      if (e.target.closest('.span-quote') || e.target.closest('.def-action')) return;
+      if (e.target.closest('.span-quote') || e.target.closest('.def-action') || e.target.closest('.reader-composer') || e.target.closest('.reader-toggle') || e.target.closest('.entity-link') || e.target.closest('.citation')) return;
       row.classList.toggle('expanded');
     });
   });
 
-  // Wire span clicks → open source modal
-  block.querySelectorAll('.span-quote[data-def-id]').forEach(span => {
+  // Span clicks → source modal
+  pane.querySelectorAll('.span-quote[data-def-id]').forEach(span => {
     span.addEventListener('click', (e) => {
       e.stopPropagation();
       const defId = span.getAttribute('data-def-id');
@@ -7270,24 +8992,692 @@ function renderQueryResult(result) {
         const f = defs.find(d => d.id === defId);
         if (f) { def = f; break; }
       }
-      if (!def || !def.grounding[gIdx]) return;
-      showSourceSpanModal(def.grounding[gIdx]);
+      if (def && def.grounding[gIdx]) showSourceSpanModal(def.grounding[gIdx], { def });
     });
   });
 
-  // Wire feedback action → open feedback modal
-  block.querySelectorAll('.def-action[data-feedback-def]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
+  // Citation markers inside templated answers (if any leaked into right pane)
+  pane.querySelectorAll('.citation').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
       e.stopPropagation();
-      const defId = btn.getAttribute('data-feedback-def');
-      let def = null;
-      for (const defs of STATE.defs.values()) {
-        const f = defs.find(d => d.id === defId);
-        if (f) { def = f; break; }
-      }
-      if (def) showFeedbackModal(def);
+      openCitationFromMarker(el);
     });
   });
+
+  // Entity-link clicks
+  pane.querySelectorAll('.entity-link').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = el.getAttribute('data-entity-id');
+      if (!id) return;
+      if (typeof switchView === 'function') switchView('inspect');
+      STATE.selectedEntityId = id;
+      if (typeof renderInspectView === 'function') renderInspectView();
+    });
+  });
+
+  // Summary-generate button
+  pane.querySelectorAll('.summary-generate').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      btn.disabled = true;
+      btn.textContent = 'generating…';
+      try {
+        await generateTurnSummary(turn.turnId);
+      } catch (err) {
+        btn.textContent = 'failed: ' + err.message;
+      }
+    });
+  });
+
+  // Reader-composer open/submit
+  wireReaderComposers(pane);
+}
+
+// Render the construction-trace disclosure for a turn — a step-by-step
+// audit of how the answer was assembled.
+function renderConstructionTrace(turn) {
+  const c = turn.compiled || {};
+  const planLines = turn.plans.map(p => `<div class="trace-line">${escapeHtml(p.line)}</div>`).join('');
+  const rowCount = turn.plans[0]?.result?.kind === 'slice' ? turn.plans[0].result.rows.length : 0;
+  const matchMethods = new Set();
+  matchMethods.add(c.subject_match_method || 'alias');
+  if (c.predicate_match_method) matchMethods.add(c.predicate_match_method);
+  const methodsLine = [...matchMethods].join(', ');
+  return `<div class="evidence-section construction-trace">
+    <details>
+      <summary><span class="label">how was this constructed?</span></summary>
+      <div class="trace-body">
+        <div class="trace-row"><span class="trace-key">1. question</span><span class="trace-val">${escapeHtml(turn.question)}</span></div>
+        <div class="trace-row"><span class="trace-key">2. compiler</span><span class="trace-val">${turn.usedCompiler ? 'LLM' : 'heuristic'} → intent: <strong>${escapeHtml(c.intent || '?')}</strong>, confidence: <strong>${escapeHtml(c.confidence || '?')}</strong></span></div>
+        <div class="trace-row"><span class="trace-key">3. subject</span><span class="trace-val">${c.subject ? escapeHtml(c.subject) : '<em>none / wildcard</em>'} <span class="muted">(via ${escapeHtml(methodsLine)})</span></span></div>
+        <div class="trace-row"><span class="trace-key">4. predicate</span><span class="trace-val">${c.predicate ? escapeHtml(c.predicate) : (c.predicate_class ? '<em>class hint:</em> ' + escapeHtml(c.predicate_class) : '<em>none / wildcard</em>')}</span></div>
+        <div class="trace-row"><span class="trace-key">5. EO plan</span><span class="trace-val">${planLines || '<em>(no plan executed — waiting for disambiguation)</em>'}</span></div>
+        <div class="trace-row"><span class="trace-key">6. rows</span><span class="trace-val">${rowCount} row${rowCount === 1 ? '' : 's'} returned</span></div>
+        <div class="trace-row"><span class="trace-key">7. template</span><span class="trace-val">${turn.answer ? 'assembled mechanically · every cited claim links to its source span' : '<em>no answer (empty slice or pending)</em>'}</span></div>
+      </div>
+    </details>
+  </div>`;
+}
+
+// Generate the optional explanatory summary. Reuses the LLM but feeds it
+// only the templated answer (which already contains nothing the model
+// shouldn't see) and asks for a polished restatement. The result is
+// stored on the turn and rendered below the citation-bearing answer
+// with a warning header — never replacing it.
+// ─── TYPED-EDIT LAYER (STYLISTIC EDITOR) ────────────────────────────
+// The mechanical templated answer is the canonical truth. The editor
+// proposes a small set of typed stylistic edits (insertions of
+// determiners / honorifics / pronouns, substitutions of pronouns or
+// near-synonymous predicates) over that text. Each edit is bounded to
+// a closed vocabulary; the validator rejects anything outside it.
+// Three render modes — raw (unsmoothed), edited (default, brackets-on-
+// inserts), diff (every change visible) — let the reader pick a register.
+//
+// Forbidden by the schema, not by hope: adding nouns/verbs/adjectives
+// the original lacked, changing entity attribution, changing numbers /
+// dates / quoted values, or dropping citation markers. The validator
+// re-checks every claim by stripping the markers and comparing the
+// residual text to the original, character-for-character.
+
+const EDIT_VOCAB = {
+  determiner: ['a', 'an', 'the'],
+  preposition: ['at', 'in', 'of', 'on', 'by', 'with', 'from', 'to', 'for', 'into', 'about', 'after', 'before'],
+  honorific: ['Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Sir', 'Lord', 'Lady', 'Prof.', 'Rev.'],
+  pronoun: ['he', 'she', 'it', 'they', 'his', 'her', 'its', 'their', 'him', 'them', 'who', 'which', 'that'],
+  conjunction: ['and', 'but', 'or', 'yet', 'so'],
+  glue: ['also', 'however', 'then', 'later', 'instead', 'as', 'while', 'though', 'although'],
+};
+
+function isInsertAllowed(text) {
+  const w = String(text || '').trim();
+  if (!w) return false;
+  const wl = w.toLowerCase();
+  for (const cat of Object.keys(EDIT_VOCAB)) {
+    for (const v of EDIT_VOCAB[cat]) {
+      if (v.toLowerCase() === wl || v === w) return cat;
+    }
+  }
+  return false;
+}
+
+const LIBRARIAN_EDITOR_SYSTEM = `You smooth a templated sentence assembled from a typed graph. You make only the bounded stylistic edits below, marked inline. You DO NOT rewrite, paraphrase, add facts, or change the meaning.
+
+ALLOWED EDITS
+
+INSERT a single allowed word at a position. Mark in [square brackets] where you insert it.
+  Example input:  Elizabeth Bennet marries Darcy at Pemberley.
+  Edited:         Elizabeth Bennet marries [Mr.] Darcy at [the] Pemberley estate.
+  (No, "estate" is NOT allowed — it is a content word. Only insert from the closed vocabulary below.)
+
+SUBSTITUTE a repeated entity name with a pronoun, ONLY if the antecedent is unambiguous in the preceding sentence:
+  Example: Elizabeth Bennet marries Mr. Darcy. Elizabeth Bennet later moved to Pemberley.
+  Edited:  Elizabeth Bennet marries Mr. Darcy. {Elizabeth Bennet → She} later moved to Pemberley.
+
+SUBSTITUTE a predicate verb with a near-synonym from the same predicate cluster (graph-defined):
+  {marries → wed} {is described as → described as}
+
+CLOSED VOCABULARY for INSERTs:
+  determiners: a, an, the
+  prepositions: at, in, of, on, by, with, from, to, for, into, about, after, before
+  honorifics: Mr., Mrs., Ms., Dr., Sir, Lord, Lady, Prof., Rev.
+  pronouns: he, she, it, they, his, her, its, their, him, them, who, which, that
+  conjunctions: and, but, or, yet, so
+  glue: also, however, then, later, instead, as, while, though, although
+
+FORBIDDEN
+- Adding any noun, verb, adjective, or adverb not in the vocabulary above.
+- Changing what entity does what.
+- Changing numbers, dates, or quoted values.
+- Removing or moving citation markers like [1], [2]. They MUST appear in the same positions.
+- Reordering words from the original outside the edit syntax.
+- Adding commentary, headers, or any text outside the edited sentence itself.
+
+OUTPUT
+Just the edited sentence, with [insertions] and {substitutions} marked in place. No preamble, no quotes, no explanation. If no edits would help, output the original sentence unchanged.`;
+
+// Strip the templated answer's HTML to a plain-text form the editor can
+// reason about. Entity-link inner text is preserved as plain words;
+// citation markers like [1] become inline tokens. The structure to
+// re-inject after editing is captured in tokens[] for the applier.
+function answerToEditableText(html) {
+  if (!html) return { plain: '', tokens: [] };
+  // Tokenize <a class="entity-link">…</a> and <sup class="citation">[N]</sup>
+  // into placeholders we can resurrect later.
+  const tokens = [];
+  let plain = '';
+  let pos = 0;
+  const re = /<(a class="entity-link"[^>]*>[\s\S]*?<\/a>|sup class="citation"[^>]*>\[(\d+)\]<\/sup>)/g;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    plain += html.slice(pos, m.index).replace(/<[^>]+>/g, '');
+    if (m[0].startsWith('<sup')) {
+      const n = m[2];
+      // Render citations to the editor as `[N]` so the model preserves them
+      plain += `[${n}]`;
+      tokens.push({ kind: 'citation', n: parseInt(n, 10), html: m[0], plain: `[${n}]` });
+    } else {
+      // Entity link — extract its visible text
+      const inner = m[0].replace(/^<a[^>]*>|<\/a>$/g, '');
+      plain += inner;
+      tokens.push({ kind: 'entity', plain: inner, html: m[0] });
+    }
+    pos = m.index + m[0].length;
+  }
+  plain += html.slice(pos).replace(/<[^>]+>/g, '');
+  return { plain: plain.replace(/\s+/g, ' ').trim(), tokens };
+}
+
+// Validate an LLM-emitted edited string against the original plain
+// answer. Parses [insertions] and {original → replacement} markers,
+// verifies the residual text matches the original (citation markers
+// preserved at the same positions). Returns either { ok: true,
+// editedPlain, ops } or { ok: false, error }.
+function validateEditedText(originalPlain, edited, context = {}) {
+  if (!edited) return { ok: false, error: 'empty edit' };
+  let s = String(edited).trim();
+  // Strip surrounding quotes/preamble the model may have added
+  s = s.replace(/^["'`]|["'`]$/g, '');
+
+  const ops = [];
+  // To check the edit is bounded, we reconstruct what the *original* text
+  // must have looked like before the edits. Inserts are removed; substitutions
+  // are reverted to the original. The result should equal the input original.
+  // Pass 1: extract substitutions {orig -> repl} — revert to original
+  let work = s.replace(/\{([^{}|→\-]+?)\s*(?:→|->|→)\s*([^{}|→\-]+?)\}/g, (m, orig, repl) => {
+    const op = { kind: 'substitute', original: orig.trim(), replacement: repl.trim() };
+    ops.push(op);
+    return op.original;  // revert: restore what was there before substitution
+  });
+  // Pass 2: extract insertions [word]. NOTE: citation markers like [1]
+  // are also bracketed but contain ONLY digits; we leave those alone.
+  // Honorifics like "Mr." contain a period — match accordingly.
+  // Inserts get REMOVED to recover the pre-edit text.
+  work = work.replace(/\s*\[([A-Za-z][A-Za-z'.]*)\]\s*/g, (m, word) => {
+    ops.push({ kind: 'insert', text: word });
+    return ' ';  // remove the inserted word, leaving a single space
+  });
+
+  // Now `work` should equal `originalPlain` modulo whitespace
+  const norm = x => String(x || '').replace(/\s+/g, ' ').trim();
+  const wo = norm(work);
+  const oo = norm(originalPlain);
+
+  if (wo !== oo) {
+    // Edits altered the underlying text — disallowed.
+    return { ok: false, error: `edited text deviates from original (after stripping markers).\n  expected: "${oo}"\n  got:      "${wo}"` };
+  }
+
+  // Validate each op against the closed vocabulary
+  for (const op of ops) {
+    if (op.kind === 'insert') {
+      if (!isInsertAllowed(op.text)) {
+        return { ok: false, error: `insert "${op.text}" not in allowed vocabulary` };
+      }
+    } else if (op.kind === 'substitute') {
+      // Pronoun substitutions: replacement must be a pronoun, AND the
+      // antecedent (original) must be unambiguous in the preceding context.
+      const replIsPronoun = EDIT_VOCAB.pronoun.some(p => p.toLowerCase() === op.replacement.toLowerCase());
+      if (replIsPronoun) {
+        // Coreference check: does the original entity appear earlier in
+        // the originalPlain than this position, AND no other entity of
+        // compatible type appears between?
+        const checkCtx = (context.compiled || {});
+        if (!isPronounSubstitutionUnambiguous(originalPlain, op.original, op.replacement, checkCtx)) {
+          return { ok: false, error: `pronoun substitution {${op.original} → ${op.replacement}} is ambiguous in context` };
+        }
+        continue;
+      }
+      // Predicate substitutions: replacement must be a member of the
+      // same predicate cluster as the original. We accept conservatively
+      // by checking the readablePredicate forms match or the replacement
+      // is in PREDICATE_CLUSTER_CACHE alongside the original.
+      const norm1 = readablePredicate(op.original);
+      const norm2 = readablePredicate(op.replacement);
+      if (norm1.toLowerCase() === norm2.toLowerCase()) continue;  // identical concept
+      const sameCluster = PREDICATE_CLUSTER_CACHE.classes.some(c => {
+        const memsLower = c.members.map(m => m.toLowerCase());
+        return memsLower.includes(op.original.toLowerCase()) && memsLower.includes(op.replacement.toLowerCase());
+      });
+      if (sameCluster) continue;
+      return { ok: false, error: `substitution {${op.original} → ${op.replacement}} not pronoun and not in same predicate cluster` };
+    } else {
+      return { ok: false, error: `unknown op kind "${op.kind}"` };
+    }
+  }
+
+  return { ok: true, editedPlain: s, ops };
+}
+
+// Coreference check for pronoun substitutions. A pronoun replacement is
+// allowed only when there is exactly one entity in the preceding text
+// that the pronoun could refer to. For the conservative v1 we just
+// check that the replaced entity name appears earlier in the answer
+// and no other entity name appears between the previous mention and
+// the substitution position. Future: gender/number compatibility.
+function isPronounSubstitutionUnambiguous(originalPlain, entityName, pronoun, ctx) {
+  // Find the position of the substitution target
+  const targetIdx = originalPlain.indexOf(entityName, originalPlain.indexOf(entityName) + 1);
+  if (targetIdx < 0) return false;  // there must be at least 2 mentions
+  const before = originalPlain.slice(0, targetIdx);
+  const firstMentionIdx = before.lastIndexOf(entityName);
+  if (firstMentionIdx < 0) return false;
+  const between = before.slice(firstMentionIdx + entityName.length);
+  // Look for OTHER entity canonicals appearing in `between`. If any
+  // entity besides `entityName` appears, the pronoun is ambiguous.
+  for (const [, info] of STATE.entities) {
+    if (info.canonical === entityName) continue;
+    if (between.indexOf(info.canonical) >= 0) return false;
+    for (const alias of info.aliases) {
+      if (alias.length < 2 || alias === info.canonical) continue;
+      const re = new RegExp('\\b' + escapeRegex(alias) + '\\b');
+      if (re.test(between)) return false;
+    }
+  }
+  return true;
+}
+
+// Re-inject the entity-link and citation HTML chunks into the edited
+// plain text, preserving the original markup at every preserved
+// position. Inserts ([word]) become <span class="edit-insert">[word]</span>;
+// substitutions ({a → b}) become <span class="edit-substitute"
+// data-original="a">b</span>. Citation markers in the edited string
+// (which look like [1], [2], …) are restored from the captured tokens.
+function applyEditsToTemplatedHTML(originalHTML, editedPlain, ops) {
+  // We rebuild the HTML by walking the edited string and re-injecting
+  // the original entity-link <a> tags and <sup> citation markers
+  // wherever they would have appeared. Because the edit contract
+  // guarantees the residual text equals the original (modulo markers),
+  // we can match canonical entity names and citation [N]s back into
+  // the edited stream.
+  const { tokens } = answerToEditableText(originalHTML);
+
+  // First, replace marker syntax in `editedPlain` with HTML span tags.
+  let html = String(editedPlain);
+  // Substitutions first (so we don't mistake their { } for inserts)
+  html = html.replace(/\{([^{}|→\-]+?)\s*(?:→|->|→)\s*([^{}|→\-]+?)\}/g, (m, orig, repl) => {
+    const o = orig.trim();
+    const r = repl.trim();
+    return `<span class="edit-substitute" data-original="${escapeHtml(o)}" data-justification="pronoun/synonym substitute">${escapeHtml(r)}</span>`;
+  });
+  // Inserts (skip pure-digit brackets — those are citations)
+  html = html.replace(/\[([A-Za-z][A-Za-z'.]*)\]/g, (m, word) => {
+    return `<span class="edit-insert" data-justification="${escapeHtml(isInsertAllowed(word) || 'insert')}">[${escapeHtml(word)}]</span>`;
+  });
+
+  // Now walk the html and re-inject entity links and citation sups.
+  // Strategy: for each entity token in `tokens`, find the next plain-text
+  // occurrence of its canonical text in `html` (skipping content already
+  // inside spans / tags) and replace with the original <a> markup.
+  for (const tok of tokens) {
+    if (tok.kind === 'entity') {
+      const idx = findOutsideTag(html, tok.plain);
+      if (idx >= 0) {
+        html = html.slice(0, idx) + tok.html + html.slice(idx + tok.plain.length);
+      }
+    } else if (tok.kind === 'citation') {
+      const marker = `[${tok.n}]`;
+      const idx = findOutsideTag(html, marker);
+      if (idx >= 0) {
+        html = html.slice(0, idx) + tok.html + html.slice(idx + marker.length);
+      }
+    }
+  }
+  return `<p class="templated">${html}</p>`;
+}
+
+// Find the first occurrence of `needle` in `haystack` that is NOT
+// inside an HTML tag, NOT inside an existing entity-link's text content,
+// and NOT inside a citation marker. We track depth across <a>..</a> and
+// <sup>..</sup> as opaque blocks. Returns -1 if none.
+function findOutsideTag(haystack, needle) {
+  let i = 0;
+  let inTag = false;
+  let opaqueDepth = 0;  // inside <a> or <sup> we treat as opaque
+  while (i <= haystack.length - needle.length) {
+    const c = haystack[i];
+    if (c === '<') {
+      // Detect opening/closing of opaque blocks
+      const close = haystack.startsWith('</a', i) || haystack.startsWith('</sup', i);
+      const open = !close && (haystack.startsWith('<a ', i) || haystack.startsWith('<a>', i) || haystack.startsWith('<sup ', i) || haystack.startsWith('<sup>', i));
+      if (close) opaqueDepth = Math.max(0, opaqueDepth - 1);
+      if (open) opaqueDepth++;
+      inTag = true; i++; continue;
+    }
+    if (c === '>') { inTag = false; i++; continue; }
+    if (!inTag && opaqueDepth === 0 && haystack.slice(i, i + needle.length) === needle) return i;
+    i++;
+  }
+  return -1;
+}
+
+// Request stylistic edits from the LLM, validate, and return either
+// { editedHTML, ops, raw } or { error }. Idempotent — caller decides
+// whether to re-run.
+async function requestStylisticEdits(turn) {
+  if (!isLLMReady() || !turn || !turn.answer) return null;
+  const { plain } = answerToEditableText(turn.answer);
+  if (!plain) return null;
+  const userMsg = `Original sentence:\n${plain}\n\nEdited sentence (with [inserts] and {substitutions} marked inline; otherwise unchanged):`;
+  let raw;
+  try {
+    raw = await callLLM(LIBRARIAN_EDITOR_SYSTEM, userMsg, 320, 'librarian-editor');
+  } catch (e) { return { error: e.message }; }
+  if (!raw) return { error: 'empty editor response' };
+  // The model may wrap in quotes or add preamble; trim to first line of
+  // text after stripping common preambles.
+  let candidate = String(raw).trim();
+  candidate = candidate.replace(/^Edited(?:\s+sentence)?\s*:\s*/i, '');
+  candidate = candidate.replace(/^["'`]|["'`]$/g, '');
+  // Take only the first paragraph / line if model added trailing chatter
+  const nl = candidate.indexOf('\n\n');
+  if (nl > 0) candidate = candidate.slice(0, nl);
+
+  const v = validateEditedText(plain, candidate, { compiled: turn.compiled });
+  if (!v.ok) return { error: v.error, raw: candidate };
+  if (!v.ops.length) return { ops: [], editedHTML: turn.answer, raw: candidate };  // model declined
+
+  const editedHTML = applyEditsToTemplatedHTML(turn.answer, candidate, v.ops);
+  return { ops: v.ops, editedHTML, raw: candidate };
+}
+
+// Background editor: fired after a turn lands. Updates the turn in
+// place when (and if) edits validate. Honors the global
+// STATE.editsEnabled toggle; default ON.
+async function fireEditorForTurn(turnId) {
+  if (!STATE.editsEnabled) return;
+  const t = LIBRARIAN_TURNS.find(x => x.turnId === turnId);
+  if (!t || !t.answer) return;
+  // Skip pending or no-op answers
+  if (t.pending || t.pending_disambiguation) return;
+  if (!isLLMReady()) return;
+  // Already requested?
+  if (t.editsRequested) return;
+  updateLibrarianTurn(turnId, x => { x.editsRequested = true; });
+  const out = await requestStylisticEdits(t);
+  if (!out || out.error) {
+    updateLibrarianTurn(turnId, x => {
+      x.editsError = out?.error || 'no editor output';
+      x.edits = [];
+      x.editedAnswer = null;
+    });
+    return;
+  }
+  updateLibrarianTurn(turnId, x => {
+    x.edits = out.ops;
+    x.editedAnswer = out.editedHTML;
+    x.editsRaw = out.raw;
+  });
+}
+
+// Legacy generateTurnSummary stub — kept for any older code paths but
+// the typed-edit layer is now the canonical "smoothed prose" feature.
+async function generateTurnSummary(turnId) {
+  // Redirect to the editor: the old free-form summary path is gone.
+  return fireEditorForTurn(turnId);
+}
+
+function renderEvidenceForPlan(planEntry, turn) {
+  if (!planEntry) return '';
+  const { plan, result } = planEntry;
+
+  if (result.kind === 'corpus-summary') {
+    let h = `<div class="evidence-section">
+      <div class="label">corpus overview</div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.7;color:var(--ink-soft);padding:10px 12px;background:var(--paper);border:1px solid var(--rule);">
+        ${result.n_entities} entities · ${result.n_predicates} predicates · ${result.n_events} events · ${result.sources.length} source${result.sources.length === 1 ? '' : 's'}
+      </div>
+    </div>`;
+    if (result.sources.length) {
+      h += `<div class="evidence-section">
+        <div class="label">sources</div>
+        <div style="font-family:'Newsreader',serif;font-size:13px;color:var(--ink);">${result.sources.map(s => escapeHtml(s.name)).join(' · ')}</div>
+      </div>`;
+    }
+    if (result.topSubjects.length) {
+      h += `<div class="evidence-section">
+        <div class="label">top subjects (by mass)</div>`;
+      for (const s of result.topSubjects) {
+        h += `<div class="def-row" data-corpus-subject="${escapeHtml(s.id)}" style="cursor:pointer;">
+          <div class="head">
+            <div class="predicate">${escapeHtml(s.canonical)}</div>
+            <div class="value"><em>${s.mass} claim${s.mass === 1 ? '' : 's'}</em></div>
+            <div class="meta">→ drill in</div>
+          </div>
+        </div>`;
+      }
+      h += `</div>`;
+    }
+    if (result.topPredicates.length) {
+      h += `<div class="evidence-section">
+        <div class="label">top predicates</div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.8;color:var(--ink);">
+          ${result.topPredicates.map(p => `${escapeHtml(p.predicate)} <span style="color:var(--ink-faint);">× ${p.n_subjects} subj, ${p.n_defs} defs</span>`).join('<br>')}
+        </div>
+      </div>`;
+    }
+    return h;
+  }
+
+  if (result.kind === 'slice') {
+    let h = `<div class="evidence-section">
+      <div class="label">findings · ${result.rows.length} row${result.rows.length === 1 ? '' : 's'}</div>`;
+    if (!result.rows.length) {
+      h += `<div style="font-family:'Newsreader',serif;font-style:italic;font-size:13px;color:var(--ink-faint);padding:10px;">empty slice${result.note ? ' — ' + escapeHtml(result.note) : ' — the corpus has nothing matching this query at the current cursor'}</div>`;
+    } else {
+      for (const row of result.rows.slice(0, 24)) {
+        h += renderEvidenceRow(row, turn, planEntry.line);
+      }
+      if (result.rows.length > 24) {
+        h += `<div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-faint);padding:8px;">…${result.rows.length - 24} more rows; refine your query to drill in</div>`;
+      }
+    }
+    h += `</div>`;
+    if (result.peerGaps?.length) {
+      h += `<div class="evidence-section">
+        <div class="label">peer-relative gaps · what comparable subjects fill that this one doesn't</div>`;
+      for (const g of result.peerGaps) {
+        const peerNames = g.peer_examples.map(id => STATE.entities.get(id)?.canonical || id).join(', ');
+        h += `<div class="def-row gap">
+          <div class="head">
+            <div class="predicate">${escapeHtml(g.predicate)}</div>
+            <div class="value"><em>${g.peers_having_it}/${g.total_peers} peers have it (${escapeHtml(peerNames)})</em></div>
+            <div class="meta">∅ events</div>
+          </div>
+        </div>`;
+      }
+      h += `</div>`;
+    }
+    return h;
+  }
+
+  return `<div class="evidence-section"><div class="label">result</div><pre style="font-family:'IBM Plex Mono',monospace;font-size:10px;">${escapeHtml(JSON.stringify(result, null, 2))}</pre></div>`;
+}
+
+// Render one row of slice findings as a def-row, with a per-row reader
+// composer the user can open to attach a note to this specific finding.
+function renderEvidenceRow(row, turn, planLine) {
+  // Look up the underlying DEF for grounding/expansion
+  let def = null;
+  for (const defs of STATE.defs.values()) {
+    const f = defs.find(d => d.id === row.def_id);
+    if (f) { def = f; break; }
+  }
+  const cls = ['def-row'];
+  if (row.superposed) cls.push('superposed');
+  if (row.contested) cls.push('contested');
+  const groundingHtml = def ? def.grounding.map((g, gIdx) => {
+    const isReaderAuthored = g.authoredBy === 'reader' || g.sourceId === 'reader';
+    const src = STATE.sources.get(g.sourceId);
+    const sourceLabel = isReaderAuthored
+      ? '<span class="reader-authored">reader</span>'
+      : (src ? escapeHtml(src.name) : '');
+    return `<div class="span-quote" data-def-id="${escapeHtml(def.id)}" data-grounding-idx="${gIdx}" title="Click to see source context">${escapeHtml((g.spanText || '').slice(0, 220))}</div>
+            <div class="span-source">→ sentence #${g.sentenceIdx ?? '?'}${sourceLabel ? ' · ' + sourceLabel : ''}</div>`;
+  }).join('') : '';
+  const composerId = `composer-${row.def_id}`;
+  return `<div class="${cls.join(' ')}" data-key="${escapeHtml(row.def_id)}">
+    <div class="head">
+      <div class="predicate">${escapeHtml(row.predicate)}${row.contested ? ' <span class="reader-authored">disputed</span>' : ''}</div>
+      <div class="value">${escapeHtml(String(row.value))}</div>
+      <div class="meta">${row.n_events} ev · w ${row.weight.toFixed(2)}${row.authors.includes('reader') ? ' · reader' : ''}</div>
+    </div>
+    ${row.superposed ? `<div class="superposition-note">⤲ superposed — multiple competing claims in this slot</div>` : ''}
+    <div class="grounding">
+      ${groundingHtml}
+      <div style="margin-top:8px;">
+        <button class="reader-toggle" data-toggle="${composerId}">⤺ respond</button>
+      </div>
+      <div id="${composerId}" style="display:none;">
+        ${renderReaderComposer({ turnId: turn.turnId, planLine, defId: row.def_id, subject: row.subject, predicate: row.predicate, value: row.value })}
+      </div>
+    </div>
+  </div>`;
+}
+
+// Render a reader-response composer. Anchor metadata is stored as
+// data-* attributes; on submit we hand them to submitReaderNote().
+function renderReaderComposer({ turnId, planLine, defId, subject, predicate, value }) {
+  const anchor = defId
+    ? `responding to: ${subject} | ${predicate} → ${String(value).slice(0, 80)}`
+    : `note on this turn — ${planLine || ''}`;
+  return `<div class="reader-composer">
+    <div class="reader-anchor">${escapeHtml(anchor)}</div>
+    <textarea placeholder="Write a note in your own words. It enters the corpus as a reader-authored source — toggleable, traceable, and processed like any other prose."></textarea>
+    <div class="reader-actions">
+      <button class="reader-submit" data-turn-id="${escapeHtml(turnId)}" data-def-id="${defId ? escapeHtml(defId) : ''}" data-plan-line="${escapeHtml(planLine || '')}" disabled>Submit</button>
+      <span class="reader-anchor">enters G as a reader source · provenance tracked · re-toggleable in Sources</span>
+    </div>
+  </div>`;
+}
+
+function wireReaderComposers(scope) {
+  // Toggle visibility for per-row composers
+  scope.querySelectorAll('.reader-toggle[data-toggle]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = btn.getAttribute('data-toggle');
+      const el = document.getElementById(id);
+      if (!el) return;
+      const wasHidden = el.style.display === 'none';
+      el.style.display = wasHidden ? 'block' : 'none';
+      if (wasHidden) {
+        const ta = el.querySelector('textarea');
+        if (ta) ta.focus();
+      }
+    });
+  });
+  // Enable submit when there's prose, run submission on click
+  scope.querySelectorAll('.reader-composer').forEach(comp => {
+    const ta = comp.querySelector('textarea');
+    const btn = comp.querySelector('.reader-submit');
+    if (!ta || !btn) return;
+    ta.addEventListener('input', () => { btn.disabled = !ta.value.trim(); });
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const text = ta.value.trim();
+      if (!text) return;
+      btn.disabled = true;
+      btn.textContent = 'submitting…';
+      try {
+        await submitReaderNote({
+          text,
+          turnId: btn.getAttribute('data-turn-id'),
+          defId: btn.getAttribute('data-def-id') || null,
+          planLine: btn.getAttribute('data-plan-line') || null,
+        });
+        ta.value = '';
+        btn.textContent = 'submitted ✓';
+        setTimeout(() => {
+          btn.textContent = 'Submit';
+          btn.disabled = true;
+          // re-render so the new grounding shows up
+          renderEvidencePane();
+        }, 600);
+      } catch (err) {
+        btn.textContent = 'failed';
+        btn.disabled = false;
+        console.error('[reader-note]', err);
+      }
+    });
+  });
+}
+
+// Submit a reader note: ingests the prose as a synthetic 'reader'
+// source with anchor metadata. The existing ingest pipeline mints
+// whatever events the prose produces (DEF/REC/EVA/CON/SIG) — same
+// machinery as a regular article. The anchor lets later UI show what
+// the note was responding to.
+async function submitReaderNote({ text, turnId, defId, planLine }) {
+  if (!text) return;
+  // Use a single rolling reader source ("Reader notes") so all reader
+  // contributions toggle together. Reuse if it exists.
+  const READER_SOURCE_NAME = 'Reader notes';
+  let readerSrc = null;
+  for (const s of STATE.sources.values()) {
+    if (s.name === READER_SOURCE_NAME) { readerSrc = s; break; }
+  }
+  // If the source exists, append the note as a SIG event with anchor
+  // metadata directly. Otherwise we let ingestSource handle creation.
+  if (!readerSrc) {
+    // Initial ingest: build the reader source via ingestSource. Mark it
+    // so future notes append rather than create new sources.
+    await ingestSource(text, { name: READER_SOURCE_NAME, publicationDate: null });
+    // Tag the source we just created with reader-anchor metadata on
+    // the most recent SIG/DEF events created for this note.
+    for (const s of STATE.sources.values()) {
+      if (s.name === READER_SOURCE_NAME) {
+        s.isReaderSource = true;
+        // Tag any events we just minted
+        for (const evId of s.eventIds.slice(-30)) {
+          const ev = STATE.G.find(e => e.id === evId);
+          if (ev) {
+            ev.authoredBy = 'reader';
+            ev.readerAnchor = { turnId, defId, planLine };
+          }
+        }
+        break;
+      }
+    }
+  } else {
+    // Append a single SIG event for the note. If LLM is ready, we'd
+    // ideally re-extract; for v1 we stash the prose as a SIG with the
+    // surface text and let the existing extraction view pick it up
+    // through normal DEF/EVA flow if extended.
+    const ev = appendEvent({
+      op: 'SIG',
+      payload: { surface: text, anchor: { turnId, defId, planLine } },
+      sourceId: readerSrc.id,
+      intakeTs: Date.now(),
+      authoredBy: 'reader',
+      readerAnchor: { turnId, defId, planLine },
+    });
+    readerSrc.sentences.push({
+      idx: readerSrc.sentences.length,
+      text,
+    });
+    readerSrc.eventIds.push(ev.id);
+    // If anchored to a specific DEF and the verdict is implicit, attach
+    // the prose as a grounding entry on that DEF so it shows in the
+    // finding. This makes reader notes immediately visible.
+    if (defId) {
+      for (const defs of STATE.defs.values()) {
+        const f = defs.find(d => d.id === defId);
+        if (f) {
+          f.grounding.push({
+            sentenceIdx: readerSrc.sentences.length - 1,
+            spanText: text,
+            sourceEventId: ev.id,
+            sourceId: readerSrc.id,
+            authoredBy: 'reader',
+          });
+          break;
+        }
+      }
+    }
+  }
 }
 
 
@@ -7296,62 +9686,173 @@ function renderQueryResult(result) {
 // (the clause itself, plus a few sentences before/after, plus the source
 // metadata). Closes on backdrop click or ESC.
 
-function showSourceSpanModal(grounding) {
+// Citation modal — a working surface, not a tooltip. Renders the FULL
+// source document with the cited span highlighted; auto-scrolls the
+// highlight into view; surrounds it with the source's metadata header,
+// the typed event details that produced this DEF, and a one-click
+// "flag" affordance that mints a reader EVA over the system's claim.
+//
+// `opts.def` is the def the citation belongs to (when available) so
+// we can show event details and offer the flag.
+function showSourceSpanModal(grounding, opts = {}) {
   const overlay = document.getElementById('source-span-overlay');
   const title = document.getElementById('source-span-title');
   const body = document.getElementById('source-span-body');
   if (!overlay || !title || !body) return;
 
-  // Resolve the originating event
+  const def = opts.def || (() => {
+    if (!grounding.defId) return null;
+    for (const defs of STATE.defs.values()) {
+      const f = defs.find(d => d.id === grounding.defId);
+      if (f) return f;
+    }
+    return null;
+  })();
+
   const ev = STATE.G.find(e => e.id === grounding.sourceEventId);
   const src = ev ? STATE.sources.get(ev.sourceId) : null;
   const sentenceIdx = grounding.sentenceIdx ?? ev?.narrativePos?.sentenceIdx ?? null;
+  const isReader = grounding.authoredBy === 'reader' || grounding.sourceId === 'reader';
 
-  // Title with source name + sentence position
+  // Title: source name + sentence position
   if (src) {
     const pubLabel = src.publicationDate ? new Date(src.publicationDate).toISOString().slice(0, 10) : 'no pub date';
-    title.textContent = `${src.name} · sentence #${sentenceIdx ?? '?'} · ${pubLabel}`;
+    title.innerHTML = `${escapeHtml(src.name)} <span class="muted">· #${sentenceIdx ?? '?'} · ${escapeHtml(pubLabel)}${isReader ? ' · <span class="reader-authored">reader</span>' : ''}</span>`;
   } else {
     title.textContent = 'Source span';
   }
 
-  // Build context: target sentence + 2 before + 2 after
   let html = '';
-  if (src && Array.isArray(src.sentences) && sentenceIdx != null) {
-    const intakeLabel = src.intakeTs ? new Date(src.intakeTs).toLocaleString() : '';
-    html += `<div class="source-context-meta">intake: ${escapeHtml(intakeLabel)}</div>`;
-    const before = src.sentences.filter(s => s.idx < sentenceIdx).slice(-2);
-    const target = src.sentences.find(s => s.idx === sentenceIdx);
-    const after = src.sentences.filter(s => s.idx > sentenceIdx).slice(0, 2);
-    for (const s of before) {
-      html += `<div class="source-context-line"><span style="color: var(--ink-faint); font-family: 'IBM Plex Mono', monospace; font-size: 10px;">#${s.idx}</span> ${escapeHtml(s.text)}</div>`;
-    }
-    if (target) {
-      html += `<div class="source-context-line target"><span style="color: var(--accent); font-family: 'IBM Plex Mono', monospace; font-size: 10px;">#${target.idx}</span> ${escapeHtml(target.text)}</div>`;
-    } else {
-      html += `<div class="source-context-line target">${escapeHtml(grounding.spanText || '')}</div>`;
-    }
-    for (const s of after) {
-      html += `<div class="source-context-line"><span style="color: var(--ink-faint); font-family: 'IBM Plex Mono', monospace; font-size: 10px;">#${s.idx}</span> ${escapeHtml(s.text)}</div>`;
-    }
-  } else {
-    // No source object available — just show the span
-    html = `<div class="source-context-line target">${escapeHtml(grounding.spanText || '(no span text)')}</div>`;
+
+  // ── Source metadata header ──
+  if (src) {
+    const intakeLabel = src.intakeTs ? new Date(src.intakeTs).toLocaleString() : '—';
+    const pubLabel = src.publicationDate ? new Date(src.publicationDate).toISOString().slice(0, 10) : '—';
+    const totalSents = src.sentences?.length ?? 0;
+    html += `<div class="modal-meta-grid">
+      <div><span class="modal-meta-key">source</span><span class="modal-meta-val">${escapeHtml(src.name)}</span></div>
+      <div><span class="modal-meta-key">published</span><span class="modal-meta-val">${escapeHtml(pubLabel)}</span></div>
+      <div><span class="modal-meta-key">intake</span><span class="modal-meta-val">${escapeHtml(intakeLabel)}</span></div>
+      <div><span class="modal-meta-key">length</span><span class="modal-meta-val">${totalSents} sentences</span></div>
+    </div>`;
   }
 
-  // Add a "value extracted from this span" footer
-  if (grounding.value != null) {
-    const valStr = typeof grounding.value === 'string' && grounding.value.startsWith('ent_')
-      ? STATE.entities.get(grounding.value)?.canonical || grounding.value
-      : grounding.value;
-    html += `<div style="margin-top: 14px; padding: 10px 12px; background: var(--paper-soft); border-left: 3px solid var(--cursor); font-family: 'IBM Plex Mono', monospace; font-size: 11px;">
-      <div style="color: var(--ink-faint); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 4px;">extracted value</div>
-      <div>${escapeHtml(String(valStr))}</div>
+  // ── Full document render with the cited sentence highlighted and
+  //    auto-scrolled into view. Each sentence is one row with its idx,
+  //    so the user can see the cited paragraph in its actual context.
+  if (src && Array.isArray(src.sentences) && src.sentences.length > 0) {
+    html += `<div class="modal-doc-label">full source · cited sentence highlighted, scrolled into view</div>`;
+    html += `<div class="modal-doc" id="modal-doc-scroll">`;
+    for (const s of src.sentences) {
+      const isTarget = s.idx === sentenceIdx;
+      html += `<div class="modal-doc-line${isTarget ? ' target' : ''}" id="${isTarget ? 'modal-doc-target' : ''}">
+        <span class="modal-doc-idx">#${s.idx}</span><span class="modal-doc-text">${escapeHtml(s.text)}</span>
+      </div>`;
+    }
+    html += `</div>`;
+  } else {
+    html += `<div class="modal-doc-label">cited span (full source not available)</div>`;
+    html += `<div class="modal-doc"><div class="modal-doc-line target"><span class="modal-doc-text">${escapeHtml(grounding.spanText || '(no span text)')}</span></div></div>`;
+  }
+
+  // ── Event details: the typed claim this citation belongs to ──
+  if (def) {
+    const subj = STATE.entities.get(def.subject)?.canonical || def.subject;
+    const valStr = def.valueIsEntity ? (STATE.entities.get(def.value)?.canonical || def.value) : def.value;
+    const status = def.status === 'superseded' ? '<span class="status superseded">superseded</span>'
+                 : def.contested ? '<span class="status contested">contested</span>'
+                 : '<span class="status active">active</span>';
+    html += `<details class="modal-event-details">
+      <summary>show event details · the typed claim cited from this span</summary>
+      <div class="modal-event-body">
+        <div><span class="modal-meta-key">DEF</span><span class="modal-meta-val">${escapeHtml(subj)} · ${escapeHtml(def.predicate)} → ${escapeHtml(String(valStr))}</span></div>
+        <div><span class="modal-meta-key">status</span><span class="modal-meta-val">${status}</span></div>
+        <div><span class="modal-meta-key">grounding count</span><span class="modal-meta-val">${def.grounding.length} event${def.grounding.length === 1 ? '' : 's'}</span></div>
+        <div><span class="modal-meta-key">def id</span><span class="modal-meta-val mono">${escapeHtml(def.id)}</span></div>
+      </div>
+    </details>`;
+  }
+
+  // ── Flag affordance: one click mints a reader EVA over this DEF ──
+  if (def) {
+    html += `<div class="modal-flag-row">
+      <button class="modal-flag-btn" data-def-id="${escapeHtml(def.id)}" title="Record that you disagree with this claim — writes a reader EVA event into the graph">⚑ Flag this claim · I disagree with how the system read this</button>
+      <span class="muted">(your flag becomes part of the graph as a reader-authored EVA event)</span>
     </div>`;
   }
 
   body.innerHTML = html;
   overlay.classList.add('active');
+
+  // Auto-scroll the cited sentence into view (centered)
+  setTimeout(() => {
+    const target = document.getElementById('modal-doc-target');
+    if (target) target.scrollIntoView({ block: 'center', behavior: 'auto' });
+  }, 0);
+
+  // Wire flag button
+  const flagBtn = body.querySelector('.modal-flag-btn');
+  if (flagBtn) {
+    flagBtn.addEventListener('click', () => {
+      flagDefViaModal(flagBtn.getAttribute('data-def-id'));
+    });
+  }
+}
+
+// Mint a reader EVA flagging a DEF. Called from the citation modal's
+// flag button. The EVA enters G and the DEF gets a `contested` flag.
+function flagDefViaModal(defId) {
+  if (!defId) return;
+  let def = null;
+  for (const defs of STATE.defs.values()) {
+    const f = defs.find(d => d.id === defId);
+    if (f) { def = f; break; }
+  }
+  if (!def) return;
+  // Reuse the existing reader-source path for provenance, but author
+  // a structured EVA rather than a freeform note.
+  const READER_SOURCE_NAME = 'Reader notes';
+  let readerSrc = null;
+  for (const s of STATE.sources.values()) {
+    if (s.name === READER_SOURCE_NAME) { readerSrc = s; break; }
+  }
+  if (!readerSrc) {
+    // Lazy-create a minimal reader source. Don't run extraction.
+    const sourceId = uid('src');
+    readerSrc = {
+      id: sourceId, name: READER_SOURCE_NAME,
+      publicationDate: null, intakeTs: Date.now(),
+      sentences: [], eventIds: [], rawText: '',
+      enabled: true, isReaderSource: true,
+    };
+    STATE.sources.set(sourceId, readerSrc);
+  }
+  const ev = appendEvent({
+    op: 'EVA',
+    payload: {
+      target: def.id,
+      subject: def.subject,
+      predicate: def.predicate,
+      value: def.value,
+      verdict: 'dispute',
+      rationale: '(flagged via citation modal — see source)',
+      authoredBy: 'reader',
+    },
+    sourceId: readerSrc.id,
+    intakeTs: Date.now(),
+    authoredBy: 'reader',
+  });
+  STATE.evas.push({ id: ev.id, target: def.id, verdict: 'dispute', authoredBy: 'reader' });
+  def.contested = true;
+  // Visual feedback in the modal
+  const btn = document.querySelector('.modal-flag-btn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⚑ Flagged · this claim is now contested in the graph';
+  }
+  // Re-render the librarian so the contested state appears
+  if (typeof renderLibrarianTranscript === 'function') renderLibrarianTranscript();
+  if (typeof renderEvidencePane === 'function') renderEvidencePane();
 }
 
 function hideSourceSpanModal() {
@@ -7436,9 +9937,11 @@ function submitReaderFeedback() {
   // For qualify/note, just attach as related EVA without modifying def status
 
   hideFeedbackModal();
-  // Re-render whatever query result is visible so the change is reflected
-  const lastResult = STATE.lastQueryResult;
-  if (lastResult) renderQueryResult(lastResult);
+  // Re-render the librarian transcript + evidence pane so any DEF
+  // change is reflected. The legacy feedback modal still functions
+  // for direct-from-Inspect actions; this just keeps the chat in sync.
+  if (typeof renderLibrarianTranscript === 'function') renderLibrarianTranscript();
+  if (typeof renderEvidencePane === 'function') renderEvidencePane();
   if (STATE.activeView === 'inspect') renderInspectView();
   renderHeaderStatus();
 }
@@ -10182,84 +12685,72 @@ document.getElementById('ollama-model').addEventListener('change', e => STATE.ol
 document.getElementById('lmstudio-url').addEventListener('change', e => STATE.lmstudioUrl = e.target.value.trim());
 document.getElementById('lmstudio-model').addEventListener('change', e => STATE.lmstudioModel = e.target.value.trim());
 
-// Conversation history — gives the librarian context across turns so
-// follow-up questions like "what about her sisters?" can resolve.
-const CHAT_HISTORY = [];
-
-// Query button — "Ask"
+// Query button — "Ask". Drives the compile-execute-template flow:
+// optimistically appends a pending turn so the user sees immediate
+// feedback, then awaits the compiler + runtime and updates in place.
 document.getElementById('query-go').addEventListener('click', async () => {
   const input = document.getElementById('query-input');
   const q = input.value.trim();
   if (!q) return;
-
-  // Clear the input immediately so the user can start typing the next
-  // question while the librarian works.
   input.value = '';
+  // Hide live retrieval panel — the actual turn takes over from here
+  hideLiveRetrieval();
 
-  // Resolve the question, possibly using conversation context for
-  // pronoun-y follow-ups. For now we pass the prior subject as a hint
-  // to runQuery if the question doesn't independently resolve.
-  let result = await runQuery(q, STATE.activeCursor, STATE.activeFraming, STATE.compareCursor);
-
-  // Follow-up resolution: if no subject was found and the previous turn
-  // had one, retry with the prior subject's name prepended as context.
-  if (result.kind === 'pre-distinction' && CHAT_HISTORY.length > 0) {
-    const prior = CHAT_HISTORY[CHAT_HISTORY.length - 1];
-    if (prior.subject) {
-      const augmented = `${prior.subject.canonical} — ${q}`;
-      const retry = await runQuery(augmented, STATE.activeCursor, STATE.activeFraming, STATE.compareCursor);
-      if (retry.kind !== 'pre-distinction') {
-        retry.question = q;  // show the user's actual question, not the rewrite
-        retry.followUpFrom = prior.subject.canonical;
-        result = retry;
-      }
-    }
-  }
-
-  renderQueryResult(result);
-  // Save in history for follow-ups
-  CHAT_HISTORY.push({
+  const pendingId = 'turn-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
+  const pendingTurn = {
+    turnId: pendingId,
     question: q,
-    subject: result.subject || null,
-    cursor: result.cursor,
+    cursor: STATE.activeCursor,
+    framing: STATE.activeFraming,
+    compiled: null,
+    plans: [],
+    answer: null,
+    summary: null,
+    pending: true,
+    pending_disambiguation: false,
+    usedCompiler: isLLMReady(),
     timestamp: Date.now(),
-  });
+  };
+  appendLibrarianTurn(pendingTurn);
 
-  // Find the most recent turn block + its per-turn commentary id
-  const transcript = document.getElementById('chat-transcript');
-  const turns = transcript.querySelectorAll('.chat-turn');
-  const lastTurn = turns[turns.length - 1];
-  const commentaryBodyId = lastTurn ? lastTurn._commentaryBodyId : null;
-
-  // Generate commentary if backend is ready
-  if (isLLMReady() && result.kind !== 'pre-distinction') {
-    const payload = buildCommentaryPayload(result);
-    try {
-      const commentary = await llmCommentary(
-        q, payload,
-        describeCursor(result.cursor),
-        describeFraming(result.framing)
-      );
-      if (commentaryBodyId) {
-        const body = document.getElementById(commentaryBodyId);
-        if (body) body.textContent = commentary;
-      }
-    } catch (e) {
-      if (commentaryBodyId) {
-        const body = document.getElementById(commentaryBodyId);
-        if (body) body.innerHTML = `<span class="commentary-loading">commentary error: ${escapeHtml(e.message)}</span>`;
-      }
+  try {
+    const real = await runLibrarianTurn(q, STATE.activeCursor, STATE.activeFraming);
+    updateLibrarianTurn(pendingId, t => {
+      t.compiled = real.compiled;
+      t.plans = real.plans;
+      t.answer = real.answer;
+      t.pending_disambiguation = !!real.pending_disambiguation;
+      t.usedCompiler = real.usedCompiler;
+      t.pending = false;
+    });
+    // Fire the typed-edit layer in the background. The mechanical
+    // answer is already on screen; the editor's output, if it
+    // validates, replaces the rendered version (still toggleable).
+    if (STATE.editsEnabled && real.answer && !real.pending_disambiguation) {
+      fireEditorForTurn(pendingId).catch(e => console.warn('[editor]', e));
     }
+  } catch (e) {
+    updateLibrarianTurn(pendingId, t => {
+      t.pending = false;
+      t.pending_disambiguation = false;
+      t.compiled = { intent: 'search', confidence: 'low', subject: null, subject_candidates: [], predicate: null, predicate_class: null, object_filter: null, clarifying_question: null, fallback: 'show_spans' };
+      t.answer = `<p class="templated">An error occurred: ${escapeHtml(e.message)}</p>`;
+    });
   }
 });
 
-// Clear chat
+// Clear chat — resets all turns and the focused state.
 document.getElementById('chat-clear').addEventListener('click', () => {
-  const transcript = document.getElementById('chat-transcript');
-  if (transcript) {
-    transcript.innerHTML = `<div class="empty-state">Ingest a source, then ask the librarian. Answers come as commentary paired with cited findings and source spans.</div>`;
-  }
-  CHAT_HISTORY.length = 0;
+  LIBRARIAN_TURNS.length = 0;
+  FOCUSED_TURN_ID = null;
+  FOCUSED_PLAN_INDEX = 0;
+  renderLibrarianTranscript();
+  renderEvidencePane();
+});
+
+// Right-pane close button — collapses the evidence pane on demand.
+document.getElementById('librarian-right-close')?.addEventListener('click', () => {
+  document.querySelector('.librarian-right')?.classList.add('collapsed');
 });
 
 document.getElementById('query-input').addEventListener('keydown', (e) => {
@@ -10269,12 +12760,205 @@ document.getElementById('query-input').addEventListener('keydown', (e) => {
   }
 });
 
+// ─── LIVE KEYSTROKE RETRIEVAL ────────────────────────────────────────
+// As the user types, the right pane fills with candidate spans matching
+// the partial input — alias-trie-style scoring against entities, with
+// predicate-name + value substring fallback. Streams in before the
+// user submits. The librarian metaphor stops being a metaphor.
+//
+// Each candidate carries `match_method` so the user can read the
+// architecture at a glance: alias matches are pinned above embedding
+// matches (when those land); reader-authored sources tagged.
+//
+// Debounced ~150ms. Below ~3 chars we don't bother. While a turn is
+// pending, the live panel is hidden so we don't compete with the
+// templated answer.
+
+let LIVE_RETRIEVAL_TIMER = null;
+const LIVE_RETRIEVAL_DEBOUNCE_MS = 150;
+const LIVE_RETRIEVAL_MIN_CHARS = 3;
+
+document.getElementById('query-input').addEventListener('input', (e) => {
+  const v = (e.target.value || '').trim();
+  if (LIVE_RETRIEVAL_TIMER) clearTimeout(LIVE_RETRIEVAL_TIMER);
+  if (v.length < LIVE_RETRIEVAL_MIN_CHARS) {
+    hideLiveRetrieval();
+    return;
+  }
+  LIVE_RETRIEVAL_TIMER = setTimeout(() => {
+    runLiveRetrieval(v);
+  }, LIVE_RETRIEVAL_DEBOUNCE_MS);
+});
+
+// Score candidates from the user's partial input. Returns an ordered
+// list of { kind, label, sublabel, def, grounding, score, method }.
+function scoreLiveCandidates(text) {
+  const q = text.toLowerCase();
+  const tokens = q.replace(/[^\w\s]/g, ' ').split(/\s+/).filter(t => t.length > 1);
+  const candidates = [];
+  // Track which DEFs we've already added so we don't duplicate
+  const seenDefIds = new Set();
+
+  // ── Track A: entity alias matches → pull all DEFs for matched entities ──
+  const matchedEntities = new Map();  // entityId → bestScore
+  for (const [id, info] of STATE.entities) {
+    if (!isEntityActive(id)) continue;
+    let best = 0;
+    for (const alias of info.aliases) {
+      const a = alias.toLowerCase();
+      if (a.length < 2) continue;
+      if (a === q) best = Math.max(best, 100);
+      else if (q.includes(a)) best = Math.max(best, 50 + a.length);
+      else {
+        for (const t of tokens) {
+          if (a === t) best = Math.max(best, 30 + a.length);
+          else if (a.startsWith(t) && t.length >= 2) best = Math.max(best, 15 + a.length);
+          else if (a.includes(t) && t.length >= 3) best = Math.max(best, 8 + a.length);
+        }
+      }
+    }
+    if (best > 0) matchedEntities.set(id, best);
+  }
+
+  for (const [id, score] of matchedEntities) {
+    const info = STATE.entities.get(id);
+    const defs = getAllDefsForSubject(id).filter(filterDefToActive);
+    for (const def of defs.slice(0, 4)) {
+      if (seenDefIds.has(def.id)) continue;
+      seenDefIds.add(def.id);
+      const g = primaryGroundingFor(def);
+      if (!g) continue;
+      const valStr = def.valueIsEntity ? (STATE.entities.get(def.value)?.canonical || def.value) : def.value;
+      candidates.push({
+        kind: 'def',
+        label: `${info.canonical} | ${def.predicate} → ${String(valStr).slice(0, 80)}`,
+        sublabel: (def.grounding[g.groundingIdx]?.spanText || '').slice(0, 200),
+        def, grounding: def.grounding[g.groundingIdx], groundingIdx: g.groundingIdx,
+        score: score + def.grounding.length,
+        method: 'alias',
+      });
+    }
+  }
+
+  // ── Track B: predicate-name + value substring fallback ──
+  // For tokens that didn't match an entity, scan DEFs with predicate or
+  // value containing the token. Lower priority than alias matches.
+  if (tokens.length) {
+    let scanned = 0;
+    for (const defs of STATE.defs.values()) {
+      if (scanned > 600) break;  // bound the scan; full-corpus impl can use an index
+      for (const def of defs) {
+        scanned++;
+        if (def.status === 'superseded') continue;
+        if (seenDefIds.has(def.id)) continue;
+        if (!filterDefToActive(def)) continue;
+        const pred = String(def.predicate || '').toLowerCase();
+        const val = String(def.valueIsEntity ? STATE.entities.get(def.value)?.canonical || '' : def.value || '').toLowerCase();
+        let bestTok = 0;
+        for (const t of tokens) {
+          if (pred.includes(t) || val.includes(t)) bestTok = Math.max(bestTok, t.length);
+        }
+        if (bestTok < 3) continue;
+        seenDefIds.add(def.id);
+        const g = primaryGroundingFor(def);
+        if (!g) continue;
+        const subj = STATE.entities.get(def.subject)?.canonical || def.subject;
+        const valStr = def.valueIsEntity ? (STATE.entities.get(def.value)?.canonical || def.value) : def.value;
+        candidates.push({
+          kind: 'def',
+          label: `${subj} | ${def.predicate} → ${String(valStr).slice(0, 80)}`,
+          sublabel: (def.grounding[g.groundingIdx]?.spanText || '').slice(0, 200),
+          def, grounding: def.grounding[g.groundingIdx], groundingIdx: g.groundingIdx,
+          score: 5 + bestTok,
+          method: pred.includes(tokens[0]) ? 'predicate' : 'value',
+        });
+      }
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates.slice(0, 12);
+}
+
+function runLiveRetrieval(text) {
+  // Don't compete with a focused turn answer — only show live retrieval
+  // when there's no turn or the user is starting fresh after one.
+  const cands = scoreLiveCandidates(text);
+  renderLiveRetrievalPanel(text, cands);
+}
+
+function renderLiveRetrievalPanel(text, cands) {
+  const pane = document.getElementById('evidence-pane');
+  if (!pane) return;
+  // If a turn is focused with results, don't override — only show live
+  // retrieval when the right pane is empty (no turn yet) or when the
+  // user explicitly hasn't focused a turn.
+  const hasTurn = LIBRARIAN_TURNS.length > 0 && FOCUSED_TURN_ID;
+  if (hasTurn) return;  // keep the focused turn visible
+  if (!cands.length) {
+    pane.innerHTML = `<div class="evidence-header"><em>typing</em>: ${escapeHtml(text)}</div>
+      <div class="empty-state">No candidates yet. Keep typing — entities, predicates, and values from the corpus will surface here as they match.</div>`;
+    return;
+  }
+  let html = `<div class="evidence-header"><em>typing</em>: ${escapeHtml(text)} <span class="muted">· ${cands.length} candidate${cands.length === 1 ? '' : 's'} from the graph</span></div>`;
+  html += `<div class="live-retrieval-list">`;
+  for (const c of cands) {
+    const methodBadge = `<span class="match-method ${c.method}">${c.method}</span>`;
+    html += `<div class="live-cand" data-def-id="${escapeHtml(c.def.id)}" data-grounding-idx="${c.groundingIdx}">
+      <div class="live-cand-head">
+        <span class="live-cand-label">${escapeHtml(c.label)}</span>
+        ${methodBadge}
+      </div>
+      ${c.sublabel ? `<div class="live-cand-span">${escapeHtml(c.sublabel)}</div>` : ''}
+    </div>`;
+  }
+  html += `</div>`;
+  html += `<div class="muted live-hint">Hit Ask (or Ctrl/Cmd+Enter) to compile this question into a structured query plan.</div>`;
+  pane.innerHTML = html;
+
+  pane.querySelectorAll('.live-cand').forEach(el => {
+    el.addEventListener('click', () => {
+      const defId = el.getAttribute('data-def-id');
+      const gIdx = parseInt(el.getAttribute('data-grounding-idx'), 10);
+      let def = null;
+      for (const defs of STATE.defs.values()) {
+        const f = defs.find(d => d.id === defId);
+        if (f) { def = f; break; }
+      }
+      if (def && def.grounding[gIdx]) showSourceSpanModal(def.grounding[gIdx], { def });
+    });
+  });
+}
+
+function hideLiveRetrieval() {
+  // Re-render the evidence pane with the current focused turn (if any).
+  // If no turn is focused, restore the empty state.
+  if (typeof renderEvidencePane === 'function') renderEvidencePane();
+}
+
 // Framing pills
 document.querySelectorAll('.framing-pill').forEach(pill => {
   pill.addEventListener('click', () => {
     document.querySelectorAll('.framing-pill').forEach(p => p.classList.remove('active'));
     pill.classList.add('active');
     STATE.activeFraming = pill.getAttribute('data-framing');
+  });
+});
+
+// Edit-mode pills (raw / edited / diff). Toggling disables the editor
+// LLM call when 'raw' is the only mode the user wants — but for v1 the
+// toggle only changes the render; the editor still fires in the
+// background when LLM is ready, so flipping back to 'edited' is instant.
+document.querySelectorAll('.edit-mode-pill').forEach(pill => {
+  pill.addEventListener('click', () => {
+    document.querySelectorAll('.edit-mode-pill').forEach(p => p.classList.remove('active'));
+    pill.classList.add('active');
+    const mode = pill.getAttribute('data-edit-mode');
+    STATE.editsRenderMode = mode;
+    // 'raw' mode: also disable future editor calls. The user has
+    // explicitly opted out of stylistic smoothing for this session.
+    STATE.editsEnabled = (mode !== 'raw');
+    if (typeof renderLibrarianTranscript === 'function') renderLibrarianTranscript();
   });
 });
 
@@ -10314,7 +12998,8 @@ document.getElementById('cursor-apply').addEventListener('click', () => {
   }
 });
 
-// Example queries
+// Example queries — including the meta-question "what's this about?"
+// so users discover the SIG(NUL) corpus-overview path.
 function renderExampleQueries() {
   const el = document.getElementById('example-queries');
   const hasCorpus = STATE.G.length > 0;
@@ -10322,12 +13007,11 @@ function renderExampleQueries() {
     el.innerHTML = '';
     return;
   }
-  // Pick a few entities as examples (only from active sources)
   const ents = [...STATE.entities.values()]
     .filter(e => isEntityActive(e.id))
     .filter(e => getAllDefsForSubject(e.id).some(d => filterDefToActive(d)))
     .slice(0, 3);
-  let html = '';
+  let html = `<button class="example-q" data-q="What's this about?">What's this about?</button>`;
   for (const ent of ents) {
     html += `<button class="example-q" data-q="Tell me about ${escapeHtml(ent.canonical)}.">Tell me about ${escapeHtml(ent.canonical)}.</button>`;
   }
