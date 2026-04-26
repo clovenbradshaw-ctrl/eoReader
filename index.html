@@ -636,6 +636,348 @@ button.secondary.danger:hover { background: var(--accent); color: var(--paper); 
   padding: 1px 5px;
 }
 
+/* ── TEMPLATED ANSWER (left pane, citation-bearing) ──────────────── */
+.turn-answer p.templated {
+  font-style: normal;
+  font-family: 'Newsreader', serif;
+  font-size: 15px;
+  line-height: 1.65;
+  margin: 0;
+  color: var(--ink);
+}
+.entity-link {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--ink-soft);
+  cursor: pointer;
+}
+.entity-link:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+sup.citation {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  color: var(--cursor);
+  cursor: pointer;
+  margin-left: 1px;
+  padding: 0 2px;
+  border: 1px solid transparent;
+}
+sup.citation:hover {
+  background: var(--paper-soft);
+  border-color: var(--cursor);
+  color: var(--accent);
+}
+
+/* ── COMPILED-PLAN BADGES & CONFIDENCE ──────────────────────────── */
+.compiled-badge { color: var(--ink-soft); }
+.compiled-badge .conf {
+  font-weight: 500;
+}
+.compiled-badge .conf.ambiguous { color: var(--gap); }
+.compiled-badge .conf.low { color: var(--gap); }
+.compiled-badge .conf.medium { color: var(--cursor); }
+.muted { color: var(--ink-faint); }
+
+/* ── DISAMBIGUATION CHOOSER (right pane) ────────────────────────── */
+.evidence-section.disambig { background: var(--paper); padding: 12px; border: 1px solid var(--cursor); border-left-width: 3px; margin-bottom: 18px; }
+.disambig-cards { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.disambig-card {
+  font-family: inherit;
+  text-align: left;
+  background: var(--paper-soft);
+  border: 1px solid var(--rule);
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+.disambig-card:hover { border-color: var(--cursor); background: var(--paper); }
+.disambig-card:disabled { cursor: not-allowed; }
+.disambig-canonical {
+  font-family: 'Newsreader', serif;
+  font-size: 14px;
+  color: var(--ink);
+  margin-bottom: 2px;
+}
+.disambig-meta {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+
+/* ── CONSTRUCTION TRACE ─────────────────────────────────────────── */
+.construction-trace details summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 6px 0;
+}
+.construction-trace details summary::-webkit-details-marker { display: none; }
+.construction-trace details summary::before {
+  content: '▸ ';
+  color: var(--ink-faint);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+}
+.construction-trace details[open] summary::before { content: '▾ '; }
+.construction-trace .trace-body {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--paper);
+  border: 1px dashed var(--rule);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.construction-trace .trace-row { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 2px 0; }
+.construction-trace .trace-key { color: var(--ink-faint); letter-spacing: 0.04em; }
+.construction-trace .trace-val { color: var(--ink); }
+.construction-trace .trace-line { font-family: 'IBM Plex Mono', monospace; font-size: 11px; padding: 1px 0; word-break: break-all; }
+
+/* ── SUMMARY AFFORDANCE (frictional disclosure) ─────────────────── */
+.summary-affordance details summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 8px 12px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.summary-affordance details summary::-webkit-details-marker { display: none; }
+.summary-affordance details summary::before { content: '▸ '; color: var(--ink-faint); }
+.summary-affordance details[open] summary::before { content: '▾ '; }
+.summary-affordance .summary-warning {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--gap-soft);
+  border-left: 3px solid var(--gap);
+  font-family: 'Newsreader', serif;
+  font-size: 12px;
+  font-style: italic;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.summary-affordance .summary-generate {
+  margin-top: 8px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 6px 12px;
+  background: var(--paper-soft);
+  border: 1px solid var(--gap);
+  color: var(--gap);
+  cursor: pointer;
+}
+.summary-affordance .summary-generate:hover {
+  background: var(--gap);
+  color: var(--paper);
+}
+.summary-affordance .summary-generate:disabled { opacity: 0.5; cursor: not-allowed; }
+.summary-affordance .summary-body {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--paper-soft);
+  border: 1px dashed var(--rule);
+  font-family: 'Newsreader', serif;
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+.turn-summary {
+  margin-top: 12px;
+  padding: 8px 10px;
+  background: var(--paper-soft);
+  border-left: 3px solid var(--gap);
+}
+.turn-summary-warning {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--gap);
+  margin-bottom: 6px;
+}
+.turn-summary-body {
+  font-family: 'Newsreader', serif;
+  font-style: italic;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+/* ── CITATION MODAL UPGRADE ─────────────────────────────────────── */
+.modal-meta-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 14px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  background: var(--paper-soft);
+  border: 1px dashed var(--rule);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.modal-meta-key { color: var(--ink-faint); letter-spacing: 0.06em; text-transform: uppercase; margin-right: 6px; }
+.modal-meta-val { color: var(--ink); }
+.modal-meta-val.mono { font-family: 'IBM Plex Mono', monospace; font-size: 9px; }
+
+.modal-doc-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 6px;
+}
+.modal-doc {
+  max-height: 50vh;
+  overflow-y: auto;
+  border: 1px solid var(--rule);
+  padding: 10px 12px;
+  background: var(--paper);
+  scrollbar-width: thin;
+}
+.modal-doc::-webkit-scrollbar { width: 6px; }
+.modal-doc::-webkit-scrollbar-thumb { background: var(--ink-ghost); }
+.modal-doc-line {
+  display: flex;
+  gap: 10px;
+  padding: 2px 4px;
+  font-family: 'Newsreader', serif;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+.modal-doc-line.target {
+  background: var(--paper-soft);
+  border-left: 3px solid var(--accent);
+  padding-left: 8px;
+  color: var(--ink);
+  font-style: italic;
+}
+.modal-doc-idx {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  width: 36px;
+  text-align: right;
+}
+
+.modal-event-details {
+  margin-top: 14px;
+}
+.modal-event-details summary {
+  cursor: pointer;
+  list-style: none;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  padding: 6px 0;
+}
+.modal-event-details summary::-webkit-details-marker { display: none; }
+.modal-event-details summary::before { content: '▸ '; }
+.modal-event-details[open] summary::before { content: '▾ '; }
+.modal-event-details .modal-event-body {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--paper-soft);
+  border: 1px dashed var(--rule);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  line-height: 1.7;
+  display: grid;
+  gap: 4px;
+}
+.modal-event-body .status.active { color: var(--confirm, #4a7c59); }
+.modal-event-body .status.contested { color: var(--gap); }
+.modal-event-body .status.superseded { color: var(--supersede); }
+
+.modal-flag-row {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.modal-flag-btn {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding: 6px 12px;
+  background: var(--paper);
+  border: 1px solid var(--gap);
+  color: var(--gap);
+  cursor: pointer;
+}
+.modal-flag-btn:hover { background: var(--gap); color: var(--paper); }
+.modal-flag-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* ── LIVE KEYSTROKE RETRIEVAL ─────────────────────────────────── */
+.live-retrieval-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 14px;
+}
+.live-cand {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--ink-ghost);
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+.live-cand:hover { border-color: var(--cursor); border-left-color: var(--cursor); }
+.live-cand-head { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.live-cand-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--ink);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-cand-span {
+  font-family: 'Newsreader', serif;
+  font-style: italic;
+  font-size: 12px;
+  color: var(--ink-soft);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+.match-method {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border: 1px solid var(--rule);
+  background: var(--paper-soft);
+  color: var(--ink-faint);
+  flex-shrink: 0;
+}
+.match-method.alias { color: var(--ink-soft); border-color: var(--ink-soft); }
+.match-method.predicate { color: var(--cursor); border-color: var(--cursor); }
+.match-method.value { color: var(--accent); border-color: var(--accent); }
+.match-method.embedding { color: var(--gap); border-color: var(--gap); }
+.live-hint {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-style: italic;
+}
+
 /* ── PROJECTION RESULTS ─────────────────────────────────────────── */
 .projection {
   margin-top: 16px;
@@ -2135,6 +2477,21 @@ function normalizePredicate(verb) {
   const v = String(verb).toLowerCase().trim();
   if (VERB_STEMS[v]) return VERB_STEMS[v];
   return v;
+}
+
+// Lightweight inflection stripper for predicate matching: handles the
+// common cases the dictionary above doesn't cover. "marries" → "marri",
+// "loved" → "lov", "running" → "runn". Imperfect but lets the heuristic
+// match "marry" against the stored predicate "marries".
+function stripVerbInflection(w) {
+  let s = String(w || '').toLowerCase().trim();
+  if (!s) return s;
+  if (s.length > 4 && s.endsWith('ies')) return s.slice(0, -3) + 'y';
+  if (s.length > 3 && s.endsWith('ed')) return s.slice(0, -2);
+  if (s.length > 4 && s.endsWith('ing')) return s.slice(0, -3);
+  if (s.length > 3 && s.endsWith('es')) return s.slice(0, -2);
+  if (s.length > 3 && s.endsWith('s') && !s.endsWith('ss')) return s.slice(0, -1);
+  return s;
 }
 
 // Words that should never be relations on their own
@@ -6944,7 +7301,17 @@ function executeEOPlan(plan) {
     for (const sid of targetSubjects) {
       const integral = computeIntegral(sid, cursor);
       for (const [pred, defs] of Object.entries(integral)) {
-        if (pRef && pRef !== '*' && pred.toLowerCase() !== String(pRef).toLowerCase() && !pred.toLowerCase().includes(String(pRef).toLowerCase())) continue;
+        // Predicate filter: pRef can be '*' (any), a single name, or an
+        // array of names (class membership). Array hits any-of.
+        if (pRef && pRef !== '*') {
+          if (Array.isArray(pRef)) {
+            const lower = pred.toLowerCase();
+            const hit = pRef.some(name => lower === String(name).toLowerCase() || lower.includes(String(name).toLowerCase()));
+            if (!hit) continue;
+          } else {
+            if (pred.toLowerCase() !== String(pRef).toLowerCase() && !pred.toLowerCase().includes(String(pRef).toLowerCase())) continue;
+          }
+        }
         for (const def of defs) {
           // Skip superseded for default slice rendering — they're still
           // walkable via the timeline cursor, but not the current value.
@@ -6999,7 +7366,10 @@ function formatPlanLine(plan) {
   const body = plan.body || { op: 'NUL' };
   let inner;
   if (body.op === 'NUL') inner = 'NUL';
-  else if (body.op === 'SEG') inner = `SEG(${body.s || '*'}, ${body.p || '*'}, ${body.v || '*'})`;
+  else if (body.op === 'SEG') {
+    const p = Array.isArray(body.p) ? `{${body.p.join('|')}}` : (body.p || '*');
+    inner = `SEG(${body.s || '*'}, ${p}, ${body.v || '*'})`;
+  }
   else inner = body.op;
   let line = `SIG(${inner})`;
   const tags = [];
@@ -7079,40 +7449,9 @@ function formatPlanResultForLLM(result) {
   return JSON.stringify(result);
 }
 
-// ─── HEURISTIC PLAN (no-LLM fallback) ────────────────────────────────
-// Maps a question to a single EO plan line, deterministically.
-// Meta-questions go to SIG(NUL); entity questions to SIG(SEG(s,*,*)).
-
+// Meta-question detector — used by the heuristic compiler to route
+// "what's this about?" / "summary" / "tell me everything" to overview.
 const META_QUESTION_RE = /\b(what(?:'s| is)? (?:this|here|in here|going on|all this)?|summari[sz]e|overview|tell me everything|what do (?:you|we) have|what'?s in here)\b/i;
-
-function heuristicPlanFromQuestion(question) {
-  const q = String(question).trim();
-  const subject = resolveSubjectFromQuestion(q);
-  if (!subject) {
-    if (META_QUESTION_RE.test(q) || q.length < 30) {
-      return { body: { op: 'NUL' } };
-    }
-    return { body: { op: 'NUL' } };  // safer than nothing
-  }
-  // Subject found — try to lift a predicate keyword too
-  const predVocab = computePredicatesAt(STATE.activeCursor);
-  const stopwords = new Set(['what','does','the','corpus','say','about','tell','me','how','is','are','a','an','of','to','and','or','in','on','for','with','do','have','has','was','were','where','when','who','why','this','that','these','those']);
-  const terms = q.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !stopwords.has(w));
-  let bestPred = null;
-  for (const [predName] of predVocab) {
-    const pl = predName.toLowerCase();
-    for (const term of terms) {
-      if (pl.includes(term) || (normalizePredicate(term) && pl.includes(normalizePredicate(term)))) {
-        bestPred = predName;
-        break;
-      }
-    }
-    if (bestPred) break;
-  }
-  return {
-    body: { op: 'SEG', s: subject.canonical, p: bestPred || '*', v: '*' }
-  };
-}
 
 // Build a compact vocab card the LLM can use to fuzzy-match without
 // pulling content. One line per entity, one line per predicate. Capped
@@ -7149,147 +7488,747 @@ function buildVocabCard() {
   return lines.join('\n');
 }
 
-// ─── LLM AGENT LOOP ──────────────────────────────────────────────────
-// LLM emits EO plan lines as tool calls; we execute, return compact
-// structural results, loop until the model emits ANSWER:. Capped at 3
-// round-trips, parsed leniently, falls back to heuristic on any error.
+// ─── LLM AS QUERY COMPILER ────────────────────────────────────────────
+// The LLM does not answer. It compiles a natural-language question into a
+// structured traversal plan in a constrained JSON schema and steps out
+// of the way. The runtime executes the plan; templates render the
+// answer; citations carry the proof. The model never sees source text.
+//
+// Plan schema (validated before execution):
+//   {
+//     intent: "overview" | "portrait" | "relation_probe" | "attribute_probe" | "search",
+//     subject: { canonical|alias }   // optional, present for portrait/probe intents
+//     subject_candidates: [string]   // when ambiguous; runtime renders chooser
+//     predicate: string | null       // canonical predicate name or null for portrait/overview
+//     predicate_class: string | null // semantic class hint (resolved against clusters)
+//     object_filter: { value }       // optional; filter for relation_probe target
+//     time_window: null              // not yet wired beyond cursor
+//     sources: "all"                 // not yet wired beyond active toggles
+//     confidence: "high" | "medium" | "low" | "ambiguous"
+//     clarifying_question: string | null
+//     fallback: "show_spans" | "ask"
+//   }
 
-const LIBRARIAN_AGENT_SYSTEM = `You are the Librarian. You answer questions about a corpus by walking a graph of typed claims with provenance.
+const LIBRARIAN_COMPILER_SYSTEM = `You compile natural-language questions about a corpus into structured JSON traversal plans. You do not answer. You translate the question into a plan and stop.
 
-You have a small set of tools, expressed as EO notation lines:
+Output: ONE JSON object. No prose around it. No markdown fences. No explanation.
 
-  SIG(NUL)                       — corpus overview (entities, predicates, sources, sizes)
-  SIG(SEG(s, p, v))              — slice by subject / predicate / value (use * for any)
-  SIG(SEG(s, p, v)) @grounding   — same slice, also return source spans
+Schema:
+{
+  "intent": "overview" | "portrait" | "relation_probe" | "attribute_probe" | "search",
+  "subject": "<canonical entity name from registry>" | null,
+  "subject_candidates": ["<canonical name>", ...],
+  "predicate": "<exact predicate name from list>" | null,
+  "predicate_class": "<class label>" | null,
+  "object_filter": "<exact entity name or value substring>" | null,
+  "confidence": "high" | "medium" | "low" | "ambiguous",
+  "clarifying_question": "<one sentence>" | null,
+  "fallback": "show_spans" | "ask"
+}
 
-s, p, v can be the canonical name, an alias, or *. Use canonical names from the vocab card.
+Intent reading:
+- "what's this about" / "summary" / "overview" → "overview"
+- "tell me about X" / "who is X" → "portrait" with subject=X
+- "who/what did X marry / employ / govern / write" → "relation_probe"
+- "how is X paid / funded / accountable" → "attribute_probe"
+- short keyword search → "search"
 
-PROCESS:
-1. Read the user's question.
-2. Emit ONE EO line on its own. Wait for the result.
-3. If you need more, emit another line. Up to 3 rounds total.
-4. When you have enough, emit on its own line:
-     ANSWER: <2-4 sentences of prose, no bullets, no scaffolding>
+Rules:
+- subject must come from the entity registry below. Do not invent names.
+- predicate must come from the predicate list, or be null. Use predicate_class to hint at family when no exact match exists.
+- If the question could refer to two or more entities, emit subject_candidates (full canonicals from registry) and confidence "ambiguous" and a clarifying_question.
+- If you can't compile confidently, emit confidence "low" and fallback "show_spans".
+- Never emit prose. Never explain. Never quote.
 
-RULES:
-- Never invent claims. If the corpus doesn't say it, don't say it.
-- Note superposed/contested findings as the tension they are.
-- For meta-questions ("what's this about", "summary"), emit SIG(NUL) first.
-- For entity questions, fuzzy-match to the closest canonical name from the vocab card.
-- Be brief. Tokens are precious.
+Examples:
 
-EXAMPLES:
+Question: what's this about?
+{"intent":"overview","subject":null,"subject_candidates":[],"predicate":null,"predicate_class":null,"object_filter":null,"confidence":"high","clarifying_question":null,"fallback":"show_spans"}
 
-User: what's this about?
-> SIG(NUL)
-[result returned]
-> ANSWER: The corpus collects three sources on the Riverside Improvement District; thirteen entities are tracked, dominated by claims about governance, accountability, and budget.
+Question: tell me about Liz
+Registry shows: Elizabeth Bennet (Liz, Lizzy)
+{"intent":"portrait","subject":"Elizabeth Bennet","subject_candidates":[],"predicate":null,"predicate_class":null,"object_filter":null,"confidence":"high","clarifying_question":null,"fallback":"show_spans"}
 
-User: tell me about Liz
-[vocab shows ent_eb │ Elizabeth Bennet │ Liz, Lizzy, Eliza]
-> SIG(SEG(Elizabeth Bennet, *, *))
-[result returned]
-> ANSWER: Elizabeth Bennet is described as the second of five sisters, sharp-witted and skeptical of Mr. Darcy at first encounter; the corpus is silent on her age but consistent on her household.`;
+Question: who did Elizabeth marry
+Registry shows: Elizabeth Bennet, Elizabeth I
+{"intent":"relation_probe","subject":null,"subject_candidates":["Elizabeth Bennet","Elizabeth I"],"predicate":null,"predicate_class":"marriage","object_filter":null,"confidence":"ambiguous","clarifying_question":"Which Elizabeth did you mean?","fallback":"ask"}`;
 
-async function runLibrarianAgent(question, plansLog) {
+const PLAN_INTENTS = new Set(['overview', 'portrait', 'relation_probe', 'attribute_probe', 'search']);
+const PLAN_CONFIDENCES = new Set(['high', 'medium', 'low', 'ambiguous']);
+const PLAN_FALLBACKS = new Set(['show_spans', 'ask']);
+
+// Validate a candidate plan object. Returns { ok: bool, plan, error }.
+function validateCompiledPlan(obj) {
+  if (!obj || typeof obj !== 'object') return { ok: false, error: 'not an object' };
+  if (!PLAN_INTENTS.has(obj.intent)) return { ok: false, error: `invalid intent "${obj.intent}"` };
+  if (!PLAN_CONFIDENCES.has(obj.confidence)) return { ok: false, error: `invalid confidence "${obj.confidence}"` };
+  if (obj.fallback && !PLAN_FALLBACKS.has(obj.fallback)) return { ok: false, error: `invalid fallback "${obj.fallback}"` };
+  // Coerce optional fields to canonical shape
+  const plan = {
+    intent: obj.intent,
+    subject: typeof obj.subject === 'string' && obj.subject.trim() ? obj.subject.trim() : null,
+    subject_candidates: Array.isArray(obj.subject_candidates) ? obj.subject_candidates.filter(x => typeof x === 'string') : [],
+    predicate: typeof obj.predicate === 'string' && obj.predicate.trim() ? obj.predicate.trim() : null,
+    predicate_class: typeof obj.predicate_class === 'string' && obj.predicate_class.trim() ? obj.predicate_class.trim() : null,
+    object_filter: typeof obj.object_filter === 'string' && obj.object_filter.trim() ? obj.object_filter.trim() : null,
+    confidence: obj.confidence,
+    clarifying_question: typeof obj.clarifying_question === 'string' && obj.clarifying_question.trim() ? obj.clarifying_question.trim() : null,
+    fallback: obj.fallback || 'show_spans',
+  };
+  return { ok: true, plan };
+}
+
+// Try to extract a JSON object from raw model output, even if it
+// wrapped it in markdown fences or chatter.
+function extractJSONObject(raw) {
+  if (!raw) return null;
+  let s = String(raw).trim();
+  // Strip markdown fences
+  s = s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  // Find the first balanced { … }
+  const start = s.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0;
+  for (let i = start; i < s.length; i++) {
+    if (s[i] === '{') depth++;
+    else if (s[i] === '}') { depth--; if (depth === 0) {
+      const piece = s.slice(start, i + 1);
+      try { return JSON.parse(piece); } catch (e) { return null; }
+    } }
+  }
+  return null;
+}
+
+// Compile a question into a structured plan via the LLM. Returns a
+// validated plan or null if the model can't be used / produces garbage.
+// On invalid output we re-prompt once with the schema error attached;
+// after that we hand off to the heuristic compiler.
+async function compileQueryPlan(question) {
   if (!isLLMReady()) return null;
   const vocab = buildVocabCard();
-  const transcript = [`User question: ${question}`, '', '--- vocab ---', vocab, '', 'Emit your first EO line now.'];
-  const MAX_ROUNDS = 3;
-
-  for (let round = 0; round < MAX_ROUNDS; round++) {
-    let raw;
-    try {
-      raw = await callLLM(LIBRARIAN_AGENT_SYSTEM, transcript.join('\n'), 220, 'librarian-agent');
-    } catch (e) {
-      return { error: e.message };
-    }
-    if (!raw) return { error: 'empty LLM response' };
-    const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
-
-    // Final answer?
-    const ansIdx = lines.findIndex(l => /^ANSWER\s*:/i.test(l));
-    if (ansIdx >= 0) {
-      const answer = lines.slice(ansIdx).join('\n').replace(/^ANSWER\s*:\s*/i, '').trim();
-      return { answer };
-    }
-
-    // Find first parseable plan line
-    let plan = null;
-    for (const l of lines) {
-      const p = parsePlanLine(l);
-      if (p) { plan = p; break; }
-    }
-    if (!plan) {
-      // Couldn't parse — give up cleanly, let heuristic take over
-      return { answer: raw.trim() };
-    }
-    // Default cursor/framing
-    plan.cursor = plan.cursor || STATE.activeCursor;
-    plan.framing = plan.framing || STATE.activeFraming;
-    const result = executeEOPlan(plan);
-    plansLog.push({ plan, result, line: formatPlanLine(plan) });
-    transcript.push('');
-    transcript.push(`> ${formatPlanLine(plan)}`);
-    transcript.push(formatPlanResultForLLM(result));
-    transcript.push('');
-    transcript.push(round === MAX_ROUNDS - 1
-      ? 'Final round. Emit ANSWER: now.'
-      : 'Emit the next EO line, or ANSWER: if you have enough.');
+  const userMsg = `Registry:\n${vocab}\n\nQuestion: ${question}\n\nReturn the JSON plan only.`;
+  let raw;
+  try {
+    raw = await callLLM(LIBRARIAN_COMPILER_SYSTEM, userMsg, 280, 'librarian-compiler');
+  } catch (e) {
+    return null;
   }
-  // Out of rounds with no answer
-  return { error: 'agent ran out of rounds' };
+  let obj = extractJSONObject(raw);
+  let v = obj ? validateCompiledPlan(obj) : { ok: false, error: 'no JSON found' };
+  if (!v.ok) {
+    // One re-prompt with schema error attached.
+    try {
+      const reMsg = userMsg + `\n\nPrevious response failed validation (${v.error}). Return ONLY a valid JSON object matching the schema.`;
+      const raw2 = await callLLM(LIBRARIAN_COMPILER_SYSTEM, reMsg, 280, 'librarian-compiler-retry');
+      obj = extractJSONObject(raw2);
+      v = obj ? validateCompiledPlan(obj) : { ok: false, error: 'no JSON found (retry)' };
+    } catch (e) { return null; }
+  }
+  return v.ok ? v.plan : null;
+}
+
+// ─── EMBEDDING-AUGMENTED ENTITY RESOLUTION ───────────────────────────
+// Embeddings rank, the graph answers. When alias matching misses, we
+// optionally fall back to cosine similarity against per-entity centroids
+// (mean of the entity's DEF embeddings). High threshold (0.75+) so we
+// don't silently mis-attribute spans. Every embedding-derived candidate
+// carries match_method='embedding' visibly through the UI.
+
+const ENTITY_CENTROID_THRESHOLD = 0.75;
+
+const ENTITY_CENTROID_CACHE = {
+  byId: new Map(),       // entityId → Float32Array centroid
+  builtAtCount: 0,       // STATE.G length when last built; rebuild on growth
+};
+
+// Build (or rebuild) the per-entity centroid index. Called lazily.
+function ensureEntityCentroids() {
+  if (EMBEDDER.status !== 'ready') return false;
+  if (ENTITY_CENTROID_CACHE.builtAtCount === STATE.G.length) return true;
+  ENTITY_CENTROID_CACHE.byId.clear();
+  for (const [id] of STATE.entities) {
+    if (!isEntityActive(id)) continue;
+    const defs = getAllDefsForSubject(id);
+    const vecs = [];
+    for (const def of defs) {
+      // Use the originating event's embedding when available
+      for (const g of def.grounding) {
+        const vec = EMBEDDING_STORE.byEventId.get(g.sourceEventId);
+        if (vec) vecs.push(vec);
+      }
+    }
+    if (!vecs.length) continue;
+    // Average int8 vectors → float32 centroid (then renormalize)
+    const dim = vecs[0].length;
+    const acc = new Float32Array(dim);
+    for (const v of vecs) {
+      for (let i = 0; i < dim; i++) acc[i] += v[i];
+    }
+    let norm = 0;
+    for (let i = 0; i < dim; i++) { acc[i] /= vecs.length; norm += acc[i] * acc[i]; }
+    norm = Math.sqrt(norm) || 1;
+    for (let i = 0; i < dim; i++) acc[i] /= norm;
+    ENTITY_CENTROID_CACHE.byId.set(id, acc);
+  }
+  ENTITY_CENTROID_CACHE.builtAtCount = STATE.G.length;
+  return true;
+}
+
+// Cosine similarity between Float32 query vector and Int8 centroid (the
+// store quantizes for space; centroids are Float32 but we re-quantize
+// on the fly when comparing). Both should be L2-normalized.
+function cosineFloat32Int8(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * (b[i] / QUANT_SCALE);
+  return dot;
+}
+function cosineFloat32Float32(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  return dot;
+}
+
+// Resolve a query string to candidate entities by embedding centroid.
+// Returns an array of { id, info, score, method } sorted by score desc.
+async function resolveEntitiesByEmbedding(query, k = 3) {
+  if (EMBEDDER.status !== 'ready') return [];
+  if (!ensureEntityCentroids()) return [];
+  const qVec = await embedText(query);
+  if (!qVec) return [];
+  const out = [];
+  for (const [id, centroid] of ENTITY_CENTROID_CACHE.byId) {
+    const score = cosineFloat32Float32(qVec, centroid);
+    if (score >= ENTITY_CENTROID_THRESHOLD) {
+      out.push({ id, info: STATE.entities.get(id), score, method: 'embedding' });
+    }
+  }
+  out.sort((a, b) => b.score - a.score);
+  return out.slice(0, k);
+}
+
+// ─── PREDICATE-CLASS CLUSTERING ───────────────────────────────────────
+// Predicate names are emergent ("marries", "married-to", "wedded"). We
+// cluster them by embedding similarity into stable classes so the
+// compiler can emit a class hint and the runtime can resolve to all
+// member predicates. Rebuilds on data-change; cached otherwise.
+
+const PREDICATE_CLUSTER_THRESHOLD = 0.65;  // cosine
+const PREDICATE_CLUSTER_CACHE = {
+  classes: [],          // [{label, members:[predName], centroid:Float32Array}]
+  builtAtPredCount: 0,
+};
+
+async function ensurePredicateClasses() {
+  if (EMBEDDER.status !== 'ready') return false;
+  const predVocab = computePredicatesAt(STATE.activeCursor);
+  if (PREDICATE_CLUSTER_CACHE.builtAtPredCount === predVocab.size) return true;
+  const preds = [...predVocab.keys()];
+  if (!preds.length) {
+    PREDICATE_CLUSTER_CACHE.classes = [];
+    PREDICATE_CLUSTER_CACHE.builtAtPredCount = 0;
+    return true;
+  }
+  // Embed each predicate name. Cap to avoid LLM hammering on big corpora.
+  const cap = Math.min(preds.length, 80);
+  const embedded = [];
+  for (let i = 0; i < cap; i++) {
+    const v = await embedText(preds[i].replace(/-/g, ' '));
+    if (v) embedded.push({ name: preds[i], vec: v });
+  }
+  // Greedy single-pass clustering
+  const classes = [];
+  for (const e of embedded) {
+    let bestClass = null, bestSim = 0;
+    for (const c of classes) {
+      const sim = cosineFloat32Float32(e.vec, c.centroid);
+      if (sim > bestSim) { bestSim = sim; bestClass = c; }
+    }
+    if (bestClass && bestSim >= PREDICATE_CLUSTER_THRESHOLD) {
+      bestClass.members.push(e.name);
+      // update centroid (running mean)
+      const n = bestClass.members.length;
+      const dim = bestClass.centroid.length;
+      for (let i = 0; i < dim; i++) bestClass.centroid[i] = ((n - 1) * bestClass.centroid[i] + e.vec[i]) / n;
+      // renormalize
+      let norm = 0;
+      for (let i = 0; i < dim; i++) norm += bestClass.centroid[i] * bestClass.centroid[i];
+      norm = Math.sqrt(norm) || 1;
+      for (let i = 0; i < dim; i++) bestClass.centroid[i] /= norm;
+    } else {
+      classes.push({ label: e.name, members: [e.name], centroid: e.vec.slice() });
+    }
+  }
+  PREDICATE_CLUSTER_CACHE.classes = classes;
+  PREDICATE_CLUSTER_CACHE.builtAtPredCount = predVocab.size;
+  return true;
+}
+
+// Resolve a predicate_class hint to a set of predicate names. Tries
+// label match first, then embedding-distance to each cluster's centroid.
+async function resolvePredicateClass(classHint) {
+  if (!classHint) return [];
+  const cls = PREDICATE_CLUSTER_CACHE.classes;
+  if (!cls.length) return [];
+  // Direct label match
+  for (const c of cls) {
+    if (c.label.toLowerCase() === String(classHint).toLowerCase()) return [...c.members];
+    if (c.members.some(m => m.toLowerCase() === String(classHint).toLowerCase())) return [...c.members];
+  }
+  // Embedding match
+  if (EMBEDDER.status !== 'ready') return [];
+  const v = await embedText(String(classHint).replace(/-/g, ' '));
+  if (!v) return [];
+  let best = null, bestSim = 0;
+  for (const c of cls) {
+    const sim = cosineFloat32Float32(v, c.centroid);
+    if (sim > bestSim) { bestSim = sim; best = c; }
+  }
+  return (best && bestSim >= PREDICATE_CLUSTER_THRESHOLD) ? [...best.members] : [];
+}
+
+// Heuristic plan compiler — deterministic, used when the LLM is
+// unavailable or the compiler can't produce a valid plan twice.
+// Maps a question to the same shape so the runtime is uniform.
+function heuristicCompiledPlan(question) {
+  const q = String(question).trim();
+  const subject = resolveSubjectFromQuestion(q);
+  const isMeta = META_QUESTION_RE.test(q) || (!subject && q.length < 30);
+  if (isMeta) {
+    return {
+      intent: 'overview',
+      subject: null, subject_candidates: [],
+      predicate: null, predicate_class: null, object_filter: null,
+      confidence: 'high', clarifying_question: null, fallback: 'show_spans',
+    };
+  }
+  if (!subject) {
+    return {
+      intent: 'search',
+      subject: null, subject_candidates: [],
+      predicate: null, predicate_class: null, object_filter: null,
+      confidence: 'low', clarifying_question: null, fallback: 'show_spans',
+    };
+  }
+  // Subject resolved — pick a predicate by keyword if possible
+  const predVocab = computePredicatesAt(STATE.activeCursor);
+  const stopwords = new Set(['what','does','the','corpus','say','about','tell','me','how','is','are','a','an','of','to','and','or','in','on','for','with','do','have','has','was','were','where','when','who','why','this','that','these','those','did','will']);
+  const terms = q.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !stopwords.has(w));
+  let bestPred = null;
+  for (const [predName] of predVocab) {
+    const pl = predName.toLowerCase();
+    const plStem = stripVerbInflection(pl);
+    for (const term of terms) {
+      const ts = stripVerbInflection(term);
+      if (pl.includes(term) || pl.includes(ts) || plStem.includes(term) || plStem.includes(ts)) {
+        bestPred = predName; break;
+      }
+      if (normalizePredicate(term) && pl.includes(normalizePredicate(term))) {
+        bestPred = predName; break;
+      }
+    }
+    if (bestPred) break;
+  }
+  // WH-question shape detection drives intent: who/what/how typically
+  // mean the user wants a specific slot value (probe), where/when also.
+  const wh = /\b(who|what|how|when|where)\b/i.test(q);
+  return {
+    intent: bestPred ? (wh ? 'relation_probe' : 'attribute_probe') : 'portrait',
+    subject: subject.canonical,
+    subject_candidates: [],
+    predicate: bestPred,
+    predicate_class: null,
+    object_filter: null,
+    confidence: 'medium',
+    clarifying_question: null,
+    fallback: 'show_spans',
+  };
+}
+
+// Translate a validated compiled plan into a SIG(SEG)/SIG(NUL) EO plan.
+// Async because predicate-class expansion and embedding-based subject
+// fallback can both require LLM-loaded resources. Returns null when
+// the plan needs disambiguation before execution.
+async function compiledToEOPlan(compiled, cursor, framing) {
+  if (compiled.intent === 'overview' || (!compiled.subject && !compiled.subject_candidates.length && !compiled.predicate && !compiled.predicate_class)) {
+    return { body: { op: 'NUL' }, cursor, framing };
+  }
+  if (compiled.confidence === 'ambiguous' && compiled.subject_candidates.length > 1 && !compiled.subject) {
+    return null;
+  }
+  let subjectStr = compiled.subject || compiled.subject_candidates[0] || null;
+
+  // Embedding-based subject resolution when alias misses. Sets
+  // compiled.subject_match_method = 'embedding' visibly.
+  if (!subjectStr && compiled.intent !== 'search' && EMBEDDER.status === 'ready') {
+    // We need a query string for embedding — fall back to using the
+    // compiled clarifying_question or the predicate as a hint. Skip if
+    // there's nothing usable.
+    const hint = compiled.clarifying_question || compiled.predicate || compiled.predicate_class;
+    if (hint) {
+      const cands = await resolveEntitiesByEmbedding(hint, 3);
+      if (cands.length === 1 && cands[0].score >= ENTITY_CENTROID_THRESHOLD) {
+        subjectStr = cands[0].info.canonical;
+        compiled.subject = subjectStr;
+        compiled.subject_match_method = 'embedding';
+        compiled.subject_match_score = cands[0].score;
+      } else if (cands.length > 1) {
+        // Ambiguous via embedding — bubble back to the chooser
+        compiled.subject_candidates = cands.map(c => c.info.canonical);
+        compiled.confidence = 'ambiguous';
+        compiled.subject_match_method = 'embedding';
+        return null;
+      }
+    }
+  }
+  // Default mark for alias-resolved subjects
+  if (subjectStr && !compiled.subject_match_method) compiled.subject_match_method = 'alias';
+
+  // Predicate filter: prefer exact name; otherwise expand class to
+  // member set; otherwise wildcard.
+  let pFilter = '*';
+  if (compiled.predicate) {
+    pFilter = compiled.predicate;
+  } else if (compiled.predicate_class) {
+    const members = await resolvePredicateClass(compiled.predicate_class);
+    if (members.length) {
+      pFilter = members;
+      compiled.predicate_match_method = 'class_embedding';
+    }
+  }
+
+  if (!subjectStr) return { body: { op: 'NUL' }, cursor, framing };
+  return {
+    body: {
+      op: 'SEG',
+      s: subjectStr,
+      p: pFilter,
+      v: compiled.object_filter || '*',
+    },
+    cursor, framing,
+    withGrounding: true,
+  };
 }
 
 // ─── LIBRARIAN TURN ──────────────────────────────────────────────────
-// One question → one turn. A turn carries: the plan(s) the librarian
-// ran, the structural rows each plan produced, optional answer prose,
-// and an opaque turn id used to anchor reader feedback.
-//
-// If a backend is configured, the LLM agent loop drives the plan(s)
-// and writes the answer. Otherwise the heuristic generates a single
-// plan and we render the rows without prose.
+// One question → one turn. A turn carries:
+//   compiled  — the validated JSON plan from the compiler (LLM or heuristic)
+//   plans     — the EO query lines actually executed (for the audit trail)
+//   answer    — the templated, mechanically-assembled answer (HTML, with
+//               hyperlinked entities and citation markers). Never LLM
+//               prose. The "summarize this" affordance generates LLM
+//               prose separately and stores it in `summary` without
+//               replacing `answer`.
+//   summary   — optional opt-in LLM-prose explanation, separate from
+//               the citation-bearing answer
 
 async function runLibrarianTurn(question, cursor, framing, opts = {}) {
   const turnId = 'turn-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
-  const plans = [];
-  let answer = null;
-  let agentError = null;
-  let usedAgent = false;
 
+  // 1. Compile question → structured JSON plan
+  let compiled = null;
+  let usedCompiler = false;
   if (isLLMReady() && !opts.heuristicOnly) {
-    usedAgent = true;
-    try {
-      const out = await runLibrarianAgent(question, plans);
-      if (out?.answer) answer = out.answer;
-      if (out?.error) agentError = out.error;
-    } catch (e) {
-      agentError = e.message;
-    }
+    usedCompiler = true;
+    compiled = await compileQueryPlan(question);
+  }
+  if (!compiled) {
+    compiled = heuristicCompiledPlan(question);
   }
 
-  // Heuristic fallback — fires when no LLM, when the agent emitted no
-  // plan lines, or when it errored before producing one. Always gives
-  // the user *something* to look at.
-  if (plans.length === 0) {
-    const plan = heuristicPlanFromQuestion(question);
-    plan.cursor = cursor;
-    plan.framing = framing;
-    const result = executeEOPlan(plan);
-    plans.push({ plan, result, line: formatPlanLine(plan) });
+  // 2. If ambiguous, pause execution — the renderer shows a chooser.
+  //    The chooser callback re-runs runLibrarianTurn with a resolved
+  //    subject prepended to the question (or directly via opts.subject).
+  if (compiled.confidence === 'ambiguous' &&
+      compiled.subject_candidates.length > 1 &&
+      !compiled.subject &&
+      !opts.subject) {
+    return {
+      turnId, question, cursor, framing,
+      compiled,
+      plans: [],
+      answer: null,
+      summary: null,
+      pending_disambiguation: true,
+      usedCompiler,
+      timestamp: Date.now(),
+    };
   }
+
+  // Allow the chooser to pin a subject and re-run with everything else
+  // from compiled intact.
+  if (opts.subject) compiled = { ...compiled, subject: opts.subject, confidence: 'high', subject_candidates: [] };
+
+  // 3. Translate compiled → EO plan, execute. Lazily refresh the
+  //    predicate-class index if the corpus has changed.
+  if (EMBEDDER.status === 'ready') {
+    try { await ensurePredicateClasses(); } catch (e) { /* clusters stay stale */ }
+  }
+  const eoPlan = await compiledToEOPlan(compiled, cursor, framing);
+
+  // If embedding-resolution bumped subject_candidates back, re-check
+  // disambiguation status and surface the chooser.
+  if (!eoPlan && compiled.confidence === 'ambiguous' && compiled.subject_candidates.length > 1) {
+    return {
+      turnId, question, cursor, framing,
+      compiled,
+      plans: [],
+      answer: null,
+      summary: null,
+      pending_disambiguation: true,
+      usedCompiler,
+      timestamp: Date.now(),
+    };
+  }
+
+  const plans = [];
+  if (eoPlan) {
+    const result = executeEOPlan(eoPlan);
+    plans.push({ plan: eoPlan, result, line: formatPlanLine(eoPlan) });
+  }
+
+  // 4. Templated answer — mechanical assembly from rows
+  const answer = assembleTemplatedAnswer(compiled, plans[0]?.result);
 
   return {
-    turnId,
-    question,
-    cursor, framing,
-    plans,           // array of { plan, result, line }
-    answer,          // prose answer from LLM agent, or null
-    agentError,
-    usedAgent,
+    turnId, question, cursor, framing,
+    compiled,
+    plans,
+    answer,            // HTML string with hyperlinks + citation markers
+    summary: null,     // populated only by user-clicked "summarize this"
+    summaryWarning: null,
+    pending_disambiguation: false,
+    usedCompiler,
     timestamp: Date.now(),
   };
 }
+
+// ─── TEMPLATED ANSWER ASSEMBLY ───────────────────────────────────────
+// Mechanical, dictionary-driven sentence assembly from runtime rows.
+// Stiff on purpose — every word is either from the graph or from a
+// hard-coded connective vocabulary. No LLM in this path.
+//
+// Output: an HTML string with hyperlinked entities and citation markers.
+// Citation markers look like `<sup class="cite" data-def-id=… data-g=…>[1]</sup>`
+// and the click handler routes them to the source-span modal.
+
+const CITE_CONNECTIVES = {
+  according_to: 'according to',
+  per: 'per',
+  silent_on: 'The corpus is silent on',
+  also_says: 'Another source instead names',
+  contested: 'contested',
+  reader_note: 'a reader notes',
+};
+
+// Predicate shape inference — emergent predicates can take many forms:
+//   verb-shaped:  "marries", "governs", "founded"      → "<S> <pred> <V>."
+//   relational:   "is-spouse-of", "is-employed-by"     → "<S> is <noun-of-pred> <V>."
+//   attributive:  "has-trait", "has-character"         → "<S> is described as <V>."
+//   has-X:        "has-budget", "has-address"          → "<S>'s <X> is <V>."
+//   property-of:  bare nominal predicate ("budget")    → "<S>'s <pred> is <V>."
+function inferPredicateShape(pred) {
+  const p = String(pred || '').toLowerCase().trim();
+  if (!p) return 'attributive';
+  if (p.startsWith('is-') || p.startsWith('was-') || p.endsWith('-of') || p.endsWith('-by') || p.endsWith('-to') || p.endsWith('-with')) return 'relational';
+  if (p.startsWith('has-')) return 'has_x';
+  // Heuristic: if it looks like a single verb (no hyphens, ends in
+  // common verb endings), treat as verb.
+  if (!p.includes('-') && /(s|ed|ing|es)$/.test(p)) return 'verb';
+  if (!p.includes('-')) return 'property';
+  return 'attributive';
+}
+
+// Render a predicate as a natural-language fragment. For "is-spouse-of"
+// → "spouse of". For "has-budget" → "budget". For "marries" → "marries".
+function readablePredicate(pred) {
+  const p = String(pred || '');
+  const shape = inferPredicateShape(p);
+  if (shape === 'has_x') return p.replace(/^has-/, '').replace(/-/g, ' ');
+  if (shape === 'relational') return p.replace(/^is-/, '').replace(/^was-/, 'was ').replace(/-/g, ' ');
+  return p.replace(/-/g, ' ');
+}
+
+// Build an entity hyperlink — clickable, opens the entity inspector.
+function entityLink(entityIdOrCanonical) {
+  if (!entityIdOrCanonical) return '';
+  let id = entityIdOrCanonical;
+  let canonical = entityIdOrCanonical;
+  if (STATE.entities.has(entityIdOrCanonical)) {
+    canonical = STATE.entities.get(entityIdOrCanonical).canonical;
+  } else {
+    // Resolve canonical → id
+    for (const [eid, info] of STATE.entities) {
+      if (info.canonical === entityIdOrCanonical) { id = eid; break; }
+    }
+  }
+  return `<a class="entity-link" data-entity-id="${escapeHtml(id)}" href="#" title="Show this entity in the inspector">${escapeHtml(canonical)}</a>`;
+}
+
+// Citation marker — superscript bracketed number, click opens modal.
+function citationMarker(defId, groundingIdx, n) {
+  return `<sup class="citation" data-def-id="${escapeHtml(defId)}" data-grounding-idx="${groundingIdx}" tabindex="0" title="Show the cited source span">[${n}]</sup>`;
+}
+
+// Render a single value (scalar or entity) as inline HTML.
+function renderValueInline(def) {
+  if (def.valueIsEntity) {
+    const ent = STATE.entities.get(def.value);
+    return entityLink(ent ? ent.id : def.value);
+  }
+  return escapeHtml(String(def.value));
+}
+
+// Find the best primary grounding for a def — prefer non-reader,
+// most-recent. Returns { def, groundingIdx } for citation purposes.
+function primaryGroundingFor(def) {
+  if (!def || !def.grounding || !def.grounding.length) return null;
+  // Prefer non-reader sources for the primary citation; reader notes
+  // get rendered separately so the reader's voice is visibly distinct.
+  let bestIdx = 0;
+  for (let i = 0; i < def.grounding.length; i++) {
+    const g = def.grounding[i];
+    const isReader = g.authoredBy === 'reader' || g.sourceId === 'reader';
+    if (!isReader) { bestIdx = i; break; }
+  }
+  return { def, groundingIdx: bestIdx };
+}
+
+// Assemble a templated answer for a portrait-shaped result (one
+// subject, multiple predicates).
+function templatePortrait(result, compiled) {
+  if (!result || !result.rows.length) {
+    return `<p class="templated">${CITE_CONNECTIVES.silent_on} ${entityLink(compiled.subject)}.</p>`;
+  }
+  const subj = result.rows[0].subject;
+  const subjLink = entityLink(result.rows[0].subject_id);
+  // Group rows by predicate; render the heaviest 4
+  const byPred = new Map();
+  for (const r of result.rows) {
+    if (!byPred.has(r.predicate)) byPred.set(r.predicate, []);
+    byPred.get(r.predicate).push(r);
+  }
+  const order = [...byPred.entries()].sort((a, b) => {
+    const wa = Math.max(...a[1].map(r => r.weight));
+    const wb = Math.max(...b[1].map(r => r.weight));
+    return wb - wa;
+  }).slice(0, 4);
+  const sentences = [];
+  for (const [pred, rs] of order) {
+    sentences.push(renderPredicateClause(subj, subjLink, pred, rs));
+  }
+  return `<p class="templated">${sentences.join(' ')}</p>`;
+}
+
+// Assemble a templated answer for a probe-shaped result (one subject,
+// one predicate slot — the user wants that slot's value).
+function templateProbe(result, compiled) {
+  if (!result || !result.rows.length) {
+    if (compiled.predicate) {
+      return `<p class="templated">${CITE_CONNECTIVES.silent_on} ${entityLink(compiled.subject)}'s ${escapeHtml(readablePredicate(compiled.predicate))}.</p>`;
+    }
+    return `<p class="templated">${CITE_CONNECTIVES.silent_on} ${entityLink(compiled.subject)}.</p>`;
+  }
+  const subj = result.rows[0].subject;
+  const subjLink = entityLink(result.rows[0].subject_id);
+  // Filter to rows matching the asked predicate if compiler picked one
+  let rows = result.rows;
+  if (compiled.predicate) {
+    rows = result.rows.filter(r => r.predicate === compiled.predicate);
+    if (!rows.length) rows = result.rows;
+  }
+  // Group by predicate; usually just the one
+  const byPred = new Map();
+  for (const r of rows) {
+    if (!byPred.has(r.predicate)) byPred.set(r.predicate, []);
+    byPred.get(r.predicate).push(r);
+  }
+  const sentences = [];
+  for (const [pred, rs] of byPred) {
+    sentences.push(renderPredicateClause(subj, subjLink, pred, rs));
+  }
+  return `<p class="templated">${sentences.join(' ')}</p>`;
+}
+
+// Core sentence renderer for one (subject, predicate, [defs]) tuple.
+// Handles superposition by rendering one primary value plus a
+// "Another source instead names…" suffix.
+function renderPredicateClause(subjCanonical, subjLink, pred, rs) {
+  // Sort by weight descending; rs are slice rows, already ranked
+  const ranked = [...rs].sort((a, b) => b.weight - a.weight);
+  const primary = ranked[0];
+  const alternates = ranked.slice(1);
+  const primaryDef = (() => {
+    for (const defs of STATE.defs.values()) {
+      const f = defs.find(d => d.id === primary.def_id);
+      if (f) return f;
+    }
+    return null;
+  })();
+  const primaryCite = primaryDef ? primaryGroundingFor(primaryDef) : null;
+  const valueHtml = primaryDef ? renderValueInline(primaryDef) : escapeHtml(String(primary.value));
+  const cite = primaryCite ? citationMarker(primary.def_id, primaryCite.groundingIdx, 1) : '';
+  const shape = inferPredicateShape(pred);
+  let main;
+  if (shape === 'verb') {
+    main = `${subjLink} ${escapeHtml(pred)} ${valueHtml}${cite}.`;
+  } else if (shape === 'relational') {
+    main = `${subjLink} is ${escapeHtml(readablePredicate(pred))} ${valueHtml}${cite}.`;
+  } else if (shape === 'has_x') {
+    main = `${subjLink}'s ${escapeHtml(readablePredicate(pred))} is ${valueHtml}${cite}.`;
+  } else if (shape === 'property') {
+    main = `${subjLink}'s ${escapeHtml(pred)} is ${valueHtml}${cite}.`;
+  } else {
+    main = `${subjLink} is described as ${valueHtml}${cite} for ${escapeHtml(pred)}.`;
+  }
+  // Superposition / contested handling: append "Another source instead names…"
+  if (alternates.length > 0) {
+    const alt = alternates[0];
+    const altDef = (() => {
+      for (const defs of STATE.defs.values()) {
+        const f = defs.find(d => d.id === alt.def_id);
+        if (f) return f;
+      }
+      return null;
+    })();
+    const altCite = altDef ? primaryGroundingFor(altDef) : null;
+    const altValHtml = altDef ? renderValueInline(altDef) : escapeHtml(String(alt.value));
+    const altMarker = altCite ? citationMarker(alt.def_id, altCite.groundingIdx, 2) : '';
+    main += ` ${CITE_CONNECTIVES.also_says} ${altValHtml}${altMarker}${alt.contested ? ' (' + CITE_CONNECTIVES.contested + ')' : ''}.`;
+  }
+  return main;
+}
+
+// Templated answer for an overview (corpus summary) intent.
+function templateOverview(result) {
+  if (!result || result.kind !== 'corpus-summary') return '<p class="templated">No corpus loaded.</p>';
+  if (result.n_entities === 0) {
+    return `<p class="templated">The corpus is empty. Ingest a source to begin.</p>`;
+  }
+  const sources = result.sources.map(s => escapeHtml(s.name)).join(', ');
+  const subjs = result.topSubjects.slice(0, 3).map(s => entityLink(s.id)).join(', ');
+  const preds = result.topPredicates.slice(0, 5).map(p => escapeHtml(p.predicate)).join(', ');
+  const parts = [];
+  parts.push(`The corpus draws on ${result.sources.length} source${result.sources.length === 1 ? '' : 's'} (${sources}), tracking ${result.n_entities} entit${result.n_entities === 1 ? 'y' : 'ies'} across ${result.n_predicates} predicate${result.n_predicates === 1 ? '' : 's'}.`);
+  if (subjs) parts.push(`Top subjects by mass: ${subjs}.`);
+  if (preds) parts.push(`Common predicates: ${preds}.`);
+  return `<p class="templated">${parts.join(' ')}</p>`;
+}
+
+// Top-level dispatcher — picks template by intent.
+function assembleTemplatedAnswer(compiled, result) {
+  if (!compiled) return null;
+  if (compiled.intent === 'overview') return templateOverview(result);
+  if (compiled.intent === 'portrait') return templatePortrait(result, compiled);
+  if (compiled.intent === 'relation_probe' || compiled.intent === 'attribute_probe') return templateProbe(result, compiled);
+  if (compiled.intent === 'search') {
+    if (!result || !result.rows?.length) return `<p class="templated">No findings match. Try a more specific question, or ${CITE_CONNECTIVES.silent_on.toLowerCase()} this query.</p>`;
+    return templatePortrait(result, compiled);
+  }
+  return null;
+}
+
 // ─── RENDER (TWO-PANE) ───────────────────────────────────────────────
 // Left pane = conversation. Each turn = question + prose answer +
 // compact meta. Click a turn → it focuses and the right pane shows the
@@ -7335,32 +8274,58 @@ function renderLibrarianTranscript() {
   const transcript = document.getElementById('chat-transcript');
   if (!transcript) return;
   if (LIBRARIAN_TURNS.length === 0) {
-    transcript.innerHTML = `<div class="empty-state">Ingest a source, then ask the librarian. Answers come paired with the EO query plan that produced them.</div>`;
+    transcript.innerHTML = `<div class="empty-state">Ingest a source, then ask the librarian. Answers come assembled from the graph with citations to the source spans they came from.</div>`;
     return;
   }
   let html = '';
   for (const t of LIBRARIAN_TURNS) {
     const isFocused = t.turnId === FOCUSED_TURN_ID;
-    const planSummary = t.plans.map(p => p.line).slice(0, 2).join(' · ') + (t.plans.length > 2 ? ` · +${t.plans.length - 2} more` : '');
+    const planSummary = t.plans.map(p => p.line).slice(0, 1).join(' · ') + (t.plans.length > 1 ? ` · +${t.plans.length - 1} more` : '');
+
+    // Body: pending → loading; ambiguous → chooser stub; otherwise the
+    // templated answer (HTML with hyperlinks + citation markers).
     let answerHtml;
-    if (t.answer) {
-      answerHtml = `<div class="turn-answer">${escapeHtml(t.answer)}</div>`;
-    } else if (t.pending) {
+    if (t.pending) {
       answerHtml = `<div class="turn-answer loading">walking the graph…</div>`;
-    } else if (t.agentError) {
-      answerHtml = `<div class="turn-answer loading">no prose answer (${escapeHtml(t.agentError)}) — see findings on the right</div>`;
-    } else if (!t.usedAgent) {
-      answerHtml = `<div class="turn-answer loading">no LLM backend configured — see structural findings on the right</div>`;
+    } else if (t.pending_disambiguation) {
+      const cands = (t.compiled?.subject_candidates || []).map(c => escapeHtml(c)).join(' or ');
+      answerHtml = `<div class="turn-answer loading">${escapeHtml(t.compiled?.clarifying_question || 'Which one did you mean?')} — ${cands || 'see chooser at right'}</div>`;
+    } else if (t.answer) {
+      answerHtml = `<div class="turn-answer">${t.answer}</div>`;
     } else {
-      answerHtml = `<div class="turn-answer loading">no answer produced — see findings on the right</div>`;
+      answerHtml = `<div class="turn-answer loading">no findings — see right pane for spans matching this query</div>`;
     }
+
+    // Optional summary panel: only shown when the user has revealed it.
+    let summaryBlock = '';
+    if (t.summary) {
+      summaryBlock = `<div class="turn-summary">
+        <div class="turn-summary-warning">⚠ LLM-generated summary · may smooth over distinctions or introduce drift. The cited answer above is the structural truth.</div>
+        <div class="turn-summary-body">${escapeHtml(t.summary)}</div>
+      </div>`;
+    }
+
+    // Compiled-plan badge: shows the intent + confidence + match method
+    // for each candidate so the user can read the architecture at a glance
+    let compiledBadge = '';
+    if (t.compiled) {
+      const c = t.compiled;
+      const conf = c.confidence === 'high' ? '' : ` · <span class="conf ${c.confidence}">${c.confidence}</span>`;
+      const subjMatch = (c.subject_match_method && c.subject_match_method !== 'alias')
+        ? ` · subject via ${c.subject_match_method}`
+        : '';
+      compiledBadge = `<span class="turn-meta-pill compiled-badge">intent: ${escapeHtml(c.intent)}${conf}${subjMatch}</span>`;
+    }
+
     html += `
       <div class="chat-turn${isFocused ? ' focused' : ''}" data-turn-id="${escapeHtml(t.turnId)}">
         <div class="turn-question-label">you</div>
         <div class="turn-question">${escapeHtml(t.question)}</div>
         <div class="turn-answer-label">librarian</div>
         ${answerHtml}
+        ${summaryBlock}
         <div class="turn-meta">
+          ${compiledBadge}
           <span class="turn-meta-pill">${escapeHtml(planSummary || 'no plan')}</span>
           <span>cursor: ${escapeHtml(describeCursor(t.cursor))}</span>
           <span>framing: ${escapeHtml(describeFraming(t.framing))}</span>
@@ -7368,9 +8333,50 @@ function renderLibrarianTranscript() {
       </div>`;
   }
   transcript.innerHTML = html;
+
+  // Wire turn focus
   transcript.querySelectorAll('.chat-turn').forEach(el => {
-    el.addEventListener('click', () => focusLibrarianTurn(el.getAttribute('data-turn-id')));
+    el.addEventListener('click', (e) => {
+      // Don't intercept clicks on entity links or citation markers
+      if (e.target.closest('.entity-link') || e.target.closest('.citation')) return;
+      focusLibrarianTurn(el.getAttribute('data-turn-id'));
+    });
   });
+
+  // Wire entity-link clicks → entity inspector (currently jumps to inspect view)
+  transcript.querySelectorAll('.entity-link').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = el.getAttribute('data-entity-id');
+      if (!id) return;
+      // For now: jump to inspect view. Future: dedicated inspector modal.
+      if (typeof switchView === 'function') switchView('inspect');
+      STATE.selectedEntityId = id;
+      if (typeof renderInspectView === 'function') renderInspectView();
+    });
+  });
+
+  // Wire citation clicks → source modal
+  transcript.querySelectorAll('.citation').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openCitationFromMarker(el);
+    });
+  });
+}
+
+// Open the citation modal from a `<sup class="citation">` element.
+function openCitationFromMarker(el) {
+  const defId = el.getAttribute('data-def-id');
+  const gIdx = parseInt(el.getAttribute('data-grounding-idx'), 10);
+  let def = null;
+  for (const defs of STATE.defs.values()) {
+    const f = defs.find(d => d.id === defId);
+    if (f) { def = f; break; }
+  }
+  if (def && def.grounding[gIdx]) showSourceSpanModal(def.grounding[gIdx], { def });
 }
 
 function renderEvidencePane() {
@@ -7378,38 +8384,120 @@ function renderEvidencePane() {
   if (!pane) return;
   const turn = LIBRARIAN_TURNS.find(t => t.turnId === FOCUSED_TURN_ID);
   if (!turn) {
-    pane.innerHTML = `<div class="empty-state">Click a turn on the left to inspect its findings and the EO plan that produced them.</div>`;
+    pane.innerHTML = `<div class="empty-state">Click a turn on the left to inspect its findings, the citations behind every claim, and the construction trace.</div>`;
     return;
   }
 
   let html = `<div class="evidence-header">${escapeHtml(turn.question)}</div>`;
 
-  // Plan trace — clickable lines that focus a single plan's findings
-  html += `<div class="plan-trace">
-    <div class="label">EO query plan${turn.plans.length > 1 ? ' · ' + turn.plans.length + ' lines' : ''}</div>`;
-  turn.plans.forEach((p, idx) => {
-    const focused = idx === FOCUSED_PLAN_INDEX;
-    const rowCount = p.result?.kind === 'slice' ? p.result.rows.length : (p.result?.kind === 'corpus-summary' ? p.result.topSubjects.length : 0);
-    html += `<div class="plan-line${focused ? ' focused' : ''}" data-plan-idx="${idx}">
-      ${escapeHtml(p.line)}
-      <span class="plan-meta">${p.result.kind === 'corpus-summary' ? `corpus overview · ${p.result.n_entities} entities, ${p.result.n_predicates} predicates` : `${rowCount} row${rowCount === 1 ? '' : 's'}${p.result.peerGaps?.length ? ' · ' + p.result.peerGaps.length + ' gap(s)' : ''}`}</span>
-    </div>`;
-  });
-  html += `</div>`;
+  // ── Disambiguation chooser (rendered when the compiler bailed) ──
+  if (turn.pending_disambiguation && turn.compiled) {
+    html += `<div class="evidence-section disambig">
+      <div class="label">${escapeHtml(turn.compiled.clarifying_question || 'Which one did you mean?')}</div>
+      <div class="disambig-cards">`;
+    for (const cand of turn.compiled.subject_candidates) {
+      const ent = (() => {
+        for (const [id, info] of STATE.entities) {
+          if (info.canonical === cand) return info;
+        }
+        return null;
+      })();
+      const meta = ent ? `${getAllDefsForSubject(ent.id).filter(filterDefToActive).length} claims` : 'unknown entity';
+      const aliasLine = ent ? ent.aliases.filter(a => a !== ent.canonical).slice(0, 3).join(', ') : '';
+      html += `<button class="disambig-card" data-candidate="${escapeHtml(cand)}">
+        <div class="disambig-canonical">${escapeHtml(cand)}</div>
+        <div class="disambig-meta">${escapeHtml(meta)}${aliasLine ? ' · ' + escapeHtml(aliasLine) : ''}</div>
+      </button>`;
+    }
+    html += `</div></div>`;
+  }
 
-  // Findings for focused plan
+  // ── Construction trace (collapsible "show me how this was built") ──
+  // Always present once compiled exists. Default collapsed; reveal toggles
+  // a body that walks question → compiled plan → executed EO line(s) →
+  // candidates by method → ranking → spans → template.
+  if (turn.compiled) {
+    html += renderConstructionTrace(turn);
+  }
+
+  // ── Plan trace (clickable EO lines) ──
+  if (turn.plans.length > 0) {
+    html += `<div class="plan-trace">
+      <div class="label">EO query plan${turn.plans.length > 1 ? ' · ' + turn.plans.length + ' lines' : ''}</div>`;
+    turn.plans.forEach((p, idx) => {
+      const focused = idx === FOCUSED_PLAN_INDEX;
+      const rowCount = p.result?.kind === 'slice' ? p.result.rows.length : (p.result?.kind === 'corpus-summary' ? p.result.topSubjects.length : 0);
+      html += `<div class="plan-line${focused ? ' focused' : ''}" data-plan-idx="${idx}">
+        ${escapeHtml(p.line)}
+        <span class="plan-meta">${p.result.kind === 'corpus-summary' ? `corpus overview · ${p.result.n_entities} entities, ${p.result.n_predicates} predicates` : `${rowCount} row${rowCount === 1 ? '' : 's'}${p.result.peerGaps?.length ? ' · ' + p.result.peerGaps.length + ' gap(s)' : ''}`}</span>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  // ── Findings for focused plan (the rows that back the templated answer) ──
   const focusedPlan = turn.plans[FOCUSED_PLAN_INDEX] || turn.plans[0];
-  html += renderEvidenceForPlan(focusedPlan, turn);
+  if (focusedPlan) {
+    html += renderEvidenceForPlan(focusedPlan, turn);
+  }
 
-  // Per-turn reader composer (note about the whole turn)
-  html += `<div class="evidence-section">
-    <div class="label">add reader note · attached to this turn</div>
-    ${renderReaderComposer({ turnId: turn.turnId, planLine: focusedPlan.line })}
+  // ── Optional explanatory summary (deliberately frictional) ──
+  // Hidden by default behind a disclosure. The warning is visible
+  // *before* the user can reveal the summary, so the gravity stays
+  // pointed at the citation-bearing answer.
+  html += `<div class="evidence-section summary-affordance">
+    <div class="label">explanatory summary <span class="muted">· LLM-generated · use sparingly</span></div>
+    <details class="summary-details">
+      <summary>${turn.summary ? 'Show generated summary' : 'Generate explanatory summary'}</summary>
+      <div class="summary-warning">
+        ⚠ This will use an LLM to phrase the cited findings in flowing prose. The original cited answer above is the structural truth — this is just an explanatory tool, like a research assistant talking through what they read. It may smooth over distinctions, mis-summarize superpositions, or introduce drift. Do not rely on it without checking against the citations.
+      </div>
+      ${turn.summary ?
+        `<div class="summary-body">${escapeHtml(turn.summary)}</div>` :
+        `<button class="summary-generate" data-turn-id="${escapeHtml(turn.turnId)}">Generate summary anyway</button>`}
+    </details>
   </div>`;
+
+  // ── Per-turn reader composer (free-form note) ──
+  if (focusedPlan) {
+    html += `<div class="evidence-section">
+      <div class="label">add reader note · enters the corpus as a source</div>
+      ${renderReaderComposer({ turnId: turn.turnId, planLine: focusedPlan.line })}
+    </div>`;
+  }
 
   pane.innerHTML = html;
 
-  // Wire plan-line click → focus that plan
+  // ── Wire interactions ──
+
+  // Disambiguation: clicking a candidate re-runs the turn with the
+  // subject pinned, replacing the pending turn in place.
+  pane.querySelectorAll('.disambig-card').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const cand = btn.getAttribute('data-candidate');
+      if (!cand) return;
+      btn.disabled = true;
+      btn.style.opacity = '0.5';
+      try {
+        const real = await runLibrarianTurn(turn.question, turn.cursor, turn.framing, { subject: cand });
+        updateLibrarianTurn(turn.turnId, t => {
+          t.compiled = real.compiled;
+          t.plans = real.plans;
+          t.answer = real.answer;
+          t.pending_disambiguation = false;
+        });
+      } catch (err) {
+        btn.disabled = false;
+        btn.style.opacity = '';
+        console.error('[disambig]', err);
+      }
+    });
+  });
+
+  // Construction-trace toggle is a native <details>; nothing to wire.
+
+  // Plan-line click → focus that plan
   pane.querySelectorAll('.plan-line').forEach(el => {
     el.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -7418,15 +8506,15 @@ function renderEvidencePane() {
     });
   });
 
-  // Wire def-row click → expand grounding
+  // Def-row click → expand grounding
   pane.querySelectorAll('.def-row[data-key]').forEach(row => {
     row.addEventListener('click', (e) => {
-      if (e.target.closest('.span-quote') || e.target.closest('.def-action') || e.target.closest('.reader-composer') || e.target.closest('.reader-toggle')) return;
+      if (e.target.closest('.span-quote') || e.target.closest('.def-action') || e.target.closest('.reader-composer') || e.target.closest('.reader-toggle') || e.target.closest('.entity-link') || e.target.closest('.citation')) return;
       row.classList.toggle('expanded');
     });
   });
 
-  // Wire span clicks → source modal
+  // Span clicks → source modal
   pane.querySelectorAll('.span-quote[data-def-id]').forEach(span => {
     span.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -7437,12 +8525,95 @@ function renderEvidencePane() {
         const f = defs.find(d => d.id === defId);
         if (f) { def = f; break; }
       }
-      if (def && def.grounding[gIdx]) showSourceSpanModal(def.grounding[gIdx]);
+      if (def && def.grounding[gIdx]) showSourceSpanModal(def.grounding[gIdx], { def });
     });
   });
 
-  // Wire reader-composer open/submit
+  // Citation markers inside templated answers (if any leaked into right pane)
+  pane.querySelectorAll('.citation').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openCitationFromMarker(el);
+    });
+  });
+
+  // Entity-link clicks
+  pane.querySelectorAll('.entity-link').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = el.getAttribute('data-entity-id');
+      if (!id) return;
+      if (typeof switchView === 'function') switchView('inspect');
+      STATE.selectedEntityId = id;
+      if (typeof renderInspectView === 'function') renderInspectView();
+    });
+  });
+
+  // Summary-generate button
+  pane.querySelectorAll('.summary-generate').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      btn.disabled = true;
+      btn.textContent = 'generating…';
+      try {
+        await generateTurnSummary(turn.turnId);
+      } catch (err) {
+        btn.textContent = 'failed: ' + err.message;
+      }
+    });
+  });
+
+  // Reader-composer open/submit
   wireReaderComposers(pane);
+}
+
+// Render the construction-trace disclosure for a turn — a step-by-step
+// audit of how the answer was assembled.
+function renderConstructionTrace(turn) {
+  const c = turn.compiled || {};
+  const planLines = turn.plans.map(p => `<div class="trace-line">${escapeHtml(p.line)}</div>`).join('');
+  const rowCount = turn.plans[0]?.result?.kind === 'slice' ? turn.plans[0].result.rows.length : 0;
+  const matchMethods = new Set();
+  matchMethods.add(c.subject_match_method || 'alias');
+  if (c.predicate_match_method) matchMethods.add(c.predicate_match_method);
+  const methodsLine = [...matchMethods].join(', ');
+  return `<div class="evidence-section construction-trace">
+    <details>
+      <summary><span class="label">how was this constructed?</span></summary>
+      <div class="trace-body">
+        <div class="trace-row"><span class="trace-key">1. question</span><span class="trace-val">${escapeHtml(turn.question)}</span></div>
+        <div class="trace-row"><span class="trace-key">2. compiler</span><span class="trace-val">${turn.usedCompiler ? 'LLM' : 'heuristic'} → intent: <strong>${escapeHtml(c.intent || '?')}</strong>, confidence: <strong>${escapeHtml(c.confidence || '?')}</strong></span></div>
+        <div class="trace-row"><span class="trace-key">3. subject</span><span class="trace-val">${c.subject ? escapeHtml(c.subject) : '<em>none / wildcard</em>'} <span class="muted">(via ${escapeHtml(methodsLine)})</span></span></div>
+        <div class="trace-row"><span class="trace-key">4. predicate</span><span class="trace-val">${c.predicate ? escapeHtml(c.predicate) : (c.predicate_class ? '<em>class hint:</em> ' + escapeHtml(c.predicate_class) : '<em>none / wildcard</em>')}</span></div>
+        <div class="trace-row"><span class="trace-key">5. EO plan</span><span class="trace-val">${planLines || '<em>(no plan executed — waiting for disambiguation)</em>'}</span></div>
+        <div class="trace-row"><span class="trace-key">6. rows</span><span class="trace-val">${rowCount} row${rowCount === 1 ? '' : 's'} returned</span></div>
+        <div class="trace-row"><span class="trace-key">7. template</span><span class="trace-val">${turn.answer ? 'assembled mechanically · every cited claim links to its source span' : '<em>no answer (empty slice or pending)</em>'}</span></div>
+      </div>
+    </details>
+  </div>`;
+}
+
+// Generate the optional explanatory summary. Reuses the LLM but feeds it
+// only the templated answer (which already contains nothing the model
+// shouldn't see) and asks for a polished restatement. The result is
+// stored on the turn and rendered below the citation-bearing answer
+// with a warning header — never replacing it.
+async function generateTurnSummary(turnId) {
+  const t = LIBRARIAN_TURNS.find(x => x.turnId === turnId);
+  if (!t || !isLLMReady()) return;
+  // Strip HTML from the templated answer to feed the model plain text.
+  const plain = (t.answer || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+  if (!plain) return;
+  const sys = `You polish the librarian's templated answer into smoother prose. You do not add facts. You do not invent claims. You do not change which claims are cited. You re-phrase only. 2-4 sentences max. No preamble.`;
+  const user = `Question: ${t.question}\n\nTemplated answer: ${plain}\n\nPolished version (no new facts):`;
+  try {
+    const summary = await callLLM(sys, user, 200, 'librarian-summary');
+    updateLibrarianTurn(turnId, x => { x.summary = (summary || '').trim(); });
+  } catch (e) {
+    updateLibrarianTurn(turnId, x => { x.summary = '(summary failed: ' + e.message + ')'; });
+  }
 }
 
 function renderEvidenceForPlan(planEntry, turn) {
@@ -7712,62 +8883,173 @@ async function submitReaderNote({ text, turnId, defId, planLine }) {
 // (the clause itself, plus a few sentences before/after, plus the source
 // metadata). Closes on backdrop click or ESC.
 
-function showSourceSpanModal(grounding) {
+// Citation modal — a working surface, not a tooltip. Renders the FULL
+// source document with the cited span highlighted; auto-scrolls the
+// highlight into view; surrounds it with the source's metadata header,
+// the typed event details that produced this DEF, and a one-click
+// "flag" affordance that mints a reader EVA over the system's claim.
+//
+// `opts.def` is the def the citation belongs to (when available) so
+// we can show event details and offer the flag.
+function showSourceSpanModal(grounding, opts = {}) {
   const overlay = document.getElementById('source-span-overlay');
   const title = document.getElementById('source-span-title');
   const body = document.getElementById('source-span-body');
   if (!overlay || !title || !body) return;
 
-  // Resolve the originating event
+  const def = opts.def || (() => {
+    if (!grounding.defId) return null;
+    for (const defs of STATE.defs.values()) {
+      const f = defs.find(d => d.id === grounding.defId);
+      if (f) return f;
+    }
+    return null;
+  })();
+
   const ev = STATE.G.find(e => e.id === grounding.sourceEventId);
   const src = ev ? STATE.sources.get(ev.sourceId) : null;
   const sentenceIdx = grounding.sentenceIdx ?? ev?.narrativePos?.sentenceIdx ?? null;
+  const isReader = grounding.authoredBy === 'reader' || grounding.sourceId === 'reader';
 
-  // Title with source name + sentence position
+  // Title: source name + sentence position
   if (src) {
     const pubLabel = src.publicationDate ? new Date(src.publicationDate).toISOString().slice(0, 10) : 'no pub date';
-    title.textContent = `${src.name} · sentence #${sentenceIdx ?? '?'} · ${pubLabel}`;
+    title.innerHTML = `${escapeHtml(src.name)} <span class="muted">· #${sentenceIdx ?? '?'} · ${escapeHtml(pubLabel)}${isReader ? ' · <span class="reader-authored">reader</span>' : ''}</span>`;
   } else {
     title.textContent = 'Source span';
   }
 
-  // Build context: target sentence + 2 before + 2 after
   let html = '';
-  if (src && Array.isArray(src.sentences) && sentenceIdx != null) {
-    const intakeLabel = src.intakeTs ? new Date(src.intakeTs).toLocaleString() : '';
-    html += `<div class="source-context-meta">intake: ${escapeHtml(intakeLabel)}</div>`;
-    const before = src.sentences.filter(s => s.idx < sentenceIdx).slice(-2);
-    const target = src.sentences.find(s => s.idx === sentenceIdx);
-    const after = src.sentences.filter(s => s.idx > sentenceIdx).slice(0, 2);
-    for (const s of before) {
-      html += `<div class="source-context-line"><span style="color: var(--ink-faint); font-family: 'IBM Plex Mono', monospace; font-size: 10px;">#${s.idx}</span> ${escapeHtml(s.text)}</div>`;
-    }
-    if (target) {
-      html += `<div class="source-context-line target"><span style="color: var(--accent); font-family: 'IBM Plex Mono', monospace; font-size: 10px;">#${target.idx}</span> ${escapeHtml(target.text)}</div>`;
-    } else {
-      html += `<div class="source-context-line target">${escapeHtml(grounding.spanText || '')}</div>`;
-    }
-    for (const s of after) {
-      html += `<div class="source-context-line"><span style="color: var(--ink-faint); font-family: 'IBM Plex Mono', monospace; font-size: 10px;">#${s.idx}</span> ${escapeHtml(s.text)}</div>`;
-    }
-  } else {
-    // No source object available — just show the span
-    html = `<div class="source-context-line target">${escapeHtml(grounding.spanText || '(no span text)')}</div>`;
+
+  // ── Source metadata header ──
+  if (src) {
+    const intakeLabel = src.intakeTs ? new Date(src.intakeTs).toLocaleString() : '—';
+    const pubLabel = src.publicationDate ? new Date(src.publicationDate).toISOString().slice(0, 10) : '—';
+    const totalSents = src.sentences?.length ?? 0;
+    html += `<div class="modal-meta-grid">
+      <div><span class="modal-meta-key">source</span><span class="modal-meta-val">${escapeHtml(src.name)}</span></div>
+      <div><span class="modal-meta-key">published</span><span class="modal-meta-val">${escapeHtml(pubLabel)}</span></div>
+      <div><span class="modal-meta-key">intake</span><span class="modal-meta-val">${escapeHtml(intakeLabel)}</span></div>
+      <div><span class="modal-meta-key">length</span><span class="modal-meta-val">${totalSents} sentences</span></div>
+    </div>`;
   }
 
-  // Add a "value extracted from this span" footer
-  if (grounding.value != null) {
-    const valStr = typeof grounding.value === 'string' && grounding.value.startsWith('ent_')
-      ? STATE.entities.get(grounding.value)?.canonical || grounding.value
-      : grounding.value;
-    html += `<div style="margin-top: 14px; padding: 10px 12px; background: var(--paper-soft); border-left: 3px solid var(--cursor); font-family: 'IBM Plex Mono', monospace; font-size: 11px;">
-      <div style="color: var(--ink-faint); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 4px;">extracted value</div>
-      <div>${escapeHtml(String(valStr))}</div>
+  // ── Full document render with the cited sentence highlighted and
+  //    auto-scrolled into view. Each sentence is one row with its idx,
+  //    so the user can see the cited paragraph in its actual context.
+  if (src && Array.isArray(src.sentences) && src.sentences.length > 0) {
+    html += `<div class="modal-doc-label">full source · cited sentence highlighted, scrolled into view</div>`;
+    html += `<div class="modal-doc" id="modal-doc-scroll">`;
+    for (const s of src.sentences) {
+      const isTarget = s.idx === sentenceIdx;
+      html += `<div class="modal-doc-line${isTarget ? ' target' : ''}" id="${isTarget ? 'modal-doc-target' : ''}">
+        <span class="modal-doc-idx">#${s.idx}</span><span class="modal-doc-text">${escapeHtml(s.text)}</span>
+      </div>`;
+    }
+    html += `</div>`;
+  } else {
+    html += `<div class="modal-doc-label">cited span (full source not available)</div>`;
+    html += `<div class="modal-doc"><div class="modal-doc-line target"><span class="modal-doc-text">${escapeHtml(grounding.spanText || '(no span text)')}</span></div></div>`;
+  }
+
+  // ── Event details: the typed claim this citation belongs to ──
+  if (def) {
+    const subj = STATE.entities.get(def.subject)?.canonical || def.subject;
+    const valStr = def.valueIsEntity ? (STATE.entities.get(def.value)?.canonical || def.value) : def.value;
+    const status = def.status === 'superseded' ? '<span class="status superseded">superseded</span>'
+                 : def.contested ? '<span class="status contested">contested</span>'
+                 : '<span class="status active">active</span>';
+    html += `<details class="modal-event-details">
+      <summary>show event details · the typed claim cited from this span</summary>
+      <div class="modal-event-body">
+        <div><span class="modal-meta-key">DEF</span><span class="modal-meta-val">${escapeHtml(subj)} · ${escapeHtml(def.predicate)} → ${escapeHtml(String(valStr))}</span></div>
+        <div><span class="modal-meta-key">status</span><span class="modal-meta-val">${status}</span></div>
+        <div><span class="modal-meta-key">grounding count</span><span class="modal-meta-val">${def.grounding.length} event${def.grounding.length === 1 ? '' : 's'}</span></div>
+        <div><span class="modal-meta-key">def id</span><span class="modal-meta-val mono">${escapeHtml(def.id)}</span></div>
+      </div>
+    </details>`;
+  }
+
+  // ── Flag affordance: one click mints a reader EVA over this DEF ──
+  if (def) {
+    html += `<div class="modal-flag-row">
+      <button class="modal-flag-btn" data-def-id="${escapeHtml(def.id)}" title="Record that you disagree with this claim — writes a reader EVA event into the graph">⚑ Flag this claim · I disagree with how the system read this</button>
+      <span class="muted">(your flag becomes part of the graph as a reader-authored EVA event)</span>
     </div>`;
   }
 
   body.innerHTML = html;
   overlay.classList.add('active');
+
+  // Auto-scroll the cited sentence into view (centered)
+  setTimeout(() => {
+    const target = document.getElementById('modal-doc-target');
+    if (target) target.scrollIntoView({ block: 'center', behavior: 'auto' });
+  }, 0);
+
+  // Wire flag button
+  const flagBtn = body.querySelector('.modal-flag-btn');
+  if (flagBtn) {
+    flagBtn.addEventListener('click', () => {
+      flagDefViaModal(flagBtn.getAttribute('data-def-id'));
+    });
+  }
+}
+
+// Mint a reader EVA flagging a DEF. Called from the citation modal's
+// flag button. The EVA enters G and the DEF gets a `contested` flag.
+function flagDefViaModal(defId) {
+  if (!defId) return;
+  let def = null;
+  for (const defs of STATE.defs.values()) {
+    const f = defs.find(d => d.id === defId);
+    if (f) { def = f; break; }
+  }
+  if (!def) return;
+  // Reuse the existing reader-source path for provenance, but author
+  // a structured EVA rather than a freeform note.
+  const READER_SOURCE_NAME = 'Reader notes';
+  let readerSrc = null;
+  for (const s of STATE.sources.values()) {
+    if (s.name === READER_SOURCE_NAME) { readerSrc = s; break; }
+  }
+  if (!readerSrc) {
+    // Lazy-create a minimal reader source. Don't run extraction.
+    const sourceId = uid('src');
+    readerSrc = {
+      id: sourceId, name: READER_SOURCE_NAME,
+      publicationDate: null, intakeTs: Date.now(),
+      sentences: [], eventIds: [], rawText: '',
+      enabled: true, isReaderSource: true,
+    };
+    STATE.sources.set(sourceId, readerSrc);
+  }
+  const ev = appendEvent({
+    op: 'EVA',
+    payload: {
+      target: def.id,
+      subject: def.subject,
+      predicate: def.predicate,
+      value: def.value,
+      verdict: 'dispute',
+      rationale: '(flagged via citation modal — see source)',
+      authoredBy: 'reader',
+    },
+    sourceId: readerSrc.id,
+    intakeTs: Date.now(),
+    authoredBy: 'reader',
+  });
+  STATE.evas.push({ id: ev.id, target: def.id, verdict: 'dispute', authoredBy: 'reader' });
+  def.contested = true;
+  // Visual feedback in the modal
+  const btn = document.querySelector('.modal-flag-btn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⚑ Flagged · this claim is now contested in the graph';
+  }
+  // Re-render the librarian so the contested state appears
+  if (typeof renderLibrarianTranscript === 'function') renderLibrarianTranscript();
+  if (typeof renderEvidencePane === 'function') renderEvidencePane();
 }
 
 function hideSourceSpanModal() {
@@ -10394,46 +11676,50 @@ document.getElementById('ollama-model').addEventListener('change', e => STATE.ol
 document.getElementById('lmstudio-url').addEventListener('change', e => STATE.lmstudioUrl = e.target.value.trim());
 document.getElementById('lmstudio-model').addEventListener('change', e => STATE.lmstudioModel = e.target.value.trim());
 
-// Query button — "Ask". Drives the EO-native librarian turn:
+// Query button — "Ask". Drives the compile-execute-template flow:
 // optimistically appends a pending turn so the user sees immediate
-// feedback, then awaits the agent loop and updates the turn in place.
+// feedback, then awaits the compiler + runtime and updates in place.
 document.getElementById('query-go').addEventListener('click', async () => {
   const input = document.getElementById('query-input');
   const q = input.value.trim();
   if (!q) return;
   input.value = '';
+  // Hide live retrieval panel — the actual turn takes over from here
+  hideLiveRetrieval();
 
-  // Optimistic placeholder — gives the user something on the left
-  // immediately while the agent loop runs.
   const pendingId = 'turn-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
   const pendingTurn = {
     turnId: pendingId,
     question: q,
     cursor: STATE.activeCursor,
     framing: STATE.activeFraming,
+    compiled: null,
     plans: [],
     answer: null,
-    agentError: null,
-    usedAgent: isLLMReady(),
+    summary: null,
     pending: true,
+    pending_disambiguation: false,
+    usedCompiler: isLLMReady(),
     timestamp: Date.now(),
   };
   appendLibrarianTurn(pendingTurn);
 
-  // Run the real turn, then merge results into the placeholder.
   try {
     const real = await runLibrarianTurn(q, STATE.activeCursor, STATE.activeFraming);
     updateLibrarianTurn(pendingId, t => {
+      t.compiled = real.compiled;
       t.plans = real.plans;
       t.answer = real.answer;
-      t.agentError = real.agentError;
-      t.usedAgent = real.usedAgent;
+      t.pending_disambiguation = !!real.pending_disambiguation;
+      t.usedCompiler = real.usedCompiler;
       t.pending = false;
     });
   } catch (e) {
     updateLibrarianTurn(pendingId, t => {
       t.pending = false;
-      t.agentError = e.message;
+      t.pending_disambiguation = false;
+      t.compiled = { intent: 'search', confidence: 'low', subject: null, subject_candidates: [], predicate: null, predicate_class: null, object_filter: null, clarifying_question: null, fallback: 'show_spans' };
+      t.answer = `<p class="templated">An error occurred: ${escapeHtml(e.message)}</p>`;
     });
   }
 });
@@ -10458,6 +11744,182 @@ document.getElementById('query-input').addEventListener('keydown', (e) => {
     document.getElementById('query-go').click();
   }
 });
+
+// ─── LIVE KEYSTROKE RETRIEVAL ────────────────────────────────────────
+// As the user types, the right pane fills with candidate spans matching
+// the partial input — alias-trie-style scoring against entities, with
+// predicate-name + value substring fallback. Streams in before the
+// user submits. The librarian metaphor stops being a metaphor.
+//
+// Each candidate carries `match_method` so the user can read the
+// architecture at a glance: alias matches are pinned above embedding
+// matches (when those land); reader-authored sources tagged.
+//
+// Debounced ~150ms. Below ~3 chars we don't bother. While a turn is
+// pending, the live panel is hidden so we don't compete with the
+// templated answer.
+
+let LIVE_RETRIEVAL_TIMER = null;
+const LIVE_RETRIEVAL_DEBOUNCE_MS = 150;
+const LIVE_RETRIEVAL_MIN_CHARS = 3;
+
+document.getElementById('query-input').addEventListener('input', (e) => {
+  const v = (e.target.value || '').trim();
+  if (LIVE_RETRIEVAL_TIMER) clearTimeout(LIVE_RETRIEVAL_TIMER);
+  if (v.length < LIVE_RETRIEVAL_MIN_CHARS) {
+    hideLiveRetrieval();
+    return;
+  }
+  LIVE_RETRIEVAL_TIMER = setTimeout(() => {
+    runLiveRetrieval(v);
+  }, LIVE_RETRIEVAL_DEBOUNCE_MS);
+});
+
+// Score candidates from the user's partial input. Returns an ordered
+// list of { kind, label, sublabel, def, grounding, score, method }.
+function scoreLiveCandidates(text) {
+  const q = text.toLowerCase();
+  const tokens = q.replace(/[^\w\s]/g, ' ').split(/\s+/).filter(t => t.length > 1);
+  const candidates = [];
+  // Track which DEFs we've already added so we don't duplicate
+  const seenDefIds = new Set();
+
+  // ── Track A: entity alias matches → pull all DEFs for matched entities ──
+  const matchedEntities = new Map();  // entityId → bestScore
+  for (const [id, info] of STATE.entities) {
+    if (!isEntityActive(id)) continue;
+    let best = 0;
+    for (const alias of info.aliases) {
+      const a = alias.toLowerCase();
+      if (a.length < 2) continue;
+      if (a === q) best = Math.max(best, 100);
+      else if (q.includes(a)) best = Math.max(best, 50 + a.length);
+      else {
+        for (const t of tokens) {
+          if (a === t) best = Math.max(best, 30 + a.length);
+          else if (a.startsWith(t) && t.length >= 2) best = Math.max(best, 15 + a.length);
+          else if (a.includes(t) && t.length >= 3) best = Math.max(best, 8 + a.length);
+        }
+      }
+    }
+    if (best > 0) matchedEntities.set(id, best);
+  }
+
+  for (const [id, score] of matchedEntities) {
+    const info = STATE.entities.get(id);
+    const defs = getAllDefsForSubject(id).filter(filterDefToActive);
+    for (const def of defs.slice(0, 4)) {
+      if (seenDefIds.has(def.id)) continue;
+      seenDefIds.add(def.id);
+      const g = primaryGroundingFor(def);
+      if (!g) continue;
+      const valStr = def.valueIsEntity ? (STATE.entities.get(def.value)?.canonical || def.value) : def.value;
+      candidates.push({
+        kind: 'def',
+        label: `${info.canonical} | ${def.predicate} → ${String(valStr).slice(0, 80)}`,
+        sublabel: (def.grounding[g.groundingIdx]?.spanText || '').slice(0, 200),
+        def, grounding: def.grounding[g.groundingIdx], groundingIdx: g.groundingIdx,
+        score: score + def.grounding.length,
+        method: 'alias',
+      });
+    }
+  }
+
+  // ── Track B: predicate-name + value substring fallback ──
+  // For tokens that didn't match an entity, scan DEFs with predicate or
+  // value containing the token. Lower priority than alias matches.
+  if (tokens.length) {
+    let scanned = 0;
+    for (const defs of STATE.defs.values()) {
+      if (scanned > 600) break;  // bound the scan; full-corpus impl can use an index
+      for (const def of defs) {
+        scanned++;
+        if (def.status === 'superseded') continue;
+        if (seenDefIds.has(def.id)) continue;
+        if (!filterDefToActive(def)) continue;
+        const pred = String(def.predicate || '').toLowerCase();
+        const val = String(def.valueIsEntity ? STATE.entities.get(def.value)?.canonical || '' : def.value || '').toLowerCase();
+        let bestTok = 0;
+        for (const t of tokens) {
+          if (pred.includes(t) || val.includes(t)) bestTok = Math.max(bestTok, t.length);
+        }
+        if (bestTok < 3) continue;
+        seenDefIds.add(def.id);
+        const g = primaryGroundingFor(def);
+        if (!g) continue;
+        const subj = STATE.entities.get(def.subject)?.canonical || def.subject;
+        const valStr = def.valueIsEntity ? (STATE.entities.get(def.value)?.canonical || def.value) : def.value;
+        candidates.push({
+          kind: 'def',
+          label: `${subj} | ${def.predicate} → ${String(valStr).slice(0, 80)}`,
+          sublabel: (def.grounding[g.groundingIdx]?.spanText || '').slice(0, 200),
+          def, grounding: def.grounding[g.groundingIdx], groundingIdx: g.groundingIdx,
+          score: 5 + bestTok,
+          method: pred.includes(tokens[0]) ? 'predicate' : 'value',
+        });
+      }
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates.slice(0, 12);
+}
+
+function runLiveRetrieval(text) {
+  // Don't compete with a focused turn answer — only show live retrieval
+  // when there's no turn or the user is starting fresh after one.
+  const cands = scoreLiveCandidates(text);
+  renderLiveRetrievalPanel(text, cands);
+}
+
+function renderLiveRetrievalPanel(text, cands) {
+  const pane = document.getElementById('evidence-pane');
+  if (!pane) return;
+  // If a turn is focused with results, don't override — only show live
+  // retrieval when the right pane is empty (no turn yet) or when the
+  // user explicitly hasn't focused a turn.
+  const hasTurn = LIBRARIAN_TURNS.length > 0 && FOCUSED_TURN_ID;
+  if (hasTurn) return;  // keep the focused turn visible
+  if (!cands.length) {
+    pane.innerHTML = `<div class="evidence-header"><em>typing</em>: ${escapeHtml(text)}</div>
+      <div class="empty-state">No candidates yet. Keep typing — entities, predicates, and values from the corpus will surface here as they match.</div>`;
+    return;
+  }
+  let html = `<div class="evidence-header"><em>typing</em>: ${escapeHtml(text)} <span class="muted">· ${cands.length} candidate${cands.length === 1 ? '' : 's'} from the graph</span></div>`;
+  html += `<div class="live-retrieval-list">`;
+  for (const c of cands) {
+    const methodBadge = `<span class="match-method ${c.method}">${c.method}</span>`;
+    html += `<div class="live-cand" data-def-id="${escapeHtml(c.def.id)}" data-grounding-idx="${c.groundingIdx}">
+      <div class="live-cand-head">
+        <span class="live-cand-label">${escapeHtml(c.label)}</span>
+        ${methodBadge}
+      </div>
+      ${c.sublabel ? `<div class="live-cand-span">${escapeHtml(c.sublabel)}</div>` : ''}
+    </div>`;
+  }
+  html += `</div>`;
+  html += `<div class="muted live-hint">Hit Ask (or Ctrl/Cmd+Enter) to compile this question into a structured query plan.</div>`;
+  pane.innerHTML = html;
+
+  pane.querySelectorAll('.live-cand').forEach(el => {
+    el.addEventListener('click', () => {
+      const defId = el.getAttribute('data-def-id');
+      const gIdx = parseInt(el.getAttribute('data-grounding-idx'), 10);
+      let def = null;
+      for (const defs of STATE.defs.values()) {
+        const f = defs.find(d => d.id === defId);
+        if (f) { def = f; break; }
+      }
+      if (def && def.grounding[gIdx]) showSourceSpanModal(def.grounding[gIdx], { def });
+    });
+  });
+}
+
+function hideLiveRetrieval() {
+  // Re-render the evidence pane with the current focused turn (if any).
+  // If no turn is focused, restore the empty state.
+  if (typeof renderEvidencePane === 'function') renderEvidencePane();
+}
 
 // Framing pills
 document.querySelectorAll('.framing-pill').forEach(pill => {
