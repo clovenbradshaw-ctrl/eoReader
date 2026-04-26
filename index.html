@@ -1937,6 +1937,7 @@ code {
   <button class="view-tab" data-view="inspect">Inspect</button>
   <button class="view-tab" data-view="graph">Graph</button>
   <button class="view-tab" data-view="log">Log</button>
+  <button class="view-tab" data-view="dream">Dream</button>
 </nav>
 
 <main class="app-main">
@@ -2150,6 +2151,46 @@ code {
       </div>
       <div class="pane-body" id="log-body" style="padding: 14px 18px;">
         <div class="empty-state">No events yet.</div>
+      </div>
+    </div>
+
+    <!-- ── DREAM PANE ──
+         Sustained reflection over assembled material. The dreamer
+         writes prose at high temperature; the watcher scans the
+         prose for mentions that resolve to existing entities and
+         flags everything else as ungrounded. Nothing enters the
+         main graph automatically — the user adjudicates here. -->
+    <div class="view-pane" id="view-dream">
+      <div class="pane-header">
+        <div class="pane-title">Dream · sustained reflection</div>
+        <div class="pane-meta" id="dream-meta">no session</div>
+      </div>
+      <div class="pane-body" id="dream-body" style="padding: 0; display: flex; flex-direction: column; min-height: 0;">
+        <div id="dream-controls" style="padding: 12px 18px; border-bottom: 1px solid var(--rule); background: var(--paper-soft); display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+          <button class="primary" id="dream-start-btn">Begin reflection</button>
+          <button class="secondary" id="dream-stop-btn" disabled>Stop</button>
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--ink-faint);">steps:</span>
+          <input type="number" id="dream-max-steps" value="50" min="1" max="200" style="width: 60px; padding: 4px 6px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; background: var(--paper); border: 1px solid var(--rule);">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--ink-faint);">temp:</span>
+          <input type="number" id="dream-temperature" value="0.92" min="0.1" max="1.5" step="0.01" style="width: 64px; padding: 4px 6px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; background: var(--paper); border: 1px solid var(--rule);">
+          <span id="dream-status" style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--ink-faint); margin-left: auto;"></span>
+        </div>
+        <div style="flex: 1; display: flex; min-height: 0;">
+          <!-- Prose journal: append-only, scrolls -->
+          <div id="dream-journal" style="flex: 1.4; overflow-y: auto; padding: 18px 24px; font-family: 'Newsreader', serif; font-size: 14.5px; line-height: 1.65; color: var(--ink); border-right: 1px solid var(--rule); min-width: 0;">
+            <div class="empty-state">No reflection yet. Ingest a source, then begin.</div>
+          </div>
+          <!-- Right rail: grounded observations + ungrounded leads -->
+          <aside id="dream-rail" style="width: 380px; flex-shrink: 0; background: var(--paper-soft); display: flex; flex-direction: column; min-height: 0;">
+            <div style="padding: 10px 14px; border-bottom: 1px solid var(--rule);">
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:4px;">Observations from the dream</div>
+              <div style="font-family:'Newsreader',serif;font-size:11.5px;font-style:italic;color:var(--ink-soft);line-height:1.5;">Click <strong>INS</strong> to promote a grounded observation into the main log. Ungrounded mentions are research leads — surfaced for your attention, never auto-added.</div>
+            </div>
+            <div id="dream-rail-body" style="flex: 1; overflow-y: auto; padding: 8px 0;">
+              <div class="empty-state" style="padding: 20px;">No observations yet.</div>
+            </div>
+          </aside>
+        </div>
       </div>
     </div>
 
@@ -2690,8 +2731,11 @@ const STATE = {
   costCeiling: 1000,
   llmCallsThisIngest: 0,
 
-  // LLM backend — switchable at runtime
-  llmBackend: 'anthropic',  // 'anthropic' | 'webllm' | 'ollama' | 'lmstudio'
+  // LLM backend — switchable at runtime. Default is webllm so a new user
+  // gets a fully local pipeline out of the box; the medium 3B Llama is
+  // pulled into IndexedDB on first boot and reused thereafter. Boot
+  // restores the user's persisted choice if one exists.
+  llmBackend: 'webllm',  // 'anthropic' | 'webllm' | 'ollama' | 'lmstudio'
   anthropicPromptCaching: true,  // mark system prompt with cache_control for ~10x cheaper repeat calls
   // ─── Empirical 27-cell classification (TF-IDF over exemplars) ────
   // Each event is classified into one or more of the 27 EO cells based
@@ -2748,6 +2792,39 @@ const STATE = {
   // edited-with-brackets (the journalism convention).
   editsEnabled: true,
   editsRenderMode: 'edited',
+
+  // ─── DREAMER ──────────────────────────────────────────────────────
+  // Modal sessions: each completed dream lives here as a namespaced
+  // body of prose plus the Watcher's extracted candidates. Nothing in
+  // here ever touches the main G/entities/defs structures unless the
+  // user manually clicks INS in the "while you were away" panel.
+  // Map<session_id, {
+  //   id, startedAt, endedAt, stoppingReason, modelId, stepCount,
+  //   journal: [{ step, ts, prose, injectionSummary }],
+  //   grounded: [{ id, kind, subject, predicate, object, source: { step, span }, accepted }],
+  //   ungrounded: [{ id, mention, recurrence, exampleSpans:[], accepted }],
+  // }>
+  modalSessions: new Map(),
+  activeDreamSessionId: null,
+  dreamRunner: null,        // { abort: () => void } while a session is live
+  dreamConfig: {
+    temperature: 0.92,
+    top_p: 0.95,
+    maxTokens: 500,
+    maxSteps: 50,
+    foregroundMin: 2,
+    foregroundMax: 4,
+    evaMin: 1,
+    evaMax: 3,
+    longDistanceProb: 0.15,
+    injectionTokenBudget: 600,
+    tailTokens: 300,
+    spanCharCap: 320,            // ~80 words per quoted span
+    stepDelayMs: 250,            // small breath between calls so the UI updates
+    stoppingWindow: 5,           // rolling window for low-yield termination
+    stoppingMinNew: 1,           // <1 new grounded candidate per 3 of last 5 steps
+    stoppingMinSteps: 8,         // never auto-stop earlier than this
+  },
 };
 
 // Append an event to G with full coordinates
@@ -4646,7 +4723,7 @@ function approxTokens(s) {
 }
 
 // Dispatch entry point — every LLM call goes through this and is logged
-async function callLLM(systemPrompt, userMsg, maxTokens = 800, role = 'unknown') {
+async function callLLM(systemPrompt, userMsg, maxTokens = 800, role = 'unknown', opts = null) {
   const startTime = Date.now();
   const entry = {
     id: uid('call'),
@@ -4672,10 +4749,10 @@ async function callLLM(systemPrompt, userMsg, maxTokens = 800, role = 'unknown')
   try {
     let result;
     switch (STATE.llmBackend) {
-      case 'anthropic': result = await callAnthropic(systemPrompt, userMsg, maxTokens); break;
-      case 'webllm':    result = await callWebLLM(systemPrompt, userMsg, maxTokens); break;
-      case 'ollama':    result = await callOllama(systemPrompt, userMsg, maxTokens); break;
-      case 'lmstudio':  result = await callLMStudio(systemPrompt, userMsg, maxTokens); break;
+      case 'anthropic': result = await callAnthropic(systemPrompt, userMsg, maxTokens, opts); break;
+      case 'webllm':    result = await callWebLLM(systemPrompt, userMsg, maxTokens, opts); break;
+      case 'ollama':    result = await callOllama(systemPrompt, userMsg, maxTokens, opts); break;
+      case 'lmstudio':  result = await callLMStudio(systemPrompt, userMsg, maxTokens, opts); break;
       default: throw new Error(`Unknown LLM backend: ${STATE.llmBackend}`);
     }
     entry.response = result;
@@ -4725,7 +4802,7 @@ const COMMENTARY_STOP_SEQUENCES = [
   '\n```\n\n',
 ];
 
-async function callAnthropic(systemPrompt, userMsg, maxTokens = 800) {
+async function callAnthropic(systemPrompt, userMsg, maxTokens = 800, opts = null) {
   if (!STATE.apiKey) {
     throw new Error('No Anthropic API key set');
   }
@@ -4751,7 +4828,9 @@ async function callAnthropic(systemPrompt, userMsg, maxTokens = 800) {
       max_tokens: maxTokens,
       system: systemBlock,
       messages: [{ role: 'user', content: userMsg }],
-      stop_sequences: COMMENTARY_STOP_SEQUENCES,
+      stop_sequences: opts?.stop !== undefined ? (opts.stop || []) : COMMENTARY_STOP_SEQUENCES,
+      ...(opts?.temperature != null ? { temperature: opts.temperature } : {}),
+      ...(opts?.top_p != null ? { top_p: opts.top_p } : {}),
     }),
   });
   if (!res.ok) {
@@ -4809,17 +4888,25 @@ async function ensureWebLLMEngine() {
   }
 }
 
-async function callWebLLM(systemPrompt, userMsg, maxTokens = 800) {
+async function callWebLLM(systemPrompt, userMsg, maxTokens = 800, opts = null) {
   const engine = await ensureWebLLMEngine();
-  const result = await engine.chat.completions.create({
+  // Default temperature is the cool 0.2 used by every awake-mode call.
+  // Callers like the Dreamer override to run hot (0.92) and pass their
+  // own stop list (typically null — let prose conclude naturally).
+  const temperature = opts?.temperature ?? 0.2;
+  const top_p       = opts?.top_p ?? 1.0;
+  const stop        = opts?.stop !== undefined ? opts.stop : COMMENTARY_STOP_SEQUENCES;
+  const req = {
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userMsg },
     ],
     max_tokens: maxTokens,
-    temperature: 0.2,
-    stop: COMMENTARY_STOP_SEQUENCES,
-  });
+    temperature,
+    top_p,
+  };
+  if (stop) req.stop = stop;
+  const result = await engine.chat.completions.create(req);
   return result.choices[0]?.message?.content || '';
 }
 
@@ -4827,8 +4914,12 @@ async function callWebLLM(systemPrompt, userMsg, maxTokens = 800) {
 // Talks to a local Ollama server. Requires: `ollama serve` running with
 // the chosen model pulled (e.g. `ollama pull llama3.2`).
 
-async function callOllama(systemPrompt, userMsg, maxTokens = 800) {
+async function callOllama(systemPrompt, userMsg, maxTokens = 800, opts = null) {
   const url = (STATE.ollamaUrl || 'http://localhost:11434').replace(/\/$/, '');
+  const temperature = opts?.temperature ?? 0.2;
+  const stop = opts?.stop !== undefined ? (opts.stop || []) : COMMENTARY_STOP_SEQUENCES;
+  const ollamaOpts = { num_predict: maxTokens, temperature, stop };
+  if (opts?.top_p != null) ollamaOpts.top_p = opts.top_p;
   const res = await fetch(`${url}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -4839,7 +4930,7 @@ async function callOllama(systemPrompt, userMsg, maxTokens = 800) {
         { role: 'user', content: userMsg },
       ],
       stream: false,
-      options: { num_predict: maxTokens, temperature: 0.2, stop: COMMENTARY_STOP_SEQUENCES },
+      options: ollamaOpts,
     }),
   });
   if (!res.ok) {
@@ -4864,7 +4955,7 @@ async function testOllamaConnection() {
 }
 
 // ─── LM Studio backend (OpenAI-compatible) ───────────────────────────
-async function callLMStudio(systemPrompt, userMsg, maxTokens = 800) {
+async function callLMStudio(systemPrompt, userMsg, maxTokens = 800, opts = null) {
   const url = (STATE.lmstudioUrl || 'http://localhost:1234').replace(/\/$/, '');
   const body = {
     model: STATE.lmstudioModel || 'auto',
@@ -4873,9 +4964,10 @@ async function callLMStudio(systemPrompt, userMsg, maxTokens = 800) {
       { role: 'user', content: userMsg },
     ],
     max_tokens: maxTokens,
-    temperature: 0.2,
-    stop: COMMENTARY_STOP_SEQUENCES,
+    temperature: opts?.temperature ?? 0.2,
+    stop: opts?.stop !== undefined ? (opts.stop || []) : COMMENTARY_STOP_SEQUENCES,
   };
+  if (opts?.top_p != null) body.top_p = opts.top_p;
   const res = await fetch(`${url}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -12319,6 +12411,7 @@ function switchView(viewName) {
   else if (viewName === 'cursors') renderCursorStatus();
   else if (viewName === 'prompts') renderPromptsView();
   else if (viewName === 'graph') renderGraphView();
+  else if (viewName === 'dream') renderDreamView();
 }
 
 document.querySelectorAll('.view-tab').forEach(tab => {
@@ -12517,6 +12610,7 @@ function openSettings() {
 
 function switchBackendTab(backend) {
   STATE.llmBackend = backend;
+  try { localStorage.setItem('anchorageLLMBackend', backend); } catch {}
   document.querySelectorAll('.backend-tab').forEach(t => {
     t.classList.toggle('active', t.getAttribute('data-backend') === backend);
   });
@@ -12539,6 +12633,7 @@ function renderWebLLMModelList() {
   el.querySelectorAll('.model-option').forEach(opt => {
     opt.addEventListener('click', () => {
       STATE.webllmModel = opt.getAttribute('data-model-id');
+      try { localStorage.setItem('anchorageWebllmModel', STATE.webllmModel); } catch {}
       el.querySelectorAll('.model-option').forEach(o => o.classList.remove('selected'));
       opt.classList.add('selected');
     });
@@ -13066,6 +13161,659 @@ function renderSamples() {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// DREAMER · sustained reflection over assembled material
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Architecture (small):
+//   - Dreamer prompt is a single SYSTEM string that invites loose,
+//     associative reflection. The dreamer is allowed (in fact required)
+//     to assert without verifying. Hallucination is the cognitive
+//     function — it's how novel framings surface.
+//   - Each step: (a) build an injection from a graph slice, (b) thread
+//     it onto the tail of the prior step's prose, (c) call the LLM with
+//     temperature 0.92, (d) hand the prose to the Watcher.
+//   - The Watcher does the truth-protection: it scans the prose for
+//     mentions that resolve to existing entities, emits "grounded"
+//     interpretation-layer candidates (no SIG, no entity-mint), and
+//     emits "ungrounded" mentions for everything else as research
+//     leads. Nothing the dreamer says enters the main graph
+//     automatically — the user adjudicates manually in the panel.
+
+const DREAMER_SYSTEM_PROMPT = `You are observing a body of material — fragments drawn from documents, recurring figures, things that have been said about them. Your task is to spend time with this material in sustained reflection.
+
+Notice resemblances. Let your attention move freely. If something reminds you of something else, follow that. If a phrase echoes a phrase from earlier, observe the echo. Stay with the material long enough for relations to surface; do not rush.
+
+You are not summarizing, analyzing, or identifying what is important. You are reflecting — letting one thing sit next to another and noticing what they share, how they differ, what shape they make together.
+
+Bring whatever associations come. If the material reminds you of a pattern you recognize from elsewhere, name that pattern. If a structural analogy occurs to you, follow it. If the figures in front of you suggest figures from other contexts, let the suggestion stand. You do not need to verify what you say, qualify it, or hedge it. Speak as the associations arrive.
+
+Continue the thread of reflection that has come before. The thread has its own voice and its own attention. New material is present alongside the prior thread; let it be drawn in without forcing a connection.
+
+Write 200–400 words of plain prose paragraphs. No headings, no lists, no structured output. Stop when it feels natural; do not announce a conclusion.`;
+
+// ─── Slice selection ────────────────────────────────────────────────
+// Pick foreground entities by sampling from the entity store, weighted
+// by event-degree (how much has been said about them). This is the
+// "biased random walk" in its simplest form: we don't actually walk
+// the graph, we sample with bias and let the dream prose itself do
+// the walking.
+function _entityDegree(entityId) {
+  let n = 0;
+  for (const ev of STATE.G) {
+    const p = ev.payload || {};
+    if (p.entity === entityId || p.subject === entityId || p.from === entityId ||
+        p.value === entityId  || p.to === entityId) n++;
+  }
+  return n;
+}
+
+function _weightedSample(items, weightFn, k) {
+  const pool = items.slice();
+  const out = [];
+  while (out.length < k && pool.length) {
+    const weights = pool.map(weightFn);
+    const total = weights.reduce((a, b) => a + b, 0);
+    if (total <= 0) {
+      const i = Math.floor(Math.random() * pool.length);
+      out.push(pool.splice(i, 1)[0]);
+      continue;
+    }
+    let r = Math.random() * total;
+    let i = 0;
+    while (i < pool.length - 1 && (r -= weights[i]) > 0) i++;
+    out.push(pool.splice(i, 1)[0]);
+  }
+  return out;
+}
+
+// Find a small set of representative spans for an entity from G.
+function _spansForEntity(entityId, max = 2) {
+  const out = [];
+  for (const ev of STATE.G) {
+    if (out.length >= max) break;
+    const p = ev.payload || {};
+    const touchesEntity = p.entity === entityId || p.subject === entityId ||
+                          p.from === entityId || p.value === entityId || p.to === entityId;
+    if (!touchesEntity) continue;
+    if (!ev.spanText || ev.spanText.length < 20) continue;
+    out.push({ text: ev.spanText, sourceId: ev.sourceId, eventId: ev.id });
+  }
+  return out;
+}
+
+function _evaSentences(max = 3) {
+  // EVA records, plus EVA-op events from G. Render as observational
+  // sentences; never as event ids or technical formatting.
+  const evas = [];
+  for (const ev of STATE.G) {
+    if (ev.op !== 'EVA') continue;
+    const p = ev.payload || {};
+    const subj = STATE.entities.get(p.subject)?.canonical || p.subject || 'a figure in this account';
+    const pred = p.predicate || 'something';
+    const obj  = p.value && (STATE.entities.get(p.value)?.canonical || p.value);
+    if (obj) evas.push(`It has been noticed that ${subj} ${pred} ${obj}.`);
+    else     evas.push(`It has been noticed that ${subj} ${pred}.`);
+    if (evas.length >= max) break;
+  }
+  return evas;
+}
+
+function _sourceAttribution(sourceId) {
+  const src = STATE.sources.get(sourceId);
+  if (!src) return null;
+  const name = src.name || 'an earlier source';
+  if (src.publicationDate) return `from ${name} (${src.publicationDate})`;
+  return `from ${name}`;
+}
+
+function _truncateToCap(text, cap) {
+  if (text.length <= cap) return text;
+  const cut = text.slice(0, cap);
+  const lastPeriod = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '));
+  return (lastPeriod > cap * 0.6 ? cut.slice(0, lastPeriod + 1) : cut.replace(/\s+\S*$/, '')) + (text.length > cap ? '…' : '');
+}
+
+// Build a prose injection from a graph slice. Read as remembered
+// material, not as a database query result.
+function buildDreamInjection(cfg = STATE.dreamConfig) {
+  const allEntities = [...STATE.entities.values()].filter(e => e && e.canonical);
+  if (allEntities.length === 0) {
+    return { prose: '', entityIds: [], longDistanceEntityId: null, evaCount: 0 };
+  }
+  const fgCount = Math.max(cfg.foregroundMin,
+    Math.min(cfg.foregroundMax, Math.min(allEntities.length, cfg.foregroundMin + Math.floor(Math.random() * (cfg.foregroundMax - cfg.foregroundMin + 1)))));
+  const foreground = _weightedSample(allEntities, e => Math.max(1, _entityDegree(e.id)), fgCount);
+
+  const paragraphs = [];
+  for (const ent of foreground) {
+    const spans = _spansForEntity(ent.id, 1 + Math.floor(Math.random() * 2));
+    const lines = [];
+    const aliasNote = ent.aliases && ent.aliases.length > 0 ? ` (also called ${ent.aliases.slice(0, 2).join(', ')})` : '';
+    lines.push(`${ent.canonical}${aliasNote} appears in this material.`);
+    for (const sp of spans) {
+      const attr = _sourceAttribution(sp.sourceId);
+      const quote = _truncateToCap(sp.text, cfg.spanCharCap);
+      lines.push(attr ? `${attr}: "${quote}"` : `"${quote}"`);
+    }
+    paragraphs.push(lines.join(' '));
+  }
+
+  const evas = _evaSentences(cfg.evaMin + Math.floor(Math.random() * (cfg.evaMax - cfg.evaMin + 1)));
+  if (evas.length) paragraphs.push(evas.join(' '));
+
+  // Long-distance jump: pick a stray entity from the rest of the
+  // store and drop it into the injection without explanation.
+  let longDistanceEntityId = null;
+  if (Math.random() < cfg.longDistanceProb) {
+    const remaining = allEntities.filter(e => !foreground.includes(e));
+    if (remaining.length) {
+      const stray = remaining[Math.floor(Math.random() * remaining.length)];
+      const sp = _spansForEntity(stray.id, 1)[0];
+      if (sp) {
+        const quote = _truncateToCap(sp.text, cfg.spanCharCap);
+        paragraphs.push(`${stray.canonical}: "${quote}"`);
+        longDistanceEntityId = stray.id;
+      } else {
+        paragraphs.push(`${stray.canonical}.`);
+        longDistanceEntityId = stray.id;
+      }
+    }
+  }
+
+  return {
+    prose: paragraphs.join('\n\n'),
+    entityIds: foreground.map(e => e.id),
+    longDistanceEntityId,
+    evaCount: evas.length,
+  };
+}
+
+// Snap a tail to the most recent sentence boundary at or before the
+// target token count. Truncation is preserved when the prior step
+// hit the token cap mid-sentence — forcing closure shapes the dream
+// toward conclusion, which is what we don't want.
+function dreamTail(prose, targetTokens) {
+  if (!prose) return '';
+  const targetChars = targetTokens * 4; // ~4 chars/token
+  if (prose.length <= targetChars) return prose;
+  const start = prose.length - targetChars;
+  // Find the latest sentence boundary at or before the target start.
+  const window = prose.slice(0, start + Math.min(targetChars, 200));
+  const m = window.match(/[\.!?]\s+(?=[A-Z"])/g);
+  if (!m) return prose.slice(start);
+  // Find position of the last sentence boundary within the leading window.
+  let lastIdx = -1;
+  let searchFrom = 0;
+  for (const sep of m) {
+    const i = window.indexOf(sep, searchFrom);
+    if (i === -1) break;
+    lastIdx = i + sep.length;
+    searchFrom = i + sep.length;
+  }
+  if (lastIdx < 0) return prose.slice(start);
+  return prose.slice(lastIdx);
+}
+
+// ─── Watcher ─────────────────────────────────────────────────────────
+// Scans dream prose for mentions of canonical entity names + aliases.
+// When a mention resolves, it's a grounded modal candidate. When the
+// prose looks like an entity reference (proper-noun-ish capitalized
+// run) but doesn't resolve, it's an ungrounded mention.
+//
+// We do NOT mint entities, do NOT emit SIG, and do NOT touch STATE.G.
+// All output goes into the modal session; the user adjudicates.
+
+const _PROPER_NOUN_RE = /\b([A-Z][a-zA-Z'’\-]+(?:\s+(?:of|the|de|von|van|du|da)\s+[A-Z][a-zA-Z'’\-]+|\s+[A-Z][a-zA-Z'’\-]+){0,3})\b/g;
+const _DREAM_STOPWORDS = new Set([
+  'I', 'You', 'It', 'They', 'We', 'He', 'She', 'A', 'An', 'The', 'This', 'That', 'These', 'Those',
+  'And', 'But', 'Or', 'For', 'So', 'Yet', 'If', 'When', 'Where', 'While',
+  'In', 'On', 'At', 'To', 'From', 'By', 'With', 'About', 'Through', 'Across', 'Between',
+  'There', 'Here', 'Now', 'Then', 'Both', 'Either', 'Neither',
+  'God', 'Lord',
+]);
+
+function _sentenceSplit(prose) {
+  return prose.split(/(?<=[\.!?])\s+(?=[A-Z"])/).filter(s => s.trim().length > 0);
+}
+
+function _findEntityMentions(sentence) {
+  // Return list of { entityId, surface } found in this sentence.
+  const lower = sentence.toLowerCase();
+  const hits = [];
+  for (const ent of STATE.entities.values()) {
+    const candidates = [ent.canonical, ...(ent.aliases || [])].filter(Boolean);
+    for (const c of candidates) {
+      const cl = c.toLowerCase();
+      if (cl.length < 3) continue;
+      if (lower.includes(cl)) {
+        hits.push({ entityId: ent.id, surface: c });
+        break;
+      }
+    }
+  }
+  return hits;
+}
+
+function _findUngroundedMentions(sentence, knownSurfacesLower) {
+  const out = [];
+  let m;
+  _PROPER_NOUN_RE.lastIndex = 0;
+  while ((m = _PROPER_NOUN_RE.exec(sentence)) !== null) {
+    const surface = m[1];
+    if (_DREAM_STOPWORDS.has(surface)) continue;
+    if (surface.split(/\s+/).every(w => _DREAM_STOPWORDS.has(w))) continue;
+    if (knownSurfacesLower.has(surface.toLowerCase())) continue;
+    out.push(surface);
+  }
+  return out;
+}
+
+function watchDreamProse(session, step, prose) {
+  const sentences = _sentenceSplit(prose);
+  const knownSurfacesLower = new Set();
+  // Pre-collect every known canonical/alias surface for the unresolved-check.
+  for (const ent of STATE.entities.values()) {
+    if (ent.canonical) knownSurfacesLower.add(ent.canonical.toLowerCase());
+    for (const a of ent.aliases || []) if (a) knownSurfacesLower.add(a.toLowerCase());
+  }
+
+  for (const sentence of sentences) {
+    const mentions = _findEntityMentions(sentence);
+
+    if (mentions.length >= 2) {
+      // Two or more known entities co-occur in one sentence → modal CON
+      // candidate. The sentence itself is the grounding span.
+      const [a, b] = mentions;
+      session.grounded.push({
+        id: uid('mcon'),
+        kind: 'CON',
+        subject: a.entityId,
+        subjectLabel: STATE.entities.get(a.entityId)?.canonical || a.surface,
+        predicate: 'placed-alongside',
+        object: b.entityId,
+        objectLabel: STATE.entities.get(b.entityId)?.canonical || b.surface,
+        source: { step, span: sentence },
+        sessionId: session.id,
+        agent: 'dream-watcher:v1',
+        commitment: 'modal',
+        namespace: `modal:${session.id}`,
+        accepted: false,
+      });
+    } else if (mentions.length === 1) {
+      // One known entity → modal DEF/EVA candidate. Treat the sentence
+      // as a fresh interpretation of that entity for user review.
+      const m = mentions[0];
+      session.grounded.push({
+        id: uid('mdef'),
+        kind: 'DEF',
+        subject: m.entityId,
+        subjectLabel: STATE.entities.get(m.entityId)?.canonical || m.surface,
+        predicate: 'reflected-as',
+        object: sentence.length > 220 ? sentence.slice(0, 217) + '…' : sentence,
+        objectLabel: null,
+        source: { step, span: sentence },
+        sessionId: session.id,
+        agent: 'dream-watcher:v1',
+        commitment: 'modal',
+        namespace: `modal:${session.id}`,
+        accepted: false,
+      });
+    }
+
+    // Always also flag any ungrounded proper-noun mentions in this
+    // sentence — independent of grounded findings, since the dreamer
+    // routinely names patterns and figures from outside the corpus.
+    const unresolved = _findUngroundedMentions(sentence, knownSurfacesLower);
+    for (const surface of unresolved) {
+      const existing = session.ungrounded.find(u => u.mention.toLowerCase() === surface.toLowerCase());
+      if (existing) {
+        existing.recurrence++;
+        if (existing.exampleSpans.length < 3) existing.exampleSpans.push({ step, span: sentence });
+      } else {
+        session.ungrounded.push({
+          id: uid('mum'),
+          mention: surface,
+          recurrence: 1,
+          exampleSpans: [{ step, span: sentence }],
+          sessionId: session.id,
+          agent: 'dream-watcher:v1',
+          commitment: 'modal',
+          namespace: `modal:${session.id}`,
+          accepted: false,
+        });
+      }
+    }
+  }
+}
+
+// ─── Session runner ─────────────────────────────────────────────────
+// Run the dream loop. Returns the session object. The caller can pass
+// onStep to receive per-step prose for live UI updates, and onDone for
+// terminal stats. The runner can be aborted via the returned handle
+// stored on STATE.dreamRunner.
+
+function makeDreamSession() {
+  const id = uid('dream');
+  return {
+    id,
+    startedAt: Date.now(),
+    endedAt: null,
+    stoppingReason: null,
+    modelId: backendModelLabel(),
+    backend: STATE.llmBackend,
+    stepCount: 0,
+    journal: [],
+    grounded: [],
+    ungrounded: [],
+  };
+}
+
+async function runDreamSession({ onStep, onDone, maxSteps } = {}) {
+  if (STATE.entities.size === 0) {
+    throw new Error('No entities to dream over. Ingest a source first.');
+  }
+  const cfg = STATE.dreamConfig;
+  const session = makeDreamSession();
+  STATE.modalSessions.set(session.id, session);
+  STATE.activeDreamSessionId = session.id;
+
+  let aborted = false;
+  STATE.dreamRunner = { abort: () => { aborted = true; } };
+
+  const recentNew = [];   // rolling: count of new grounded candidates per step
+  const limit = Math.max(1, Math.min(maxSteps || cfg.maxSteps, 200));
+  let tail = '';
+
+  try {
+    for (let step = 1; step <= limit; step++) {
+      if (aborted) { session.stoppingReason = 'user-aborted'; break; }
+
+      const injection = buildDreamInjection(cfg);
+      if (!injection.prose) { session.stoppingReason = 'no-material'; break; }
+
+      const userMsg = step === 1
+        ? `The following has come into view:\n\n${injection.prose}`
+        : `What has been in reflection:\n\n[…] ${tail}\n\nThe following has come into view alongside it:\n\n${injection.prose}`;
+
+      let prose = '';
+      try {
+        prose = await callLLM(
+          DREAMER_SYSTEM_PROMPT,
+          userMsg,
+          cfg.maxTokens,
+          'dreamer',
+          { temperature: cfg.temperature, top_p: cfg.top_p, stop: null }
+        );
+      } catch (e) {
+        session.stoppingReason = `llm-error: ${e.message}`;
+        break;
+      }
+      prose = (prose || '').trim();
+      if (!prose) { session.stoppingReason = 'empty-output'; break; }
+
+      const beforeCount = session.grounded.length;
+      watchDreamProse(session, step, prose);
+      const newCount = session.grounded.length - beforeCount;
+      recentNew.push(newCount);
+      if (recentNew.length > cfg.stoppingWindow) recentNew.shift();
+
+      session.journal.push({
+        step,
+        ts: Date.now(),
+        prose,
+        injectionEntityIds: injection.entityIds,
+        injectionLongDistanceEntityId: injection.longDistanceEntityId,
+        injectionEvaCount: injection.evaCount,
+      });
+      session.stepCount = step;
+      tail = dreamTail(prose, cfg.tailTokens);
+
+      if (typeof onStep === 'function') {
+        try { onStep(session, step, prose); } catch {}
+      }
+
+      // Low-yield stop: once past the warm-up window, if the trailing
+      // window of N steps produced fewer than (N - 2) new grounded
+      // candidates, we wind down. This is a soft signal, not a strict
+      // gate — the user can also stop at any time.
+      if (step >= cfg.stoppingMinSteps && recentNew.length === cfg.stoppingWindow) {
+        const recentTotal = recentNew.reduce((a, b) => a + b, 0);
+        if (recentTotal < cfg.stoppingWindow - 2) {
+          session.stoppingReason = 'low-yield';
+          break;
+        }
+      }
+
+      // Small breath so the UI can paint mid-loop.
+      if (cfg.stepDelayMs > 0) {
+        await new Promise(r => setTimeout(r, cfg.stepDelayMs));
+      }
+    }
+    if (!session.stoppingReason) session.stoppingReason = 'max-steps';
+  } finally {
+    session.endedAt = Date.now();
+    STATE.dreamRunner = null;
+    if (typeof onDone === 'function') {
+      try { onDone(session); } catch {}
+    }
+  }
+  return session;
+}
+
+// ─── User-side INS for dream observations ───────────────────────────
+// Promotes a single grounded modal candidate into the main graph.
+// Limited strictly to interpretation-layer ops: DEF and CON. We never
+// mint entities, never emit SIG, and never alter source-grounded
+// payloads. The new event records the modal session that produced it
+// so the provenance trail survives.
+function insDreamObservation(sessionId, candidateId) {
+  const session = STATE.modalSessions.get(sessionId);
+  if (!session) throw new Error('Unknown dream session');
+  const cand = session.grounded.find(c => c.id === candidateId);
+  if (!cand) throw new Error('Unknown candidate');
+  if (cand.accepted) return null;
+  if (cand.kind !== 'DEF' && cand.kind !== 'CON') {
+    throw new Error('Only DEF and CON dream candidates may be promoted');
+  }
+
+  const payload = cand.kind === 'CON'
+    ? { from: cand.subject, to: cand.object, toIsEntity: true, predicate: cand.predicate }
+    : { subject: cand.subject, predicate: cand.predicate, value: cand.object, valueIsEntity: false };
+
+  const ev = appendEvent({
+    op: cand.kind,
+    payload,
+    spanText: cand.source?.span || null,
+    authoredBy: 'reader-from-dream',
+  });
+  ev.dreamSessionId = sessionId;
+  ev.dreamStep = cand.source?.step ?? null;
+  ev.commitment = 'reader-promoted';
+  cand.accepted = true;
+  cand.acceptedEventId = ev.id;
+  return ev;
+}
+
+// ─── Dream view rendering ───────────────────────────────────────────
+function _activeDreamSession() {
+  if (STATE.activeDreamSessionId) {
+    const s = STATE.modalSessions.get(STATE.activeDreamSessionId);
+    if (s) return s;
+  }
+  // Fall back to most recent.
+  let latest = null;
+  for (const s of STATE.modalSessions.values()) {
+    if (!latest || (s.startedAt > latest.startedAt)) latest = s;
+  }
+  return latest;
+}
+
+function _dreamMetaText(session) {
+  if (!session) return 'no session';
+  const live = STATE.dreamRunner != null && STATE.activeDreamSessionId === session.id;
+  const parts = [];
+  parts.push(live ? `live · step ${session.stepCount}` : `${session.stoppingReason || 'idle'} · ${session.stepCount} steps`);
+  parts.push(`${session.grounded.length} observations`);
+  parts.push(`${session.ungrounded.length} unresolved`);
+  return parts.join(' · ');
+}
+
+function renderDreamView() {
+  const session = _activeDreamSession();
+  const journal = document.getElementById('dream-journal');
+  const rail    = document.getElementById('dream-rail-body');
+  const meta    = document.getElementById('dream-meta');
+  const stopBtn = document.getElementById('dream-stop-btn');
+  const startBtn = document.getElementById('dream-start-btn');
+
+  if (meta) meta.textContent = _dreamMetaText(session);
+  if (stopBtn) stopBtn.disabled = !STATE.dreamRunner;
+  if (startBtn) startBtn.disabled = STATE.dreamRunner != null || STATE.entities.size === 0;
+
+  if (!journal || !rail) return;
+
+  if (!session) {
+    journal.innerHTML = `<div class="empty-state">No reflection yet. Ingest a source, then begin.</div>`;
+    rail.innerHTML = `<div class="empty-state" style="padding: 20px;">No observations yet.</div>`;
+    return;
+  }
+
+  // Journal: a paragraph per step with a small step header.
+  if (session.journal.length === 0) {
+    journal.innerHTML = `<div class="empty-state">Reflection is starting…</div>`;
+  } else {
+    journal.innerHTML = session.journal.map(j => {
+      const paragraphs = j.prose.split(/\n\s*\n/).filter(p => p.trim().length > 0);
+      const proseHtml = paragraphs.map((p, idx) =>
+        `<p style="margin: ${idx === 0 ? '0' : '0.6em 0 0 0'};">${escapeHtml(p.trim()).replace(/\n/g, '<br>')}</p>`
+      ).join('');
+      return `
+        <div style="margin-bottom: 22px;">
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:6px;">step ${j.step}${j.injectionLongDistanceEntityId ? ' · stray fragment present' : ''}</div>
+          <div>${proseHtml}</div>
+        </div>
+      `;
+    }).join('');
+    // Auto-scroll to bottom while a session is live.
+    if (STATE.dreamRunner && STATE.activeDreamSessionId === session.id) {
+      journal.scrollTop = journal.scrollHeight;
+    }
+  }
+
+  // Right rail: grounded observations (with INS), then ungrounded mentions.
+  const groundedHtml = session.grounded.length === 0
+    ? `<div style="padding: 12px 14px; font-family:'Newsreader',serif;font-size:12px;color:var(--ink-soft);font-style:italic;">No grounded observations yet.</div>`
+    : session.grounded.map(c => {
+        const subjLabel = escapeHtml(c.subjectLabel || '');
+        const objLabel  = escapeHtml(c.objectLabel || c.object || '');
+        const pred      = escapeHtml(c.predicate);
+        const span      = escapeHtml(c.source?.span || '');
+        const accepted  = c.accepted;
+        return `
+          <div style="padding: 10px 14px; border-bottom: 1px solid var(--rule); ${accepted ? 'opacity: 0.5;' : ''}">
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:4px;">${c.kind} · step ${c.source?.step ?? '–'}</div>
+            <div style="font-family:'Newsreader',serif;font-size:12.5px;line-height:1.45;color:var(--ink);">
+              <strong>${subjLabel}</strong> <span style="color: var(--ink-soft);">${pred}</span>${c.kind === 'CON' ? ` <strong>${objLabel}</strong>` : ` <em>${objLabel}</em>`}
+            </div>
+            <div style="margin-top: 6px; font-family:'Newsreader',serif;font-size:11px;font-style:italic;color:var(--ink-soft);line-height:1.45;">"${span}"</div>
+            <div style="margin-top: 8px; display: flex; gap: 6px;">
+              ${accepted
+                ? `<span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-faint);letter-spacing:0.06em;">added to log</span>`
+                : `<button class="primary dream-ins-btn" data-cand-id="${c.id}" style="font-size: 10px; padding: 4px 10px;">INS to log</button><button class="secondary dream-dismiss-btn" data-cand-id="${c.id}" style="font-size: 10px; padding: 4px 10px;">Dismiss</button>`}
+            </div>
+          </div>
+        `;
+      }).join('');
+
+  const ungroundedHtml = session.ungrounded.length === 0
+    ? ''
+    : `
+      <div style="padding: 14px 14px 6px; border-top: 2px solid var(--rule); margin-top: 6px;">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:6px;">unresolved mentions</div>
+        <div style="font-family:'Newsreader',serif;font-size:11px;font-style:italic;color:var(--ink-soft);line-height:1.45;">Names the dream gestured at that the system doesn't recognize. Research leads, not graph proposals.</div>
+      </div>
+      ${session.ungrounded.map(u => `
+        <div style="padding: 8px 14px; border-bottom: 1px solid var(--rule);">
+          <div style="font-family:'Newsreader',serif;font-size:13px;color:var(--ink);"><strong>${escapeHtml(u.mention)}</strong> <span style="color: var(--ink-faint); font-size: 11px;">recurred ×${u.recurrence}</span></div>
+          <div style="margin-top: 4px; font-family:'Newsreader',serif;font-size:11px;font-style:italic;color:var(--ink-soft);line-height:1.45;">"${escapeHtml(u.exampleSpans[0]?.span || '')}"</div>
+        </div>
+      `).join('')}
+    `;
+
+  rail.innerHTML = groundedHtml + ungroundedHtml;
+
+  rail.querySelectorAll('.dream-ins-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      try {
+        insDreamObservation(session.id, btn.getAttribute('data-cand-id'));
+        renderDreamView();
+        renderHeaderStatus();
+      } catch (e) {
+        alert('Could not add: ' + e.message);
+      }
+    });
+  });
+  rail.querySelectorAll('.dream-dismiss-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-cand-id');
+      session.grounded = session.grounded.filter(c => c.id !== id);
+      renderDreamView();
+    });
+  });
+}
+
+// ─── Dream view wiring ──────────────────────────────────────────────
+(() => {
+  const startBtn = document.getElementById('dream-start-btn');
+  const stopBtn  = document.getElementById('dream-stop-btn');
+  const status   = document.getElementById('dream-status');
+  const stepsInput = document.getElementById('dream-max-steps');
+  const tempInput  = document.getElementById('dream-temperature');
+  if (!startBtn || !stopBtn) return;
+
+  startBtn.addEventListener('click', async () => {
+    if (STATE.dreamRunner) return;
+    if (STATE.entities.size === 0) {
+      alert('Ingest a source first — there is nothing to reflect on.');
+      return;
+    }
+    const maxSteps = Math.max(1, Math.min(parseInt(stepsInput.value, 10) || 50, 200));
+    const temp = parseFloat(tempInput.value);
+    if (Number.isFinite(temp) && temp > 0 && temp <= 2) STATE.dreamConfig.temperature = temp;
+    startBtn.disabled = true;
+    stopBtn.disabled  = false;
+    status.textContent = 'starting…';
+    try {
+      await runDreamSession({
+        maxSteps,
+        onStep: (s, step) => {
+          status.textContent = `step ${step} · ${s.grounded.length} observations`;
+          if (STATE.activeView === 'dream') renderDreamView();
+        },
+        onDone: (s) => {
+          status.textContent = `done · ${s.stoppingReason} · ${s.grounded.length} observations`;
+          if (STATE.activeView === 'dream') renderDreamView();
+        },
+      });
+    } catch (e) {
+      status.textContent = `error: ${e.message}`;
+      console.error('Dream session failed:', e);
+    } finally {
+      startBtn.disabled = STATE.entities.size === 0;
+      stopBtn.disabled  = true;
+      if (STATE.activeView === 'dream') renderDreamView();
+    }
+  });
+
+  stopBtn.addEventListener('click', () => {
+    if (STATE.dreamRunner && typeof STATE.dreamRunner.abort === 'function') {
+      STATE.dreamRunner.abort();
+      status.textContent = 'stopping…';
+    }
+  });
+})();
+
 async function boot() {
   const overlay = document.getElementById('init-overlay');
   const stage = document.getElementById('init-stage');
@@ -13085,6 +13833,22 @@ async function boot() {
     const savedCaching = localStorage.getItem('anchorageAnthropicCaching');
     if (savedCaching === '0') STATE.anthropicPromptCaching = false;
     if (savedCaching === '1') STATE.anthropicPromptCaching = true;
+
+    // Backend + WebLLM model choice persistence. The default in STATE is
+    // webllm + Llama 3.2 3B q4f16. If the user has previously chosen a
+    // different backend or model, restore it. Existing users who already
+    // had an Anthropic key set up but never explicitly chose a backend
+    // are kept on anthropic so they aren't surprised by a 1.7GB download
+    // on next visit.
+    const savedBackend = localStorage.getItem('anchorageLLMBackend');
+    if (savedBackend === 'anthropic' || savedBackend === 'webllm' ||
+        savedBackend === 'ollama'    || savedBackend === 'lmstudio') {
+      STATE.llmBackend = savedBackend;
+    } else if (savedKey) {
+      STATE.llmBackend = 'anthropic';
+    }
+    const savedWebllmModel = localStorage.getItem('anchorageWebllmModel');
+    if (savedWebllmModel) STATE.webllmModel = savedWebllmModel;
   } catch (e) {
     console.warn('Could not restore settings from localStorage:', e);
   }
@@ -13141,6 +13905,19 @@ async function boot() {
   }).catch(err => {
     console.warn('Embedder load failed:', err);
   });
+
+  // Auto-fetch the WebLLM model on first boot when webllm is the active
+  // backend. WebGPU is required; if absent we skip silently and the user
+  // sees the standard "WebGPU not detected" warning when they open
+  // Settings → WebLLM. The download is large (~1.7GB for the 3B Llama)
+  // but caches in IndexedDB after first run.
+  if (STATE.llmBackend === 'webllm' &&
+      typeof navigator !== 'undefined' && navigator.gpu &&
+      !STATE.webllmEngine) {
+    ensureWebLLMEngine().catch(err => {
+      console.warn('Auto WebLLM load failed (will retry on first call):', err);
+    });
+  }
 }
 
 // Re-render examples whenever ingest finishes
