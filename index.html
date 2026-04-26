@@ -1247,6 +1247,14 @@ code {
       </label>
       <button class="primary" id="ingest-btn" disabled>Ingest source</button>
       <div id="ingest-progress" style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); margin-top: 6px; min-height: 1em;"></div>
+
+      <div style="margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--rule);">
+        <div class="label" style="margin-bottom: 6px;">files (no LLM)</div>
+        <div class="helper" style="margin-bottom: 8px;">Upload <strong>.txt</strong>, <strong>.csv</strong>, or <strong>.tsv</strong>. Files ingest without LLM processing — text is traversable as-is, CSV cells become a queryable graph (one record per row, columns as predicates). Filename, MIME type, size, and modified-time are preserved as queryable provenance.</div>
+        <input type="file" id="file-input" accept=".txt,.csv,.tsv,.log,.md,text/plain,text/csv,text/tab-separated-values" multiple style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; margin-bottom: 6px; width: 100%;">
+        <button class="secondary" id="ingest-files-btn" disabled>↑ Ingest files</button>
+        <div id="files-progress" style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); margin-top: 6px; min-height: 1em;"></div>
+      </div>
     </div>
 
     <div class="section">
@@ -5873,6 +5881,282 @@ function deleteSource(sourceId) {
   return { removedEvents: beforeCount - STATE.G.length, sourceName: src.name };
 }
 
+// ─── FILE INGEST (no-LLM) ────────────────────────────────────────────
+// Plain text and CSV files are ingested without any LLM call. Text files
+// flow through ingestSource with rawMode=true (skips hypothesis, skips
+// per-clause LLM extraction, skips phasepost classification). CSVs are
+// parsed structurally: each row becomes a "row entity," each column a
+// predicate, each cell a DEF — so the table is directly traversable in
+// the existing graph/query plumbing without any natural-language step.
+// In both cases, file metadata (name, MIME, size, lastModified) is stored
+// on the source AND attached as queryable DEFs on a per-file entity.
+
+function parseCSVText(text, delimiter = ',') {
+  const rows = [];
+  let cur = [];
+  let field = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else { inQuotes = false; }
+      } else {
+        field += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === delimiter) {
+      cur.push(field); field = '';
+    } else if (c === '\n') {
+      cur.push(field); rows.push(cur); cur = []; field = '';
+    } else if (c === '\r') {
+      // swallow — handled by \n on the next iteration
+    } else {
+      field += c;
+    }
+  }
+  if (field !== '' || cur.length > 0) { cur.push(field); rows.push(cur); }
+  return rows.filter(r => !(r.length === 1 && r[0] === ''));
+}
+
+function detectCSVDelimiter(filename, firstLine) {
+  const lower = (filename || '').toLowerCase();
+  if (lower.endsWith('.tsv')) return '\t';
+  const counts = {
+    ',': (firstLine.match(/,/g) || []).length,
+    '\t': (firstLine.match(/\t/g) || []).length,
+    ';': (firstLine.match(/;/g) || []).length,
+    '|': (firstLine.match(/\|/g) || []).length,
+  };
+  let best = ',', bestCount = 0;
+  for (const [d, n] of Object.entries(counts)) {
+    if (n > bestCount) { best = d; bestCount = n; }
+  }
+  return best;
+}
+
+// Emit a (subject, predicate, value) DEF on a file/row entity. Goes into
+// BOTH STATE.G (the event log — what computeIntegral re-derives from)
+// AND STATE.defs (the assertion graph). Without the G entry, the
+// librarian wouldn't be able to find the metadata.
+function emitFileDef(subjectEntity, source, predicate, value, valueIsEntity, spanText, sentenceIdx = null) {
+  const ev = appendEvent({
+    op: 'DEF',
+    payload: { subject: subjectEntity.id, predicate, value, valueIsEntity: !!valueIsEntity },
+    sourceId: source.id,
+    intakeTs: source.intakeTs,
+    narrativePos: { sourceId: source.id, sentenceIdx },
+    spanText,
+    authoredBy: 'file-ingest',
+  });
+  addDef(subjectEntity.id, predicate, value, !!valueIsEntity, [{
+    sentenceIdx,
+    spanText,
+    sourceEventId: ev.id,
+    sourceId: source.id,
+    authoredBy: 'file-ingest',
+  }], 'file-ingest');
+  return ev;
+}
+
+// Attach file-level metadata DEFs to a per-file entity. These are
+// queryable through the librarian like any other DEF — e.g. "what is
+// the size of orders.csv" resolves the file entity and finds the
+// file-size-bytes DEF.
+function attachFileMetadataDefs(fileEntity, source, fileMetadata, contentType) {
+  if (fileMetadata) {
+    if (fileMetadata.name) {
+      emitFileDef(fileEntity, source, 'filename', fileMetadata.name, false, `filename: ${fileMetadata.name}`);
+    }
+    if (fileMetadata.mimeType) {
+      emitFileDef(fileEntity, source, 'mime-type', fileMetadata.mimeType, false, `mime-type: ${fileMetadata.mimeType}`);
+    }
+    if (fileMetadata.size != null) {
+      emitFileDef(fileEntity, source, 'file-size-bytes', String(fileMetadata.size), false, `file-size: ${fileMetadata.size} bytes`);
+    }
+    if (fileMetadata.lastModified) {
+      const iso = new Date(fileMetadata.lastModified).toISOString();
+      emitFileDef(fileEntity, source, 'last-modified', iso, false, `last-modified: ${iso}`);
+    }
+    if (fileMetadata.uploadedAt) {
+      const iso = new Date(fileMetadata.uploadedAt).toISOString();
+      emitFileDef(fileEntity, source, 'uploaded-at', iso, false, `uploaded-at: ${iso}`);
+    }
+  }
+  emitFileDef(fileEntity, source, 'content-type', contentType, false, `content-type: ${contentType}`);
+  emitFileDef(fileEntity, source, 'source-id', source.id, false, `source-id: ${source.id}`);
+}
+
+async function ingestCSVFile(text, sourceName, fileMetadata) {
+  const intakeTs = Date.now();
+  const firstLine = (text.split('\n')[0] || '');
+  const delimiter = detectCSVDelimiter(fileMetadata?.name || sourceName, firstLine);
+  const allRows = parseCSVText(text, delimiter);
+  if (allRows.length === 0) throw new Error('CSV file is empty');
+
+  // First row is treated as headers. If a column header is blank, fall back
+  // to a positional name so DEF predicates remain stable.
+  const headers = allRows[0].map((h, i) => (h && h.trim()) ? h.trim() : `column_${i + 1}`);
+  const dataRows = allRows.slice(1);
+
+  const sourceId = uid('src');
+  const source = {
+    id: sourceId,
+    name: sourceName,
+    publicationDate: null,
+    intakeTs,
+    sentences: [],
+    eventIds: [],
+    rawText: text,
+    enabled: true,
+    contentType: 'csv',
+    fileMetadata: fileMetadata || null,
+    csvHeaders: headers,
+    csvRowCount: dataRows.length,
+    csvDelimiter: delimiter,
+  };
+  STATE.sources.set(sourceId, source);
+  STATE.selectedSourceId = sourceId;
+
+  appendEvent({
+    op: 'INS',
+    payload: { kind: 'source', sourceId, name: sourceName, contentType: 'csv', fileMetadata: fileMetadata || null },
+    sourceId,
+    intakeTs,
+    authoredBy: 'file-ingest',
+  });
+
+  // File-level entity carries the metadata as DEFs so the librarian can
+  // answer questions about the file itself (size, mime type, columns, etc.)
+  const fileEntCanonical = (fileMetadata && fileMetadata.name) || sourceName;
+  const fileEnt = mintEntity(fileEntCanonical, [fileEntCanonical], 'file', { bypassMatcher: true });
+  attachFileMetadataDefs(fileEnt, source, fileMetadata, 'csv');
+  // Schema-level descriptors for the table itself
+  emitFileDef(fileEnt, source, 'row-count', String(dataRows.length), false, `row-count: ${dataRows.length}`);
+  emitFileDef(fileEnt, source, 'column-count', String(headers.length), false, `column-count: ${headers.length}`);
+  emitFileDef(fileEnt, source, 'columns', headers.join(', '), false, `columns: ${headers.join(', ')}`);
+
+  // One row entity per CSV row. Cells become DEFs (predicate = column,
+  // value = cell). This makes the table a fully queryable subgraph
+  // through the existing librarian — no LLM calls required.
+  for (let r = 0; r < dataRows.length; r++) {
+    const row = dataRows[r];
+    const firstNonEmpty = (row.find(c => c && c.trim()) || `row ${r + 1}`).trim();
+    const labelHead = firstNonEmpty.length > 60 ? firstNonEmpty.slice(0, 60) + '…' : firstNonEmpty;
+    // Row index suffix keeps each row distinct even when first-cell values
+    // collide (e.g. duplicate names in a "name" column). Without it,
+    // mintEntity's exact-alias dedupe would merge rows.
+    const rowLabel = `${fileEntCanonical} · ${labelHead} #${r + 1}`;
+    const rowEnt = mintEntity(rowLabel, [rowLabel], 'csv-row', { bypassMatcher: true });
+    const spanText = headers.map((h, i) => `${h}: ${row[i] ?? ''}`).join(' | ');
+    source.sentences.push({ idx: r, text: spanText, chromeSuspect: false });
+
+    // SIG event so the row is visible in mention-based scans
+    const sigEv = appendEvent({
+      op: 'SIG',
+      payload: { entity: rowEnt.id, surface: rowLabel },
+      sourceId,
+      intakeTs,
+      narrativePos: { sourceId, sentenceIdx: r },
+      spanText,
+      authoredBy: 'file-ingest',
+    });
+    source.eventIds.push(sigEv.id);
+
+    // from-file linkage + row-index DEF
+    const fromFileEv = emitFileDef(rowEnt, source, 'from-file', fileEnt.id, true, spanText, r);
+    source.eventIds.push(fromFileEv.id);
+    const rowIdxEv = emitFileDef(rowEnt, source, 'row-index', String(r + 1), false, spanText, r);
+    source.eventIds.push(rowIdxEv.id);
+
+    // Per-cell DEFs. Predicates use the column name verbatim (lowercased
+    // via normalizePredicate when the verb-stem table applies), so the
+    // CSV's own header vocabulary is what surfaces in the predicate cloud.
+    for (let c = 0; c < headers.length; c++) {
+      const col = headers[c];
+      const cell = row[c] != null ? String(row[c]) : '';
+      if (cell === '') continue;
+      const predicate = normalizePredicate(col) || col;
+      const cellSpan = `${col}: ${cell}`;
+      const cellEv = emitFileDef(rowEnt, source, predicate, cell, false, cellSpan, r);
+      source.eventIds.push(cellEv.id);
+    }
+  }
+
+  notifyDataChanged();
+  return source;
+}
+
+async function ingestPlainTextFile(text, sourceName, fileMetadata) {
+  // Plain text: reuse the prose ingest pipeline but force the no-LLM
+  // path. Entity detection still runs (geometric pre-pass); each sentence
+  // emits SIG-only events. Filename + size/mime/modified are attached
+  // as queryable DEFs on a per-file entity.
+  const source = await ingestSource(text, {
+    name: sourceName,
+    rawMode: true,
+    cleanChrome: false,
+    fileMetadata,
+  });
+  if (source) {
+    const fileEntCanonical = (fileMetadata && fileMetadata.name) || sourceName;
+    const fileEnt = mintEntity(fileEntCanonical, [fileEntCanonical], 'file', { bypassMatcher: true });
+    attachFileMetadataDefs(fileEnt, source, fileMetadata, 'raw-text');
+    const lineCount = (text.match(/\n/g) || []).length + 1;
+    const charCount = text.length;
+    emitFileDef(fileEnt, source, 'line-count', String(lineCount), false, `line-count: ${lineCount}`);
+    emitFileDef(fileEnt, source, 'char-count', String(charCount), false, `char-count: ${charCount}`);
+    emitFileDef(fileEnt, source, 'sentence-count', String(source.sentences.length), false, `sentence-count: ${source.sentences.length}`);
+    notifyDataChanged();
+  }
+  return source;
+}
+
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('file read failed'));
+    reader.readAsText(file);
+  });
+}
+
+function classifyUploadedFile(file) {
+  const name = (file.name || '').toLowerCase();
+  const type = (file.type || '').toLowerCase();
+  if (name.endsWith('.csv') || name.endsWith('.tsv') || type === 'text/csv' || type === 'text/tab-separated-values') {
+    return 'csv';
+  }
+  return 'text';
+}
+
+async function ingestUploadedFiles(files, onProgress) {
+  const sources = [];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    if (onProgress) onProgress({ current: i + 1, total: files.length, file: file.name });
+    const text = await readFileAsText(file);
+    const fileMetadata = {
+      name: file.name,
+      mimeType: file.type || (classifyUploadedFile(file) === 'csv' ? 'text/csv' : 'text/plain'),
+      size: file.size,
+      lastModified: file.lastModified,
+      uploadedAt: Date.now(),
+    };
+    const kind = classifyUploadedFile(file);
+    let src;
+    if (kind === 'csv') {
+      src = await ingestCSVFile(text, file.name, fileMetadata);
+    } else {
+      src = await ingestPlainTextFile(text, file.name, fileMetadata);
+    }
+    if (src) sources.push(src);
+  }
+  return sources;
+}
+
 // ─── INGEST ──────────────────────────────────────────────────────────
 // Per-source ingest:
 // 1. Mint source record
@@ -5908,6 +6192,8 @@ async function ingestSource(text, opts = {}) {
     eventIds: [],
     rawText: text,
     enabled: true,  // toggle-able from Sources view; gates inclusion in derived state
+    contentType: opts.rawMode ? 'raw-text' : 'prose',
+    fileMetadata: opts.fileMetadata || null,
   };
   STATE.sources.set(sourceId, source);
   STATE.selectedSourceId = sourceId;  // auto-select so reading cursor is visible
@@ -5953,7 +6239,7 @@ async function ingestSource(text, opts = {}) {
   // Gives the per-clause extractor a populated principal list and register
   // guess as conditioning context. Fixes most NER drift on chunked uploads
   // (Austen-style role-described characters, dialogue interjection mints).
-  if (isLLMReady()) {
+  if (isLLMReady() && !opts.rawMode) {
     if (progressEl) progressEl.innerHTML = `forming document hypothesis…`;
     try {
       const hyp = await hypothesizeDocument(processedText);
@@ -6054,7 +6340,7 @@ async function ingestSource(text, opts = {}) {
     }).map(eid => STATE.entities.get(eid)).filter(Boolean);
 
     let llmResult;
-    if (isLLMReady() && isProseClause(clause)) {
+    if (!opts.rawMode && isLLMReady() && isProseClause(clause)) {
       STATE.clausesProcessed++;
       try {
         llmResult = await processClauseWithEscalation(clause, allMentioned, salWindow, mentions, source);
@@ -6085,7 +6371,7 @@ async function ingestSource(text, opts = {}) {
     // understanding (priors at this moment in the read). It also gets
     // sentence-embedded, which feeds the per-entity gestalt (the centroid
     // that determines computed Site).
-    if (isLLMReady() && STATE.autoLLMClassify !== false) {
+    if (!opts.rawMode && isLLMReady() && STATE.autoLLMClassify !== false) {
       for (const eid of sentenceEventIds) {
         const ev = STATE.G.find(e => e.id === eid);
         if (!ev || !isEventAmbiguous(ev) || ev.llmCell || ev.llmClassifyError) continue;
@@ -6171,7 +6457,7 @@ async function ingestSource(text, opts = {}) {
   // — let the user keep using the app while it runs — but surface progress
   // in the ingest progress element so it's obvious classification is still
   // in flight.
-  if (isLLMReady() && STATE.autoLLMClassify !== false) {
+  if (!opts.rawMode && isLLMReady() && STATE.autoLLMClassify !== false) {
     setTimeout(async () => {
       const updateProgress = ({ current, total, ok, errs }) => {
         if (progressEl && current < total) {
@@ -7136,13 +7422,21 @@ function renderSourcesView() {
     const isProcessing = STATE.currentlyProcessing?.sourceId === id;
     const isEnabled = src.enabled !== false;
     const pubStr = src.publicationDate ? new Date(src.publicationDate).toISOString().slice(0, 10) : 'no pub date';
+    const kindBadge = src.contentType === 'csv'
+      ? ` <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; padding: 1px 5px; background: var(--paper-soft); border: 1px solid var(--rule); border-radius: 2px; color: var(--ink-soft);" title="ingested from a CSV — rows are queryable as records">csv</span>`
+      : src.contentType === 'raw-text'
+        ? ` <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; padding: 1px 5px; background: var(--paper-soft); border: 1px solid var(--rule); border-radius: 2px; color: var(--ink-soft);" title="raw text — ingested without LLM processing">text</span>`
+        : '';
+    const rowCountStr = src.contentType === 'csv'
+      ? `${src.csvRowCount ?? src.sentences.length} rows · ${src.csvHeaders?.length || 0} columns`
+      : `${src.sentences.length} sentences`;
     html += `<div class="source-item${active}${isProcessing ? ' processing' : ''}${isEnabled ? '' : ' disabled'}" data-source-id="${id}">
       <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 6px;">
         <label style="display: flex; align-items: flex-start; gap: 6px; flex: 1; min-width: 0; cursor: pointer;" onclick="event.stopPropagation();">
           <input type="checkbox" class="source-toggle" data-source-id="${id}" ${isEnabled ? 'checked' : ''} title="Toggle this source on/off — disabled sources are excluded from queries, integrals, and predicate vocabulary.">
           <div style="flex: 1; min-width: 0;">
-            <div class="name">${escapeHtml(src.name)}${isProcessing ? ' <span style="color: var(--cursor); font-family: \'IBM Plex Mono\', monospace; font-size: 9px; letter-spacing: 0.1em;">· READING</span>' : ''}</div>
-            <div class="meta">${src.sentences.length} sentences · ${src.eventIds.length} events · ${escapeHtml(pubStr)}${isEnabled ? '' : ' · <span style="color: var(--accent); font-weight: 500;">disabled</span>'}</div>
+            <div class="name">${escapeHtml(src.name)}${kindBadge}${isProcessing ? ' <span style="color: var(--cursor); font-family: \'IBM Plex Mono\', monospace; font-size: 9px; letter-spacing: 0.1em;">· READING</span>' : ''}</div>
+            <div class="meta">${rowCountStr} · ${src.eventIds.length} events · ${escapeHtml(pubStr)}${isEnabled ? '' : ' · <span style="color: var(--accent); font-weight: 500;">disabled</span>'}</div>
           </div>
         </label>
         <button class="source-delete-btn" data-source-id="${id}" title="Delete this source — removes all events ingested from it">×</button>
@@ -7158,6 +7452,38 @@ function renderSourcesView() {
     if (src) {
       const proc = STATE.currentlyProcessing?.sourceId === src.id ? STATE.currentlyProcessing : null;
       meta.textContent = `${src.name} · ${src.sentences.length} sentences · ${src.eventIds.length} events`;
+
+      // File metadata card — shown for sources ingested from a file upload
+      // (txt or csv, no-LLM path). Mirrors the metadata that's also stored
+      // as DEFs on a per-file entity, so it's queryable from the librarian.
+      if (src.fileMetadata || src.contentType === 'csv' || src.contentType === 'raw-text') {
+        const fm = src.fileMetadata || {};
+        const rows = [];
+        if (fm.name) rows.push(['filename', fm.name]);
+        if (fm.mimeType) rows.push(['mime-type', fm.mimeType]);
+        if (fm.size != null) {
+          const kb = (fm.size / 1024).toFixed(fm.size >= 102400 ? 0 : 1);
+          rows.push(['size', `${fm.size.toLocaleString()} bytes (${kb} KB)`]);
+        }
+        if (fm.lastModified) rows.push(['last-modified', new Date(fm.lastModified).toISOString().replace('T', ' ').slice(0, 19) + 'Z']);
+        if (fm.uploadedAt) rows.push(['uploaded-at', new Date(fm.uploadedAt).toISOString().replace('T', ' ').slice(0, 19) + 'Z']);
+        rows.push(['content-type', src.contentType || 'prose']);
+        if (src.contentType === 'csv') {
+          rows.push(['rows', String(src.csvRowCount ?? src.sentences.length)]);
+          rows.push(['columns', (src.csvHeaders || []).join(', ')]);
+          rows.push(['delimiter', src.csvDelimiter === '\t' ? 'tab' : (src.csvDelimiter || ',')]);
+        }
+        const rowsHtml = rows.map(([k, v]) =>
+          `<div style="display:flex;gap:10px;font-family:'IBM Plex Mono',monospace;font-size:10px;line-height:1.7;">
+             <span style="color:var(--ink-soft);min-width:110px;">${escapeHtml(k)}</span>
+             <span style="color:var(--ink);">${escapeHtml(String(v))}</span>
+           </div>`).join('');
+        html += `<div style="background:var(--paper-soft);border:1px solid var(--rule);padding:12px 14px;margin-bottom:18px;">
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:8px;">file metadata · queryable provenance</div>
+          ${rowsHtml}
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-faint);margin-top:8px;">These fields are also attached as DEFs on the <strong>${escapeHtml(fm.name || src.name)}</strong> entity so the librarian can answer questions about the file itself.</div>
+        </div>`;
+      }
 
       // Document hypothesis (if generated at ingest start). Renders as a
       // compact card showing what the LLM thought the text was before
@@ -9331,6 +9657,52 @@ document.getElementById('ingest-btn').addEventListener('click', async () => {
     if (STATE.activeView === 'cursors') renderCursorStatus();
   }
 });
+
+// File ingest (no-LLM) wiring — see ingestUploadedFiles() above
+(() => {
+  const fileInput = document.getElementById('file-input');
+  const filesBtn = document.getElementById('ingest-files-btn');
+  const progress = document.getElementById('files-progress');
+  if (!fileInput || !filesBtn) return;
+  fileInput.addEventListener('change', () => {
+    filesBtn.disabled = !fileInput.files || fileInput.files.length === 0;
+    if (progress) {
+      const n = fileInput.files?.length || 0;
+      progress.textContent = n > 0 ? `${n} file${n === 1 ? '' : 's'} selected` : '';
+    }
+  });
+  filesBtn.addEventListener('click', async () => {
+    const files = Array.from(fileInput.files || []);
+    if (files.length === 0) return;
+    filesBtn.disabled = true;
+    if (progress) progress.textContent = `ingesting ${files.length} file${files.length === 1 ? '' : 's'}…`;
+    try {
+      const sources = await ingestUploadedFiles(files, ({ current, total, file }) => {
+        if (progress) progress.textContent = `[${current}/${total}] ${file}`;
+      });
+      const csvCount = sources.filter(s => s.contentType === 'csv').length;
+      const txtCount = sources.length - csvCount;
+      const parts = [];
+      if (csvCount) parts.push(`${csvCount} csv`);
+      if (txtCount) parts.push(`${txtCount} text`);
+      if (progress) {
+        progress.textContent = `done · ${sources.length} file${sources.length === 1 ? '' : 's'} ingested${parts.length ? ` (${parts.join(', ')})` : ''} · no LLM calls`;
+      }
+      fileInput.value = '';
+    } catch (e) {
+      console.error('File ingest failed:', e);
+      if (progress) progress.textContent = `error: ${e.message}`;
+      alert('File ingest error: ' + e.message);
+    } finally {
+      filesBtn.disabled = !fileInput.files || fileInput.files.length === 0;
+      renderHeaderStatus();
+      renderExampleQueries();
+      if (STATE.activeView === 'sources') renderSourcesView();
+      if (STATE.activeView === 'inspect') renderInspectView();
+      if (STATE.activeView === 'cursors') renderCursorStatus();
+    }
+  });
+})();
 
 document.getElementById('reset-btn').addEventListener('click', () => {
   if (!confirm('Reset all corpus and graph state? This cannot be undone. (Prompt log preserved unless you clear it separately.)')) return;
