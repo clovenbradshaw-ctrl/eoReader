@@ -364,6 +364,19 @@ button.secondary.danger:hover { background: var(--accent); color: var(--paper); 
 .framing-pill.active { background: var(--accent); color: var(--paper); border-color: var(--accent); }
 .cursor-pill { color: var(--cursor); border-color: var(--cursor); }
 .cursor-pill.active { background: var(--cursor); color: var(--paper); }
+.log-filter-pill {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  cursor: pointer;
+  transition: all 0.12s;
+  color: var(--ink-soft);
+}
+.log-filter-pill:hover { color: var(--ink); }
+.log-filter-pill.active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 
 .example-queries {
   display: flex;
@@ -1214,6 +1227,7 @@ code {
   <button class="view-tab" data-view="prompts">Prompts</button>
   <button class="view-tab" data-view="inspect">Inspect</button>
   <button class="view-tab" data-view="graph">Graph</button>
+  <button class="view-tab" data-view="log">Log</button>
 </nav>
 
 <main class="app-main">
@@ -1251,16 +1265,23 @@ code {
   <!-- ── VIEW AREA ────────────────────────────────────────────── -->
   <div class="view-area">
 
-    <!-- Query pane -->
+    <!-- Query pane: ask the librarian, who walks the graph for cited answers -->
     <div class="view-pane active" id="view-query">
       <div class="pane-header">
-        <div class="pane-title">Query · ask the corpus</div>
+        <div class="pane-title">Librarian · ask the corpus</div>
         <div class="pane-meta" id="query-meta">no corpus</div>
       </div>
-      <div class="query-composer">
-        <textarea id="query-input" placeholder="Ask the corpus a question. The system walks the graph at the chosen cursor under the chosen framing; the LLM frames the result."></textarea>
+      <!-- Chat transcript accumulates above the composer.
+           Each turn = user question + librarian response (commentary + findings + source citations). -->
+      <div class="pane-body" id="query-results" style="display: flex; flex-direction: column; gap: 0; padding-bottom: 0;">
+        <div id="chat-transcript" style="flex: 1; overflow-y: auto; padding: 16px 20px;">
+          <div class="empty-state">Ingest a source, then ask the librarian. Answers come as commentary paired with cited findings and source spans.</div>
+        </div>
+      </div>
+      <div class="query-composer" style="border-top: 1px solid var(--rule); background: var(--paper-soft);">
+        <textarea id="query-input" placeholder="Ask the librarian a question. Subsequent questions can reference earlier turns."></textarea>
         <div class="query-controls">
-          <button class="query-go" id="query-go">Walk</button>
+          <button class="query-go" id="query-go">Ask</button>
           <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: 0.06em;">framing:</span>
           <button class="framing-pill active" data-framing="uniform">uniform</button>
           <button class="framing-pill" data-framing="recency">recency-weighted</button>
@@ -1268,11 +1289,9 @@ code {
           <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: 0.06em;">cursor:</span>
           <button class="cursor-pill active" data-cursor="now">now</button>
           <button class="cursor-pill" data-cursor="custom">custom...</button>
+          <button id="chat-clear" style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);background:none;border:1px solid var(--rule);padding:4px 8px;cursor:pointer;">clear</button>
         </div>
         <div class="example-queries" id="example-queries"></div>
-      </div>
-      <div class="pane-body" id="query-results">
-        <div class="empty-state">Ingest a source, then ask. Answers come as structured findings paired with librarian commentary.</div>
       </div>
     </div>
 
@@ -1358,8 +1377,29 @@ code {
           <canvas id="graph-canvas" style="display: block; cursor: grab;"></canvas>
           <div id="graph-tooltip" style="position: absolute; pointer-events: none; background: var(--ink); color: var(--paper); padding: 8px 12px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; border-radius: 2px; max-width: 320px; display: none; box-shadow: 0 4px 16px rgba(0,0,0,0.15); line-height: 1.5; z-index: 10;"></div>
           <div id="graph-legend" style="position: absolute; top: 12px; right: 12px; background: var(--paper-soft); border: 1px solid var(--rule); padding: 10px 14px; font-size: 11px; max-width: 240px; max-height: calc(100% - 24px); overflow-y: auto;"></div>
-          <div id="graph-detail" style="position: absolute; bottom: 12px; left: 12px; background: var(--paper-soft); border: 1px solid var(--rule); padding: 10px 14px; font-size: 11px; max-width: 380px; display: none;"></div>
+          <div id="graph-detail" style="position: absolute; bottom: 60px; left: 12px; background: var(--paper-soft); border: 1px solid var(--rule); padding: 10px 14px; font-size: 11px; max-width: 380px; display: none;"></div>
+          <!-- ── SCRUBBER ── -->
+          <!-- Sentence-span timeline. Drag the handle to walk the read
+               from beginning to end. "Live" = follow ingest. -->
+          <div id="graph-scrubber" style="position: absolute; bottom: 0; left: 0; right: 0; background: var(--paper-soft); border-top: 1px solid var(--rule); padding: 8px 14px; display: flex; align-items: center; gap: 12px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--ink-soft);">
+            <span id="graph-scrubber-label" style="white-space: nowrap; min-width: 130px;">cursor: live</span>
+            <input type="range" id="graph-scrubber-input" min="0" max="0" value="0" step="1" style="flex: 1; accent-color: var(--ink);" />
+            <button id="graph-scrubber-live" class="pill clickable" style="font-size: 9px; padding: 3px 8px; letter-spacing: 0.06em;">live</button>
+          </div>
         </div>
+      </div>
+    </div>
+
+    <!-- ── LOG PANE ──
+         Walks G in time order, renders each event in canonical EO
+         notation. Click any line to jump to its source span. -->
+    <div class="view-pane" id="view-log">
+      <div class="pane-header">
+        <div class="pane-title">Log · EO event stream</div>
+        <div class="pane-meta" id="log-meta">empty</div>
+      </div>
+      <div class="pane-body" id="log-body" style="padding: 14px 18px;">
+        <div class="empty-state">No events yet.</div>
       </div>
     </div>
 
@@ -1921,6 +1961,14 @@ const STATE = {
   activeCursor: { timeline: 'intake', position: 'now' },
   compareCursor: null,
   selectedSourceId: null,
+
+  // Graph view scrubber: position along the sentence-span timeline.
+  // null = "live" (follows ingest); otherwise an integer that's the
+  // total-sentences-so-far cutoff. Only events whose narrativePos
+  // resolves to a sentence at-or-before this cutoff are shown.
+  // Eventually this will accept multiple time dimensions (intake,
+  // publication, narrative-internal); for now it's just span.
+  graphCursor: null,
 
   // Prompt log — every LLM call recorded for inspection
   promptLog: [],
@@ -3175,22 +3223,21 @@ function renderEmbedStatus() {
     line1 = `<span style="color: var(--ink-faint);">embed: index not loaded</span>`;
   }
   // Line 2: sentence-embedder (Transformers.js, drives entity gestalt
-  // computation — used for site classification via centroid distance to
-  // reference gestalts of the 9 sites).
+  // computation — used for the gestalt pipeline: pairwise entity
+  // similarity, semantic-neighbor lookup, future spatial graph layout.
+  // NOT used for site classification, which reads phasepost faces.
   let line2 = '';
   if (EMBEDDER.status === 'loading') {
     line2 = `<div><span style="color: var(--gap);">gestalt: loading model (~22MB, first time only)…</span></div>`;
   } else if (EMBEDDER.status === 'ready') {
     if (BACKFILL.running) {
       line2 = `<div><span style="color: var(--gap);">gestalt: embedding existing events ${BACKFILL.current}/${BACKFILL.total}…</span></div>`;
-    } else if (referenceGestaltsReady) {
-      const embeddedCount = EMBEDDING_STORE.byEventId.size;
-      line2 = `<div><span style="color: var(--confirm, #4a7c59);">gestalt: ready · ${Object.keys(REFERENCE_GESTALTS).length} reference sites · ${embeddedCount} events embedded</span></div>`;
     } else {
-      line2 = `<div><span style="color: var(--gap);">gestalt: building reference centroids…</span></div>`;
+      const embeddedCount = EMBEDDING_STORE.byEventId.size;
+      line2 = `<div><span style="color: var(--confirm, #4a7c59);">gestalt: ready · ${embeddedCount} events embedded</span></div>`;
     }
   } else if (EMBEDDER.status === 'failed') {
-    line2 = `<div><span style="color: var(--ink-soft);">gestalt: failed (${escapeHtml(EMBEDDER.error || 'unknown')}) — falling back to hypothesis</span></div>`;
+    line2 = `<div><span style="color: var(--ink-soft);">gestalt: failed (${escapeHtml(EMBEDDER.error || 'unknown')}) — semantic neighbors unavailable</span></div>`;
   }
   // Line 3: LLM classification (only shown if there's been activity)
   let line3 = '';
@@ -3253,6 +3300,7 @@ function renderActiveView() {
       case 'inspect':  renderInspectView(); break;
       case 'cursors':  renderCursorStatus(); break;
       case 'graph':    renderGraphView(); break;
+      case 'log':      renderLogView(); break;
       // 'query' and 'prompts' are interaction-driven, no live rebuild needed
     }
   } catch (e) {
@@ -4693,13 +4741,13 @@ async function hypothesizeDocument(text) {
 // Kept terse on purpose — we want the LLM to read it and apply it, not get
 // distracted by long preamble that competes with the clause itself.
 //
-// IMPORTANT: this is called per-clause with the LIVE state. The Site
-// shown for each principal is COMPUTED from accumulated propositional
-// evidence (computeEntitySite), with the hypothesis's guess as fallback
-// when there's not enough evidence yet. So early sentences see the
-// hypothesis's first read; later sentences see the system's
-// continuously-updated understanding of how the document is using the
-// referent.
+// The Site shown for each principal is the hypothesis's declared Site
+// (a soft prior). Under the role-profile model, an entity doesn't HAVE
+// a single Site classification — it has distributions across the three
+// faces. The hypothesis's declared Site is best read as the system's
+// initial guess at where the document will most often position
+// propositions about this referent. The per-clause LLM uses that as
+// orientation, not as ground truth.
 function formatHypothesisForClause(h) {
   if (!h) return null;
   const principalNames = (h.principals || []).slice(0, 12).map(p => {
@@ -4708,23 +4756,8 @@ function formatHypothesisForClause(h) {
       const otherAliases = p.aliases.filter(a => a !== p.name);
       if (otherAliases.length > 0) s += ` (also: ${otherAliases.slice(0, 3).join(', ')})`;
     }
-    // Find the entity for this principal and compute its current site.
-    const ent = (() => {
-      for (const [, info] of STATE.entities) {
-        if (info.canonical === p.name) return info;
-        for (const a of info.aliases || []) {
-          if (a === p.name) return info;
-        }
-      }
-      return null;
-    })();
-    let activeSite = p.site;  // fallback to hypothesis declaration
-    if (ent) {
-      const computed = computeEntitySite(ent.id);
-      if (computed) activeSite = computed.site;
-    }
-    if (activeSite && activeSite !== 'Entity') {
-      s += ` <${activeSite}>`;
+    if (p.site && p.site !== 'Entity') {
+      s += ` <${p.site}>`;
     }
     return s;
   }).join('; ');
@@ -5188,251 +5221,20 @@ function getEmbedding(eventId) {
   return EMBEDDING_STORE.byEventId.get(eventId) || null;
 }
 
-// ─── REFERENCE GESTALTS ─────────────────────────────────────
-// One curated example set per Site. These are propositions that
-// exemplify what a Site-typed entity looks like in the document's
-// usage. Computed once at embedder-ready time, cached.
+// ─── PER-EVENT EMBEDDING (GESTALT PIPELINE) ─────────────────────────
+// Embed a propositional event's text and route the vector into the
+// store (in-memory + OPFS). Called inline after foldEvents alongside
+// phasepost classification. Once stored, never recomputed.
 //
-// The exemplars are chosen to span the variation within each Site
-// (Entity covers persons, named places, named organizations; Field
-// covers regions, terrains, ambient zones; etc.). A wider net of
-// exemplars produces a more robust reference centroid that doesn't
-// overfit to one prototype shape.
-
-const SITE_EXEMPLARS = {
-  Entity: [
-    'The senator cast the deciding vote on the bill.',
-    'She walked into the kitchen and put down her bag.',
-    'The general issued the order at dawn.',
-    'He paid the contractor in cash.',
-    'The CEO denied the allegations during the press conference.',
-    'Mrs. Bennet declared her intention to visit Mr. Bingley.',
-    'The coffee shop closed at ten oclock.',
-    'Tokyo hosted the Olympic Games in 2021.',
-    'The Pentagon announced new sanctions today.',
-    'My grandmother taught me how to make bread.',
-  ],
-  Kind: [
-    'The miners arrived at dawn carrying their tools.',
-    'Soldiers stationed at the base reported the incident.',
-    'Refugees crossed the border in waves.',
-    'The students protested in front of the administration building.',
-    'Voters expressed frustration at the polls.',
-    'Doctors warned that the treatment could have side effects.',
-    'Farmers in the region face declining yields year after year.',
-    'Veterans of the conflict gathered for the memorial.',
-    'Workers at the factory walked off the job.',
-    'Pedestrians fled as the storm approached.',
-  ],
-  Field: [
-    'The Persian Gulf saw heavy traffic during the crisis.',
-    'In the borderlands, no government writ runs cleanly.',
-    'The neighborhood had grown quieter over the years.',
-    'Across the steppes, herds moved with the seasons.',
-    'The valley filled with mist by dusk.',
-    'Within the prison walls, time moved differently.',
-    'The desert stretched in all directions, featureless.',
-    'Throughout the watershed, contamination spread silently.',
-    'The financial district pulsed with activity at opening bell.',
-    'In rural Pennsylvania, the same patterns kept repeating.',
-  ],
-  Link: [
-    'The bridge connected the two halves of the city.',
-    'A handshake sealed the agreement between them.',
-    'The treaty bound the nations together for fifty years.',
-    'The contract stipulated joint ownership of the patent.',
-    'A friendship that had lasted decades came under strain.',
-    'The trade route between the ports was suddenly disrupted.',
-    'Their alliance shifted with each new political cycle.',
-    'The marriage joined the two estates.',
-    'A direct line of communication ran between the offices.',
-    'The pipeline linked the gas fields to the refinery.',
-  ],
-  Network: [
-    'The supply chain spanned three continents and a dozen middlemen.',
-    'A web of patronage connected the local officials to the cartel.',
-    'The intelligence-sharing network operated without formal agreements.',
-    'Surveillance infrastructure stitched together a thousand cameras.',
-    'The shadow banking system moved trillions outside regulation.',
-    'A network of informants kept the regime aware of dissent.',
-    'The trade ecosystem of the region depended on a few key brokers.',
-    'A coalition of NGOs coordinated the response across borders.',
-    'The dark web marketplace operated through chains of intermediaries.',
-    'Power flowed through informal channels among the clan elders.',
-  ],
-  Atmosphere: [
-    'A sense of dread had settled over the village.',
-    'The mood in the room shifted when she entered.',
-    'An institutional failure to enforce the rules pervaded the agency.',
-    'Anxiety hung over the negotiations from the start.',
-    'A climate of fear dominated the post-coup years.',
-    'The general malaise affected every department equally.',
-    'Tension thickened as the deadline approached.',
-    'A culture of silence had taken root.',
-    'The atmosphere of suspicion poisoned every interaction.',
-    'Optimism had given way to resignation in the months since.',
-  ],
-  Lens: [
-    'Through the lens of class struggle, the conflict made new sense.',
-    'The neoliberal frame organized the entire policy debate.',
-    'The next assembly hung over every decision the family made.',
-    'Viewed as a marriage market, the village rearranged itself.',
-    'The threat of nuclear escalation shaped every response.',
-    'Their reading of the prophecy determined the kingdoms response.',
-    'The doctrine of containment defined four decades of foreign policy.',
-    'The framing as a national emergency rallied bipartisan support.',
-    'Through the prism of identity politics, every debate transformed.',
-    'The professional ethics code shaped what was even thinkable.',
-  ],
-  Paradigm: [
-    'It is a truth universally acknowledged that wealth attracts marriage.',
-    'The Westphalian system shaped four centuries of international relations.',
-    'Capitalism organized the production of meaning, not just goods.',
-    'The doctrine of mutually assured destruction governed the balance.',
-    'Patriarchy was the unspoken architecture of the household.',
-    'The colonial worldview structured every interaction with the natives.',
-    'The Enlightenment commitment to reason set the conditions of debate.',
-    'Honor culture made certain insults intolerable as a matter of structure.',
-    'The Protestant work ethic determined what counted as virtue.',
-    'The medical model of mental illness defined the field for a century.',
-  ],
-  Void: [
-    'No one had taken responsibility in the months since the disaster.',
-    'The silence from the ministry was itself the answer.',
-    'There was no formal acknowledgment of what had happened.',
-    'A gap in the record where her name should have been.',
-    'The absence of police presence shaped daily life.',
-    'No real opposition existed in the parliament.',
-    'The empty chair at the head of the table spoke louder than words.',
-    'A blank space in the archive where the documents should have been.',
-    'Nothing remained of the institution but its name on the building.',
-    'The conspicuous absence of any independent oversight worried observers.',
-  ],
-};
-
-// Reference gestalts, one per Site. Computed once when the embedder
-// becomes ready. Stored as Int8Array (quantized) for cosine math
-// consistency with entity centroids. Persisted to OPFS so we don't
-// re-embed exemplars every boot.
-const REFERENCE_GESTALTS = {};
-let referenceGestaltsReady = false;
-
-async function buildReferenceGestalts() {
-  if (referenceGestaltsReady) return;
-  if (EMBEDDER.status !== 'ready') return;
-  // Try OPFS load first
-  const loaded = await opfsLoadReferenceGestalts();
-  if (loaded) {
-    referenceGestaltsReady = true;
-    console.log('[anchorage] reference gestalts loaded from OPFS:', Object.keys(REFERENCE_GESTALTS).length, 'sites');
-    try { renderHeaderStatus(); renderActiveViewNow && renderActiveViewNow(); } catch {}
-    backfillEmbeddings().catch(err => console.warn('Backfill failed:', err));
-    return;
-  }
-  // Build fresh from exemplars
-  for (const [site, exemplars] of Object.entries(SITE_EXEMPLARS)) {
-    const vecs = [];
-    for (const ex of exemplars) {
-      const v = await embedText(ex);
-      if (v) vecs.push(v);
-    }
-    const float = centroidOf(vecs);
-    if (float) REFERENCE_GESTALTS[site] = quantizeFloat32(float);
-  }
-  referenceGestaltsReady = true;
-  console.log('[anchorage] reference gestalts built for', Object.keys(REFERENCE_GESTALTS).length, 'sites');
-  // Persist
-  opfsSaveReferenceGestalts().catch(err => console.warn('OPFS reference save failed:', err));
-  try { renderHeaderStatus(); renderActiveViewNow && renderActiveViewNow(); } catch {}
-  // Backfill any events that landed before the embedder was ready —
-  // common case is a user starting ingest immediately on app open
-  // while the ~22MB model is still downloading.
-  backfillEmbeddings().catch(err => console.warn('Backfill failed:', err));
-}
-
-// Persist reference gestalts to OPFS as packed binary: 4-byte magic +
-// 2-byte version + 2-byte dim + per-site (16-byte name padded + dim
-// bytes int8 vector).
-const REF_MAGIC = 0x52454645;  // 'REFE'
-const REF_RECORD_SIZE = 16 + EMBED_DIM;
-
-async function opfsSaveReferenceGestalts() {
-  if (!EMBEDDING_STORE.opfsAvailable) return;
-  try {
-    const dir = await opfsGetDir();
-    const fh = await dir.getFileHandle('references.bin', { create: true });
-    const sites = Object.keys(REFERENCE_GESTALTS);
-    const buf = new ArrayBuffer(8 + sites.length * REF_RECORD_SIZE);
-    const view = new DataView(buf);
-    view.setUint32(0, REF_MAGIC, false);
-    view.setUint16(4, OPFS_VERSION, false);
-    view.setUint16(6, EMBED_DIM, false);
-    const bytes = new Uint8Array(buf);
-    for (let i = 0; i < sites.length; i++) {
-      const off = 8 + i * REF_RECORD_SIZE;
-      const name = sites[i];
-      for (let j = 0; j < Math.min(name.length, 16); j++) bytes[off + j] = name.charCodeAt(j) & 0xff;
-      bytes.set(REFERENCE_GESTALTS[name], off + 16);
-    }
-    const writable = await fh.createWritable();
-    await writable.write(buf);
-    await writable.close();
-  } catch (e) {
-    console.warn('[anchorage] reference gestalt save failed:', e);
-  }
-}
-
-async function opfsLoadReferenceGestalts() {
-  if (!EMBEDDING_STORE.opfsAvailable) return false;
-  try {
-    const dir = await opfsGetDir();
-    let fh;
-    try {
-      fh = await dir.getFileHandle('references.bin', { create: false });
-    } catch (e) { return false; }
-    const file = await fh.getFile();
-    if (file.size < 8) return false;
-    const buf = await file.arrayBuffer();
-    const view = new DataView(buf);
-    const magic = view.getUint32(0, false);
-    const version = view.getUint16(4, false);
-    const dim = view.getUint16(6, false);
-    if (magic !== REF_MAGIC || version !== OPFS_VERSION || dim !== EMBED_DIM) return false;
-    let offset = 8;
-    while (offset + REF_RECORD_SIZE <= buf.byteLength) {
-      const nameBytes = new Uint8Array(buf, offset, 16);
-      let name = '';
-      for (let j = 0; j < 16; j++) {
-        if (nameBytes[j] === 0) break;
-        name += String.fromCharCode(nameBytes[j]);
-      }
-      const vec = new Int8Array(buf.slice(offset + 16, offset + REF_RECORD_SIZE));
-      if (name && SITE_EXEMPLARS[name]) {
-        REFERENCE_GESTALTS[name] = vec;
-      }
-      offset += REF_RECORD_SIZE;
-    }
-    return Object.keys(REFERENCE_GESTALTS).length === Object.keys(SITE_EXEMPLARS).length;
-  } catch (e) {
-    console.warn('[anchorage] reference gestalt load failed:', e);
-    return false;
-  }
-}
-
-// ─── PER-EVENT EMBEDDING ─────────────────────────────────────
-// Embed a propositional event's text and cache on the event. Called
-// inline after foldEvents (alongside phasepost classification). Once
-// cached, never recomputed.
+// This is for pipeline B — the gestalt/semantic-positioning pipeline.
+// Site classification (pipeline A) reads phasepost faces directly and
+// does not require embeddings to be present.
 
 async function embedEventIfNeeded(ev) {
-  // Skip if already in the store. The legacy `_embedding` field on the
-  // event was the v25.4-and-earlier home for the vector; we keep
-  // reading it for back-compat (loaded saved corpora) but new
-  // embeddings land only in EMBEDDING_STORE.
   if (!ev) return;
   if (EMBEDDING_STORE.byEventId.has(ev.id)) return;
+  // Migrate any legacy in-event embedding into the store
   if (ev._embedding) {
-    // Migrate legacy in-event embedding into the store.
     const arr = ev._embedding instanceof Float32Array ? ev._embedding
               : Array.isArray(ev._embedding) ? new Float32Array(ev._embedding)
               : new Float32Array(Object.values(ev._embedding));
@@ -5464,16 +5266,12 @@ async function embedEventIfNeeded(ev) {
   if (v) storeEmbedding(ev.id, v);
 }
 
-// Backfill: walk G and embed any DEF/CON events that don't yet have an
-// embedding. Runs when the embedder transitions to ready, OR when a
-// graph is loaded from disk that has events without embeddings. Updates
-// status as it progresses.
-//
-// This is the safety net for the case where ingest happened before the
-// embedder finished loading. The model is ~22MB on first load; on a
-// slow connection, an entire 100-sentence ingest can complete before
-// the model is ready. Without backfill, those events would never get
-// embedded and computeEntitySite would fall back to hypothesis forever.
+// ─── BACKFILL ─────────────────────────────────────────────────
+// Walk G and embed any DEF/CON events that don't yet have an
+// embedding in the store. Runs (1) when the embedder transitions to
+// ready (catches events that landed during model download), and
+// (2) at end of every ingest (catches events that landed before the
+// embedder finished loading mid-ingest).
 
 const BACKFILL = { running: false, current: 0, total: 0 };
 
@@ -5492,8 +5290,6 @@ async function backfillEmbeddings() {
   for (let i = 0; i < targets.length; i++) {
     await embedEventIfNeeded(targets[i]);
     BACKFILL.current = i + 1;
-    // Update status every ~10 events to keep UI responsive without
-    // overwhelming it.
     if (i % 10 === 0) {
       try { renderHeaderStatus(); renderEmbedStatus(); } catch {}
     }
@@ -5503,10 +5299,295 @@ async function backfillEmbeddings() {
   try { renderHeaderStatus(); renderEmbedStatus(); renderActiveViewNow && renderActiveViewNow(); } catch {}
 }
 
-// ─── ENTITY GESTALT + SITE COMPUTATION ───────────────────────
-// Walk all DEF/CON events where the entity is subject (or target),
-// gather embeddings, compute centroid, score against reference
-// gestalts. Returns { site, confidence, total, runners } or null.
+// Trigger backfill once the embedder transitions to ready. Listen by
+// patching initEmbedder's resolution path — simplest spot to hook.
+(function wireBackfillOnEmbedderReady() {
+  const origInit = initEmbedder;
+  // Note: we can't override initEmbedder cleanly from here without
+  // restructuring boot. Instead, we rely on backfillEmbeddings being
+  // called from boot() and ingest-finish, which is sufficient.
+})();
+
+// ─── ROLE PROFILES (THREE FACES) ─────────────────────────────────────
+// Per the EO ground, every classified proposition occupies a single
+// 27-cell address. That address has THREE 9-cell projections — three
+// faces, each a 2D cross-section through the ground:
+//
+//   ACT face        (Mode × Domain)    → which operator does the work
+//   SITE face       (Domain × Object)  → where in structural space the relation lives
+//   RESOLUTION face (Mode × Object)    → how the operation lands
+//
+// Each face has 9 possible cells. A clause's full classification picks
+// one cell on each face; together they pin the 27-cell address.
+//
+// This is the kāraka-derivative move. Per-clause classifications don't
+// give us "what kind of thing is this entity"; they give us "what
+// structural role does this proposition play." Aggregating those
+// classifications across all propositions where an entity appears
+// produces a ROLE PROFILE — three 9-cell distributions describing how
+// the document positions its propositions in which the entity figures.
+//
+// Subject-side and target-side profiles are tracked separately. An
+// entity that's frequently the subject of CON-binding propositions
+// but rarely the target tells you it's doing the binding work, not
+// having binding work done to it. Six 9-cell distributions per entity.
+// ~54 bytes per snapshot when quantized. Trivial.
+//
+// The Site label of an individual proposition's cell is NOT the
+// entity's Site. It's the proposition's structural shape. We never
+// reify this back into a single Site claim about the entity — we
+// just expose the role profile for analytical reading.
+
+const SITE_NAMES = ['Void', 'Entity', 'Kind', 'Field', 'Link', 'Network', 'Atmosphere', 'Lens', 'Paradigm'];
+const RESOLUTION_NAMES = ['Clearing', 'Dissecting', 'Unraveling', 'Tending', 'Binding', 'Tracing', 'Cultivating', 'Making', 'Composing'];
+const OPERATOR_NAMES = ['NUL', 'SIG', 'INS', 'SEG', 'CON', 'SYN', 'ALT', 'SUP', 'REC'];
+
+// Decompose an event's classification into the three face cells. Reads
+// the existing q1/q2/q3 axis answers and applies the standard mapping.
+// Returns null if the event isn't classified.
+function eventFaces(ev) {
+  if (!ev || !ev.llmAnswers) return null;
+  const { q1, q2, q3 } = ev.llmAnswers;
+  if (!q1 || !q2 || !q3) return null;
+  const operator = Q1Q2_TO_OPERATOR[`${q1}|${q2}`] || null;
+  const site = Q2Q3_TO_SITE[`${q2}|${q3}`] || null;
+  const resolution = Q1Q3_TO_RESOLUTION[`${q1}|${q3}`] || null;
+  return { operator, site, resolution };
+}
+
+// Walk all classified events where the entity appears as subject (or
+// as target if requested). Returns three 9-cell counts:
+//   { actCounts: {operator → n}, siteCounts: {site → n}, resolutionCounts: {res → n}, total }
+// All three sum to `total`.
+function entityRoleCounts(entityId, position /* 'subject' | 'target' */) {
+  const actCounts = {};
+  const siteCounts = {};
+  const resolutionCounts = {};
+  let total = 0;
+  for (const ev of STATE.G) {
+    if (ev.op !== 'DEF' && ev.op !== 'CON') continue;
+    if (ev.authoredBy === 'hypothesis') continue;
+    const p = ev.payload || {};
+    let matches = false;
+    if (position === 'subject') {
+      matches = (p.subject === entityId) || (p.from === entityId);
+    } else if (position === 'target') {
+      matches = (p.valueIsEntity && p.value === entityId) ||
+                (p.toIsEntity && p.to === entityId);
+    } else {
+      // either
+      matches = (p.subject === entityId) || (p.from === entityId) ||
+                (p.valueIsEntity && p.value === entityId) ||
+                (p.toIsEntity && p.to === entityId);
+    }
+    if (!matches) continue;
+    const faces = eventFaces(ev);
+    if (!faces) continue;
+    if (faces.operator) actCounts[faces.operator] = (actCounts[faces.operator] || 0) + 1;
+    if (faces.site) siteCounts[faces.site] = (siteCounts[faces.site] || 0) + 1;
+    if (faces.resolution) resolutionCounts[faces.resolution] = (resolutionCounts[faces.resolution] || 0) + 1;
+    total++;
+  }
+  return { actCounts, siteCounts, resolutionCounts, total };
+}
+
+// Public: compute the entity's full role profile. Returns subject and
+// target distributions (each over the three faces), each as proportion
+// arrays summing to 1 plus the raw count for inspection.
+function computeRoleProfile(entityId) {
+  const subj = entityRoleCounts(entityId, 'subject');
+  const targ = entityRoleCounts(entityId, 'target');
+  const proportions = (counts, names) => {
+    const n = Object.values(counts).reduce((s, v) => s + v, 0);
+    if (n === 0) return names.map(() => 0);
+    return names.map(k => (counts[k] || 0) / n);
+  };
+  return {
+    subjectTotal: subj.total,
+    targetTotal: targ.total,
+    subjectAct: proportions(subj.actCounts, OPERATOR_NAMES),
+    subjectSite: proportions(subj.siteCounts, SITE_NAMES),
+    subjectResolution: proportions(subj.resolutionCounts, RESOLUTION_NAMES),
+    targetAct: proportions(targ.actCounts, OPERATOR_NAMES),
+    targetSite: proportions(targ.siteCounts, SITE_NAMES),
+    targetResolution: proportions(targ.resolutionCounts, RESOLUTION_NAMES),
+  };
+}
+
+// Top cells of a profile slice — used for terse display. Returns
+// up to k entries [{name, proportion}, ...] sorted descending,
+// dropping zero-proportion entries.
+function topProfileCells(proportions, names, k = 3) {
+  const out = [];
+  for (let i = 0; i < names.length; i++) {
+    if (proportions[i] > 0) out.push({ name: names[i], p: proportions[i] });
+  }
+  out.sort((a, b) => b.p - a.p);
+  return out.slice(0, k);
+}
+
+// ─── CURSOR-AWARE TRAJECTORY READERS ─────────────────────────────
+// The roleTrajectory is a per-sentence cumulative log on each entity.
+// Reading at a cursor means: find the most recent snapshot whose
+// global span position is at-or-before the cursor.
+//
+// Snapshots store {sourceId, sentenceIdx, ...}. To compare against a
+// global cursor we need to translate sourceId+sentenceIdx into a
+// global span position using sourceSpanOffsets().
+
+function trajectorySnapshotAtCursor(entity, cursorPos, offsets) {
+  if (!entity || !entity.roleTrajectory || entity.roleTrajectory.length === 0) return null;
+  if (cursorPos == null) {
+    // Live mode — return the last snapshot
+    return entity.roleTrajectory[entity.roleTrajectory.length - 1];
+  }
+  const off = offsets || sourceSpanOffsets();
+  let best = null;
+  let bestPos = -1;
+  for (const snap of entity.roleTrajectory) {
+    const sourceOff = off.get(snap.sourceId);
+    if (sourceOff == null) continue;
+    const globalPos = sourceOff + snap.sentenceIdx;
+    if (globalPos <= cursorPos && globalPos > bestPos) {
+      best = snap;
+      bestPos = globalPos;
+    }
+  }
+  return best;
+}
+
+// Get the role profile for an entity *at the current graph cursor*.
+// Returns the trajectory snapshot's already-computed top cells, OR
+// falls back to live computation when the cursor is null and no
+// trajectory exists yet (rare).
+function roleProfileAtCursor(entityId) {
+  const ent = STATE.entities.get(entityId);
+  if (!ent) return null;
+  const cursor = STATE.graphCursor;
+  if (ent.roleTrajectory && ent.roleTrajectory.length > 0) {
+    const snap = trajectorySnapshotAtCursor(ent, cursor);
+    if (snap) {
+      return {
+        subjectTotal: snap.subjectTotal,
+        targetTotal: snap.targetTotal,
+        subjectAct: snap.subjectAct,
+        subjectSite: snap.subjectSite,
+        subjectResolution: snap.subjectResolution,
+        targetAct: snap.targetAct,
+        targetSite: snap.targetSite,
+        targetResolution: snap.targetResolution,
+        atSentence: snap.sentenceIdx,
+        atSource: snap.sourceId,
+        snapshotsAvailable: ent.roleTrajectory.length,
+        // Indicate whether we're showing a stale snapshot (cursor is
+        // past this snapshot's sentence but the entity hasn't gained
+        // new evidence since)
+        isStale: cursor != null && (() => {
+          const off = sourceSpanOffsets();
+          const snapPos = (off.get(snap.sourceId) || 0) + snap.sentenceIdx;
+          return snapPos < cursor;
+        })(),
+      };
+    }
+    return null;  // entity exists but has no evidence at-or-before cursor
+  }
+  // No trajectory at all — fall back to live computation only when in
+  // live mode. Otherwise return null because there's no evidence.
+  if (cursor == null) {
+    const live = computeRoleProfile(entityId);
+    if (!live) return null;
+    return live;
+  }
+  return null;
+}
+
+// ─── REDEFINITION MOMENTS ──────────────────────────────────────
+// Walk an entity's trajectory and measure the shift in role profile
+// between consecutive snapshots. Large shifts mark sentences where
+// the document substantially changed how it predicates about this
+// entity. Useful for finding structurally significant moments.
+//
+// Distance: sum of absolute differences between top-cell proportions
+// across all three faces (subject side). Weighted by total evidence
+// to avoid amplifying noise from low-N samples.
+
+function profileShiftDistance(snapA, snapB) {
+  // Both snaps store top-K cells per face slice. Compute set-distance
+  // between them, weighted by evidence growth.
+  if (!snapA || !snapB) return 0;
+  const evA = snapA.subjectTotal + snapA.targetTotal;
+  const evB = snapB.subjectTotal + snapB.targetTotal;
+  if (evB <= evA) return 0;  // no growth, no distance
+  // Compare each face's top cell. Big shift = top cell changed identity.
+  const slices = [
+    ['subjectAct', 'subjectSite', 'subjectResolution']
+  ];
+  let dist = 0;
+  for (const sliceNames of slices) {
+    for (const slice of sliceNames) {
+      const aTop = (snapA[slice] || []).slice(0, 1)[0];
+      const bTop = (snapB[slice] || []).slice(0, 1)[0];
+      if (!aTop || !bTop) continue;
+      if (aTop.name !== bTop.name) {
+        dist += 1.0;  // top cell flipped — big move
+      } else {
+        dist += Math.abs((bTop.p || 0) - (aTop.p || 0));
+      }
+    }
+  }
+  // Scale by how much new evidence arrived (more events between
+  // snapshots = more meaningful the shift, less = could be noise)
+  const growth = evB - evA;
+  return dist * Math.min(1.0, growth / 2);
+}
+
+function findRedefinitionMoments(entityId, threshold = 0.6) {
+  const ent = STATE.entities.get(entityId);
+  if (!ent || !ent.roleTrajectory || ent.roleTrajectory.length < 2) return [];
+  const moments = [];
+  for (let i = 1; i < ent.roleTrajectory.length; i++) {
+    const dist = profileShiftDistance(ent.roleTrajectory[i-1], ent.roleTrajectory[i]);
+    if (dist >= threshold) {
+      moments.push({
+        sourceId: ent.roleTrajectory[i].sourceId,
+        sentenceIdx: ent.roleTrajectory[i].sentenceIdx,
+        distance: dist,
+        before: ent.roleTrajectory[i-1],
+        after: ent.roleTrajectory[i],
+      });
+    }
+  }
+  return moments;
+}
+
+// Across ALL entities, find sentences where MULTIPLE entities had a
+// redefinition. Those sentences are doing a lot of structural work.
+function redefinitionHotspots(threshold = 0.5) {
+  const sentenceMap = new Map();  // "sourceId:sentenceIdx" → {count, entities, distSum}
+  for (const [, ent] of STATE.entities) {
+    const moments = findRedefinitionMoments(ent.id, threshold);
+    for (const m of moments) {
+      const key = `${m.sourceId}:${m.sentenceIdx}`;
+      if (!sentenceMap.has(key)) {
+        sentenceMap.set(key, {
+          sourceId: m.sourceId, sentenceIdx: m.sentenceIdx,
+          entities: [], distSum: 0,
+        });
+      }
+      const slot = sentenceMap.get(key);
+      slot.entities.push(ent.canonical);
+      slot.distSum += m.distance;
+    }
+  }
+  return [...sentenceMap.values()].sort((a, b) => b.distSum - a.distSum);
+}
+
+// ─── ENTITY GESTALT (semantic positioning, NOT site classification) ────
+// Kept for the gestalt pipeline — visualization, similarity-to-other-
+// entities, trajectory drift, future spatial graph. Reads from the
+// EMBEDDING_STORE (int8, OPFS-persisted). Site classification is a
+// SEPARATE pipeline (the role-profile work above) that does not depend
+// on embeddings.
 
 function computeEntityGestalt(entityId) {
   const vecs = [];
@@ -5522,86 +5603,16 @@ function computeEntityGestalt(entityId) {
     if (vec) vecs.push(vec);
   }
   if (vecs.length === 0) return null;
-  // Int8 centroid: same math but accumulator is float, output is int8
   const centroid = centroidOfInt8(vecs);
   return { centroid, count: vecs.length };
 }
 
-function computeEntitySite(entityId) {
-  const ent = STATE.entities.get(entityId);
-  const hypothesisGuess = ent && ent.hypothesisSite ? ent.hypothesisSite : null;
-
-  // If gestalts aren't built yet (embedder loading or failed), fall back
-  // to hypothesis declaration. This is the honest behavior: tell the
-  // user we don't have computed evidence yet rather than fake it.
-  if (!referenceGestaltsReady) {
-    if (hypothesisGuess) return { site: hypothesisGuess, confidence: 'hypothesis', total: 0 };
-    return null;
-  }
-
-  const gestalt = computeEntityGestalt(entityId);
-  if (!gestalt || gestalt.count < 2) {
-    // Need at least 2 propositions for a meaningful centroid.
-    if (hypothesisGuess) return { site: hypothesisGuess, confidence: 'hypothesis', total: gestalt?.count || 0 };
-    return null;
-  }
-
-  // Score entity centroid against each reference Site gestalt.
-  // Both are Int8Array — cosineInt8 handles the dequantization.
-  const scores = [];
-  for (const [site, refCentroid] of Object.entries(REFERENCE_GESTALTS)) {
-    const sim = cosineInt8(gestalt.centroid, refCentroid);
-    scores.push({ site, score: sim });
-  }
-  scores.sort((a, b) => b.score - a.score);
-  const top = scores[0];
-  const second = scores[1];
-  // Confidence based on margin between top and second. Cosine
-  // similarities are typically in [0.2, 0.7] for this kind of data;
-  // a 0.05-0.10 margin is meaningful, 0.15+ is decisive.
-  let confidence = 'low';
-  if (top.score - second.score > 0.10) confidence = 'high';
-  else if (top.score - second.score > 0.05) confidence = 'medium';
-  return {
-    site: top.site,
-    confidence,
-    total: gestalt.count,
-    runners: scores.slice(0, 3),
-  };
-}
-
-// ─── ENTITY TRAJECTORY SNAPSHOTS ──────────────────────────────────
-// At end of each sentence's ingest, snapshot the gestalt-derived state
-// of entities that gained evidence this sentence. The snapshot records
-// (a) the site profile — cosine similarity to each of the 9 reference
-// gestalts, quantized to int8, total 9 bytes — and (b) the top-K
-// nearest other entities by centroid cosine, with similarity score.
-//
-// Stored on the entity as `entity.siteTrajectory` (array of small
-// objects). This is the time-structured record of how the system's
-// understanding of the entity evolved during the read. Cursor-walking
-// the trajectory lets you see what an entity looked like at any
-// historical moment.
-//
-// Append-only. Each snapshot is ~50 bytes. A 100-sentence ingest with
-// 50 entities producing per-sentence snapshots = ~250KB of trajectory
-// data. Trivial.
-
+// Top-K nearest other entities by gestalt cosine. Reads each entity's
+// cached `_centroid` (set during snapshotting). Useful for the
+// semantic-neighbor view and the spatial graph layout.
 const TRAJECTORY_TOPK = 5;
 
-function siteProfileQuantized(entityCentroidInt8) {
-  if (!entityCentroidInt8 || !referenceGestaltsReady) return null;
-  const sites = Object.keys(REFERENCE_GESTALTS);
-  const profile = new Int8Array(sites.length);
-  for (let i = 0; i < sites.length; i++) {
-    const sim = cosineInt8(entityCentroidInt8, REFERENCE_GESTALTS[sites[i]]);
-    // Quantize cosine [-1, 1] to int8 [-127, 127]
-    profile[i] = Math.max(-127, Math.min(127, Math.round(sim * 127)));
-  }
-  return { sites, profile };
-}
-
-function topKNeighbors(entityId, entityCentroidInt8, k = TRAJECTORY_TOPK) {
+function topKNeighborsForGestalt(entityId, entityCentroidInt8, k = TRAJECTORY_TOPK) {
   const candidates = [];
   for (const [otherId, ent] of STATE.entities) {
     if (otherId === entityId) continue;
@@ -5613,12 +5624,19 @@ function topKNeighbors(entityId, entityCentroidInt8, k = TRAJECTORY_TOPK) {
   return candidates.slice(0, k);
 }
 
-// Call this at end of each sentence's ingest. Walks entities that
-// gained an embedding for an event in this sentence (via narrativePos),
-// updates their cached centroid, snapshots their site profile and
-// top-K neighbors.
+// ─── TRAJECTORY SNAPSHOTS ─────────────────────────────────────
+// At end of each sentence's ingest, snapshot the role profiles +
+// gestalt position for entities that gained evidence this sentence.
+// Append-only on the entity. Cursor-walking the trajectory shows how
+// the system's understanding of the entity evolved during the read.
+//
+// Each snapshot stores:
+//   - subject/target totals (counts)
+//   - top 3 cells per face (compact: 3 names + 3 ints per slice)
+//   - gestalt top-K neighbors (5 entries × {id, sim})
+// Total ~150 bytes per snapshot.
+
 function snapshotTrajectoriesForSentence(source, sentenceIdx, sentenceEventIds) {
-  if (!referenceGestaltsReady) return;
   // Find which entities had any of these events as subject or target
   const touched = new Set();
   for (const eid of sentenceEventIds) {
@@ -5635,24 +5653,35 @@ function snapshotTrajectoriesForSentence(source, sentenceIdx, sentenceEventIds) 
   for (const entityId of touched) {
     const ent = STATE.entities.get(entityId);
     if (!ent) continue;
+
+    // Role profile (the structural reading)
+    const profile = computeRoleProfile(entityId);
+
+    // Gestalt centroid (the semantic reading) — only if embeddings exist
     const gestalt = computeEntityGestalt(entityId);
-    if (!gestalt || gestalt.count < 1) continue;
-    // Cache centroid on entity for fast neighbor lookup
-    ent._centroid = gestalt.centroid;
-    const profile = siteProfileQuantized(gestalt.centroid);
-    const neighbors = topKNeighbors(entityId, gestalt.centroid);
-    if (!ent.siteTrajectory) ent.siteTrajectory = [];
-    ent.siteTrajectory.push({
+    if (gestalt) ent._centroid = gestalt.centroid;
+    const neighbors = gestalt ? topKNeighborsForGestalt(entityId, gestalt.centroid) : [];
+
+    if (!ent.roleTrajectory) ent.roleTrajectory = [];
+    ent.roleTrajectory.push({
       ts: Date.now(),
       sourceId: source.id,
       sentenceIdx,
-      evidenceCount: gestalt.count,
-      siteProfile: profile ? Array.from(profile.profile) : null,  // serializable as plain array
-      siteOrder: profile ? profile.sites : null,
+      subjectTotal: profile.subjectTotal,
+      targetTotal: profile.targetTotal,
+      // Store top-3 per face slice — compact and readable
+      subjectAct: topProfileCells(profile.subjectAct, OPERATOR_NAMES, 3),
+      subjectSite: topProfileCells(profile.subjectSite, SITE_NAMES, 3),
+      subjectResolution: topProfileCells(profile.subjectResolution, RESOLUTION_NAMES, 3),
+      targetAct: topProfileCells(profile.targetAct, OPERATOR_NAMES, 3),
+      targetSite: topProfileCells(profile.targetSite, SITE_NAMES, 3),
+      targetResolution: topProfileCells(profile.targetResolution, RESOLUTION_NAMES, 3),
+      gestaltCount: gestalt?.count || 0,
       topK: neighbors.map(n => ({ id: n.entityId, sim: Math.round(n.sim * 1000) / 1000 })),
     });
   }
 }
+
 
 
 // ─── REVISABLE IDENTITY CLAIMS ────────────────────────────────────
@@ -5857,15 +5886,16 @@ async function ingestSource(text, opts = {}) {
   const pubDate = opts.publicationDate ? Date.parse(opts.publicationDate) : null;
   const intakeTs = Date.now();
 
-  // Warn the user if the embedder isn't ready yet — events that ingest
-  // now will get embedded by the post-ingest backfill, but it's clearer
-  // to let them know up front.
-  if (EMBEDDER.status !== 'ready' || !referenceGestaltsReady) {
-    const stateLabel = EMBEDDER.status === 'failed' ? 'failed to load (will fall back to hypothesis Site)'
+  // Note if the embedder isn't ready — gestalt-based positioning won't
+  // be available for the gestalt pipeline (semantic neighbors, etc.).
+  // Site classification works regardless because it reads the per-clause
+  // phasepost faces, which only depend on the LLM classifier, not on
+  // sentence embeddings.
+  if (EMBEDDER.status !== 'ready') {
+    const stateLabel = EMBEDDER.status === 'failed' ? 'failed to load'
                      : EMBEDDER.status === 'loading' ? 'still downloading the model'
-                     : EMBEDDER.status === 'ready' ? 'finishing reference gestalt setup'
                      : 'not started';
-    console.log(`[anchorage] starting ingest while embedder ${stateLabel}. Embeddings will backfill once ready.`);
+    console.log(`[anchorage] starting ingest while embedder ${stateLabel}. Gestalt positioning will be unavailable; role profiles still compute.`);
   }
 
   const sourceId = uid('src');
@@ -6076,20 +6106,21 @@ async function ingestSource(text, opts = {}) {
       }
     }
 
-    // Site-reconciliation deliberately removed: the Site face of a
-    // proposition's phasepost classifies the relational shape (where
-    // the relation lives), not the subject's role in the document.
-    // Site is now computed as a fold over accumulated phaseposts via
-    // computeEntitySite() — a signature, not a claim. No EVA/REC
-    // events fire on entity-Site because there's nothing to revise:
-    // we never made a Site DEF in the first place.
+    // The grain commitment: the Site face of a phasepost classifies
+    // the proposition's relational shape (where the relation lives),
+    // NOT the subject's structural role in the document. Per-clause
+    // classification is per-proposition. Aggregating those across all
+    // propositions in which an entity appears gives a ROLE PROFILE
+    // (three 9-cell distributions, subject + target sides) — that's
+    // the analytical readout for "what does the document do with this
+    // referent." We don't reify into a single Site label.
     // (Future: reconcileAliasEvidence for has-alias claims, which IS
     // genuinely per-clause-revisable.)
 
     // ── TRAJECTORY SNAPSHOT ──
     // For entities that gained evidence in this sentence, record their
-    // current site profile + top-K neighbors. Stores the time-structured
-    // record of how the system's understanding evolved as it read.
+    // current role profile + gestalt neighbors. Time-structured record
+    // of how understanding evolved across the read.
     snapshotTrajectoriesForSentence(source, i, sentenceEventIds);
 
     // Update salience window
@@ -6711,34 +6742,54 @@ function buildCommentaryPayload(result) {
 // ─── RENDER ──────────────────────────────────────────────────────────
 
 function renderQueryResult(result) {
-  const el = document.getElementById('query-results');
+  // Append a new turn block to the chat transcript. Each turn has a
+  // unique id so the librarian commentary callback can update the
+  // right block when its async LLM call returns.
+  const transcript = document.getElementById('chat-transcript');
+  if (!transcript) return;
+  // Remove the empty-state if present
+  const empty = transcript.querySelector('.empty-state');
+  if (empty) empty.remove();
+
+  const turnId = 'turn-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
+  const block = document.createElement('div');
+  block.className = 'chat-turn';
+  block.setAttribute('data-turn-id', turnId);
+  block.style.cssText = 'margin-bottom: 28px; padding-bottom: 16px; border-bottom: 1px solid var(--rule);';
+
+  // ── User question (their voice, marked) ──
+  const userBlock = `
+    <div style="margin-bottom: 12px;">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:4px;">you</div>
+      <div style="font-family:'Newsreader',serif;font-size:15px;line-height:1.5;color:var(--ink);">${escapeHtml(result.question)}</div>
+    </div>`;
 
   if (result.kind === 'pre-distinction') {
-    el.innerHTML = `
-      <div class="projection">
-        <div class="projection-meta">"${escapeHtml(result.question)}" · pre-distinction</div>
-        <div class="commentary-card">
-          <div class="label">Librarian</div>
-          <div class="commentary-body">${escapeHtml(result.message)}</div>
-        </div>
+    block.innerHTML = userBlock + `
+      <div class="commentary-card">
+        <div class="label">Librarian</div>
+        <div class="commentary-body">${escapeHtml(result.message)}</div>
       </div>`;
+    transcript.appendChild(block);
+    transcript.scrollTop = transcript.scrollHeight;
     return;
   }
 
-  let html = `<div class="projection">`;
+  let html = userBlock;
+  html += `<div class="projection">`;
   html += `<div class="projection-meta">
-    <span style="color: var(--ink); font-weight: 500;">"${escapeHtml(result.question)}"</span>
-    · subject: <strong>${escapeHtml(result.subject.canonical)}</strong>
+    subject: <strong>${escapeHtml(result.subject.canonical)}</strong>
     · cursor: <span class="pos">${escapeHtml(describeCursor(result.cursor))}</span>
     · framing: <span class="frame">${escapeHtml(describeFraming(result.framing))}</span>
   </div>`;
 
-  // Commentary placeholder
+  // Commentary placeholder (per-turn ID so the async LLM callback can find it)
+  const commentaryBodyId = `commentary-body-${turnId}`;
   html += `
     <div class="commentary-card">
       <div class="label">Librarian</div>
-      <div class="commentary-body" id="commentary-body">
-        ${isLLMReady() ? '<span class="commentary-loading">generating commentary…</span>' : `<span class="commentary-loading">${escapeHtml(backendNotReadyMessage())} — structured findings only (configure a backend in Settings to enable librarian commentary)</span>`}
+      <div class="commentary-body" id="${commentaryBodyId}">
+        ${isLLMReady() ? '<span class="commentary-loading">walking the graph…</span>' : `<span class="commentary-loading">${escapeHtml(backendNotReadyMessage())} — structured findings only (configure a backend in Settings to enable librarian commentary)</span>`}
       </div>
     </div>`;
 
@@ -6833,25 +6884,28 @@ function renderQueryResult(result) {
   }
 
   html += `</div>`;
-  el.innerHTML = html;
+  block.innerHTML = html;
+  block._commentaryBodyId = commentaryBodyId;  // exposed for caller
+  block._turnId = turnId;
+  transcript.appendChild(block);
+  transcript.scrollTop = transcript.scrollHeight;
+
   STATE.lastQueryResult = result;  // remember for re-render after feedback
 
-  // Wire grounding expansion (clicking the def row)
-  el.querySelectorAll('.def-row[data-key]').forEach(row => {
+  // Wire grounding expansion (clicking the def row) — scoped to this turn
+  block.querySelectorAll('.def-row[data-key]').forEach(row => {
     row.addEventListener('click', (e) => {
-      // Don't expand/collapse if click was on a span-quote or feedback action
       if (e.target.closest('.span-quote') || e.target.closest('.def-action')) return;
       row.classList.toggle('expanded');
     });
   });
 
   // Wire span clicks → open source modal
-  el.querySelectorAll('.span-quote[data-def-id]').forEach(span => {
+  block.querySelectorAll('.span-quote[data-def-id]').forEach(span => {
     span.addEventListener('click', (e) => {
       e.stopPropagation();
       const defId = span.getAttribute('data-def-id');
       const gIdx = parseInt(span.getAttribute('data-grounding-idx'), 10);
-      // Find the def by ID across all slots
       let def = null;
       for (const defs of STATE.defs.values()) {
         const f = defs.find(d => d.id === defId);
@@ -6863,7 +6917,7 @@ function renderQueryResult(result) {
   });
 
   // Wire feedback action → open feedback modal
-  el.querySelectorAll('.def-action[data-feedback-def]').forEach(btn => {
+  block.querySelectorAll('.def-action[data-feedback-def]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const defId = btn.getAttribute('data-feedback-def');
@@ -6876,6 +6930,7 @@ function renderQueryResult(result) {
     });
   });
 }
+
 
 // ─── SOURCE SPAN MODAL ────────────────────────────────────────────
 // Click any grounding row in a query result to see the source context
@@ -7133,28 +7188,42 @@ function renderSourcesView() {
             }
             return null;
           })();
-          let displaySite = p.site;
-          let confidence = 'hypothesis';
-          let total = 0;
-          if (ent) {
-            const computed = computeEntitySite(ent.id);
-            if (computed) {
-              displaySite = computed.site;
-              confidence = computed.confidence;
-              total = computed.total;
-            }
+          // Read the entity's role profile AT THE CURRENT CURSOR.
+          // When the graph cursor is set, this returns the trajectory
+          // snapshot at-or-before the cursor (or null if no evidence
+          // existed at that point). When live, this returns the latest
+          // snapshot. The principal card thus tracks the scrubber.
+          const profile = ent ? roleProfileAtCursor(ent.id) : null;
+          const totalEv = profile ? (profile.subjectTotal + profile.targetTotal) : 0;
+
+          // Hypothesis Site as the orienting frame
+          const hypSite = p.site || 'Entity';
+          const siteColor = SITE_COLORS[hypSite] || SITE_COLORS.Entity;
+          const hypTag = ` <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:${siteColor};text-transform:none;letter-spacing:0.02em;padding:1px 5px;background:${siteColor}15;border:1px solid ${siteColor}40;border-radius:2px;" title="hypothesis-declared site (orienting prior, not a claim)">${escapeHtml(hypSite)}</span>`;
+
+          // Compact face profile when evidence exists. Top cell of each
+          // face slice for the subject side. Trajectory snapshots already
+          // store top-K, so this is cheap. When cursor is set and the
+          // entity hasn't been touched recently, mark as stale.
+          let profileTag = '';
+          if (profile && totalEv >= 2) {
+            const subjAct = (profile.subjectAct || [])[0];
+            const subjSite = (profile.subjectSite || [])[0];
+            const subjRes = (profile.subjectResolution || [])[0];
+            const parts = [];
+            if (subjAct) parts.push(`${subjAct.name}:${Math.round(subjAct.p*100)}`);
+            if (subjSite) parts.push(`${subjSite.name}:${Math.round(subjSite.p*100)}`);
+            if (subjRes) parts.push(`${subjRes.name}:${Math.round(subjRes.p*100)}`);
+            const cursorNote = profile.atSentence != null
+              ? ` (snapshot from sentence ${profile.atSentence + 1}${profile.isStale ? ', no later updates' : ''})`
+              : '';
+            const tooltip = `Role profile from ${profile.subjectTotal} subject + ${profile.targetTotal} target propositions${cursorNote}. Top Act / Site / Resolution faces shown with proportion %.`;
+            const opacity = profile.isStale ? 0.7 : 1.0;
+            profileTag = ` <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-soft);padding:1px 5px;background:var(--paper);border:1px solid var(--rule);border-radius:2px;opacity:${opacity};" title="${escapeHtml(tooltip)}">${escapeHtml(parts.join(' · '))} <span style="color:var(--ink-faint);">n${totalEv}</span></span>`;
+          } else if (totalEv > 0) {
+            profileTag = ` <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-faint);">n${totalEv}</span>`;
           }
-          const siteColor = SITE_COLORS[displaySite] || SITE_COLORS.Entity;
-          // Confidence indicator: dimmer when we're still leaning on the
-          // hypothesis guess, brighter as evidence accumulates.
-          const opacity = confidence === 'hypothesis' ? 0.55
-                         : confidence === 'low' ? 0.7
-                         : confidence === 'medium' ? 0.85 : 1.0;
-          const evidenceTag = total > 0 ? ` <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-faint);">${total}</span>` : '';
-          const siteTag = displaySite
-            ? ` <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:${siteColor};text-transform:none;letter-spacing:0.02em;padding:1px 5px;background:${siteColor}15;border:1px solid ${siteColor}40;border-radius:2px;opacity:${opacity};" title="${confidence === 'hypothesis' ? 'hypothesis guess (no propositional evidence yet)' : 'computed from ' + total + ' propositions, confidence: ' + confidence}">${escapeHtml(displaySite)}${evidenceTag}</span>`
-            : '';
-          return `<span style="display:inline-block;padding:2px 8px;margin:2px 4px 2px 0;background:var(--paper);border:1px solid var(--rule);border-radius:2px;font-family:'Newsreader',serif;font-size:12px;">${escapeHtml(p.name)}${aliasStr}${siteTag}</span>`;
+          return `<span style="display:inline-block;padding:2px 8px;margin:2px 4px 2px 0;background:var(--paper);border:1px solid var(--rule);border-radius:2px;font-family:'Newsreader',serif;font-size:12px;">${escapeHtml(p.name)}${aliasStr}${hypTag}${profileTag}</span>`;
         }).join('');
         const authorshipList = (h.authorship || []).map(a => {
           return `<span style="display:inline-block;padding:2px 8px;margin:2px 4px 2px 0;background:var(--paper-deep, #e2d9c6);border:1px solid var(--rule);border-radius:2px;font-family:'Newsreader',serif;font-size:11px;color:var(--ink-soft);">${escapeHtml(a.name)} <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-faint);">${escapeHtml(a.role)}</span></span>`;
@@ -7162,6 +7231,20 @@ function renderSourcesView() {
         const flags = [];
         if (h.expects_pronoun_chains) flags.push('expects pronoun chains');
         if (h.expects_role_descriptions) flags.push('expects role-descriptions');
+        // Find sentences where multiple entities had role-profile shifts.
+        // These are the structurally significant moments — places where
+        // the document substantially changed how it predicates about
+        // multiple referents at once.
+        const hotspots = redefinitionHotspots(0.5);
+        const sourceHotspots = hotspots.filter(h => h.sourceId === src.id).slice(0, 5);
+        let hotspotsHtml = '';
+        if (sourceHotspots.length > 0) {
+          const items = sourceHotspots.map(hs => {
+            const entList = hs.entities.slice(0, 3).join(', ') + (hs.entities.length > 3 ? `, +${hs.entities.length - 3}` : '');
+            return `<span style="display:inline-block;padding:2px 6px;margin:2px 4px 2px 0;background:var(--paper);border:1px solid var(--rule);border-radius:2px;font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:var(--ink-soft);" title="${escapeHtml(hs.entities.join(', '))} shifted role profile here">sentence ${hs.sentenceIdx + 1} <span style="color:var(--ink-faint);">${escapeHtml(entList)}</span></span>`;
+          }).join('');
+          hotspotsHtml = `<div style="margin-top:8px;"><div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:4px;">structural moments (top ${sourceHotspots.length})</div>${items}</div>`;
+        }
         html += `<div style="background:var(--paper-soft);border:1px solid var(--rule);padding:14px 16px;margin-bottom:18px;font-size:11px;line-height:1.55;">
           <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:6px;">document hypothesis</div>
           <div style="font-family:'Newsreader',serif;font-size:14px;font-style:italic;color:var(--ink);margin-bottom:10px;">${escapeHtml(h.summary || '—')}</div>
@@ -7170,6 +7253,7 @@ function renderSourcesView() {
           </div>
           ${principalsList ? `<div style="margin-top:6px;"><div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:4px;">principals (${(h.principals||[]).length})</div>${principalsList}</div>` : ''}
           ${authorshipList ? `<div style="margin-top:8px;"><div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:4px;">authorship</div>${authorshipList}</div>` : ''}
+          ${hotspotsHtml}
         </div>`;
       }
 
@@ -7778,6 +7862,23 @@ const GRAPH = {
   wired: false,
   freezeAt: 0,
   lastBuildHash: '',  // detect when underlying data changed; rebuild only if so
+  // ── Pivot mode ──
+  // When pivotEntityId is set, the layout switches: the pivoted entity
+  // anchors at center, all other embedded entities position by their
+  // cosine similarity to the pivot's gestalt centroid (banded into a
+  // small number of rings, so we don't overfit cosine values that are
+  // ultimately gestalt-noisy). Unembedded entities go to a row at the
+  // bottom of the canvas.
+  pivotEntityId: null,
+  pivotTransitionStart: 0,  // for easing the layout switch
+  // Radial bands when pivoted: cosine ranges → ring radii. Only four
+  // bands so layout doesn't twitch with small cosine differences.
+  pivotBands: [
+    { minSim:  0.65, label: 'very close' },  // ring 0 (innermost)
+    { minSim:  0.45, label: 'close' },        // ring 1
+    { minSim:  0.25, label: 'distant' },      // ring 2
+    { minSim: -1.00, label: 'far' },          // ring 3 (outermost)
+  ],
 };
 
 // Operator → palette colour. Calibrated against the existing Anchorage
@@ -7802,11 +7903,63 @@ function phasepostColor(cellName) {
 // Build the typed-edge subset of G that respects active source/chrome filters.
 // Returns {nodes, links} where each link is {source, target, predicate,
 // cell, eventId, spanText, op}.
+// ─── GRAPH CURSOR / SPAN TIMELINE ─────────────────────────────────
+// "Span" = position along the sentence-by-sentence read of the corpus.
+// We concatenate sources in the order they were ingested. Source 1 has
+// sentences 0..N1-1 → global positions 0..N1-1. Source 2 has sentences
+// 0..N2-1 → global positions N1..N1+N2-1. And so on.
+//
+// For each source we cache its sentence count. The global span position
+// of an event is `sourceOffset + ev.narrativePos.sentenceIdx`. Events
+// with no narrativePos (hypothesis DEFs, root INS) are always visible
+// regardless of cursor — they're not on the timeline.
+
+function spanTotal() {
+  let total = 0;
+  for (const s of STATE.sources.values()) {
+    total += (s.sentences || []).length;
+  }
+  return total;
+}
+
+function sourceSpanOffsets() {
+  // Map sourceId → starting global span index, in ingest order
+  const offsets = new Map();
+  let acc = 0;
+  for (const s of STATE.sources.values()) {
+    offsets.set(s.id, acc);
+    acc += (s.sentences || []).length;
+  }
+  return offsets;
+}
+
+function eventSpanPosition(ev, offsets) {
+  if (!ev || !ev.narrativePos || typeof ev.narrativePos.sentenceIdx !== 'number') {
+    return -1;  // off-timeline event (always passes the cursor filter)
+  }
+  const offset = offsets.get(ev.narrativePos.sourceId);
+  if (offset == null) return -1;
+  return offset + ev.narrativePos.sentenceIdx;
+}
+
+// True if event is at-or-before the graph cursor. cursor === null
+// means live (everything passes). cursor is a non-negative integer
+// otherwise.
+function eventBehindGraphCursor(ev, cursor, offsets) {
+  if (cursor == null) return true;
+  const pos = eventSpanPosition(ev, offsets);
+  if (pos < 0) return true;  // off-timeline = always visible
+  return pos <= cursor;
+}
+
 function buildGraphData() {
+  const cursor = STATE.graphCursor;
+  const offsets = sourceSpanOffsets();
   const entityNeeded = new Set();
   const links = [];
   for (const ev of STATE.G) {
     if (!isEventActive(ev)) continue;
+    if (!eventBehindGraphCursor(ev, cursor, offsets)) continue;
     const p = ev.payload || {};
     let from, to, predicate, op;
     if (ev.op === 'DEF' && p.subject && p.value && p.valueIsEntity) {
@@ -7833,7 +7986,18 @@ function buildGraphData() {
     const ent = STATE.entities.get(id);
     if (!ent) continue;
     idIdx.set(id, nodes.length);
-    nodes.push({ id, name: ent.canonical, x: 0, y: 0, vx: 0, vy: 0, degree: 0 });
+    // Compute the entity's gestalt centroid for cosine-based layout.
+    // Returns null if the entity has no embedded propositional events.
+    const gestalt = computeEntityGestalt(id);
+    nodes.push({
+      id,
+      name: ent.canonical,
+      x: 0, y: 0, vx: 0, vy: 0,
+      degree: 0,
+      centroid: gestalt ? gestalt.centroid : null,
+      hasEmbedding: !!gestalt,
+      labelW: 0,  // measured at draw time, used by collision force
+    });
   }
   // Translate from→to entity-IDs into source/target indices
   const linkObjs = [];
@@ -7871,6 +8035,10 @@ function renderGraphView() {
   const meta = document.getElementById('graph-meta');
   const empty = document.getElementById('graph-empty');
   const container = document.getElementById('graph-container');
+
+  // Scrubber: range and label always reflect current corpus span +
+  // cursor state, even when graph is empty.
+  renderGraphScrubber();
 
   const data = buildGraphData();
   if (data.links.length === 0) {
@@ -7937,6 +8105,153 @@ function fitGraphCanvas() {
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
 }
 
+// ─── GRAPH SCRUBBER ────────────────────────────────────────────
+// The slider walks the sentence-span timeline. The label shows where
+// the cursor is and which source it's reading. The "live" button
+// returns to follow-ingest mode (cursor = null).
+//
+// Events for input/click wired once; the call into wireGraphScrubber
+// is idempotent (guarded by a flag).
+
+let SCRUBBER_WIRED = false;
+
+function renderGraphScrubber() {
+  const slider = document.getElementById('graph-scrubber-input');
+  const label = document.getElementById('graph-scrubber-label');
+  const liveBtn = document.getElementById('graph-scrubber-live');
+  if (!slider || !label) return;
+
+  const total = spanTotal();
+  // Range: 0 → total-1 sentences (inclusive). When total is 0 the
+  // slider is disabled.
+  if (total === 0) {
+    slider.min = '0';
+    slider.max = '0';
+    slider.value = '0';
+    slider.disabled = true;
+    label.textContent = 'cursor: (no corpus)';
+    if (liveBtn) liveBtn.disabled = true;
+    return;
+  }
+  slider.disabled = false;
+  if (liveBtn) liveBtn.disabled = false;
+  slider.min = '0';
+  slider.max = String(total - 1);
+
+  // Live mode: show the slider at the rightmost position, label as live
+  if (STATE.graphCursor == null) {
+    slider.value = String(total - 1);
+    label.textContent = `cursor: live · ${total} sentences`;
+    if (liveBtn) liveBtn.style.opacity = '0.4';
+  } else {
+    const pos = Math.min(STATE.graphCursor, total - 1);
+    slider.value = String(pos);
+    // Resolve which source + local index this position falls in
+    const offsets = sourceSpanOffsets();
+    let resolvedSource = null;
+    let localIdx = pos;
+    let lastOffset = 0;
+    for (const s of STATE.sources.values()) {
+      const off = offsets.get(s.id);
+      const len = (s.sentences || []).length;
+      if (pos >= off && pos < off + len) {
+        resolvedSource = s;
+        localIdx = pos - off;
+        break;
+      }
+      lastOffset = off + len;
+    }
+    const srcLabel = resolvedSource
+      ? `${resolvedSource.name} · sentence ${localIdx + 1}/${(resolvedSource.sentences || []).length}`
+      : `position ${pos + 1}/${total}`;
+    label.textContent = `cursor: ${srcLabel}`;
+    if (liveBtn) liveBtn.style.opacity = '1';
+  }
+
+  if (!SCRUBBER_WIRED) {
+    SCRUBBER_WIRED = true;
+    slider.addEventListener('input', (e) => {
+      const v = parseInt(e.target.value, 10);
+      const t = spanTotal();
+      // If user dragged to the rightmost position, snap to live
+      if (v >= t - 1) {
+        STATE.graphCursor = null;
+      } else {
+        STATE.graphCursor = v;
+      }
+      // Re-render directly; this fires often during drag, so skip the
+      // throttle and call buildGraphData fresh on each tick.
+      renderGraphScrubber();
+      // Don't re-layout (preserve node positions while scrubbing); just
+      // rebuild data and redraw.
+      const data = buildGraphData();
+      const cellCounts = {};
+      for (const l of data.links) cellCounts[l.cell || 'unclassified'] = (cellCounts[l.cell || 'unclassified'] || 0) + 1;
+      const llmCells = data.links.filter(l => l.cellSource === 'llm').length;
+      const meta = document.getElementById('graph-meta');
+      if (meta) meta.textContent = `${data.nodes.length} ent · ${data.links.length} edge · ${llmCells} llm-classified`;
+      // Update GRAPH state in-place: keep node positions for nodes that
+      // still exist, drop ones that don't.
+      const oldById = new Map(GRAPH.nodes.map(n => [n.id, n]));
+      const newNodes = [];
+      const idIdx = new Map();
+      for (const n of data.nodes) {
+        const old = oldById.get(n.id);
+        if (old) {
+          newNodes.push(old);
+          idIdx.set(n.id, newNodes.length - 1);
+        } else {
+          // New entity (revealed by going forward in cursor) — randomize
+          const cv = document.getElementById('graph-canvas');
+          const W = cv.clientWidth || 800;
+          const H = cv.clientHeight || 600;
+          n.x = W/2 + (Math.random() - 0.5) * 400;
+          n.y = H/2 + (Math.random() - 0.5) * 300;
+          n.vx = 0; n.vy = 0;
+          newNodes.push(n);
+          idIdx.set(n.id, newNodes.length - 1);
+        }
+      }
+      // Re-key links to current node indices
+      const newLinks = [];
+      for (const l of data.links) {
+        // data.links use indices into data.nodes; translate via id
+        const fromId = data.nodes[l.source]?.id;
+        const toId = data.nodes[l.target]?.id;
+        const si = idIdx.get(fromId), ti = idIdx.get(toId);
+        if (si == null || ti == null) continue;
+        newLinks.push({ ...l, source: si, target: ti });
+      }
+      GRAPH.nodes = newNodes;
+      GRAPH.links = newLinks;
+      GRAPH.lastBuildHash = graphDataHash(data);
+      // Brief unfreeze so the layout settles new arrivals
+      GRAPH.frozen = false;
+      GRAPH.freezeAt = Date.now() + 1500;
+      renderGraphLegend(cellCounts);
+      // Other views that show cursor-aware data (Sources principal cards
+      // are the main one) should re-render too. Throttled so dragging
+      // doesn't jam them — debounce to next animation frame.
+      if (NOTIFY_OTHER_VIEW_RAF) cancelAnimationFrame(NOTIFY_OTHER_VIEW_RAF);
+      NOTIFY_OTHER_VIEW_RAF = requestAnimationFrame(() => {
+        NOTIFY_OTHER_VIEW_RAF = null;
+        if (STATE.activeView !== 'graph') {
+          // Sources, Cursors etc. that read role profiles or cursor state
+          renderActiveView && renderActiveView();
+        }
+      });
+    });
+    if (liveBtn) {
+      liveBtn.addEventListener('click', () => {
+        STATE.graphCursor = null;
+        renderGraphView();
+        if (STATE.activeView !== 'graph') renderActiveView && renderActiveView();
+      });
+    }
+  }
+}
+let NOTIFY_OTHER_VIEW_RAF = null;
+
 function renderGraphLegend(cellCounts) {
   const el = document.getElementById('graph-legend');
   if (!el) return;
@@ -7962,45 +8277,208 @@ function renderGraphLegend(cellCounts) {
   });
 }
 
+// Compute which radial band an entity belongs to relative to the pivot.
+// Returns { ringIdx, ringR, label } or null if no centroid available.
+function bandForCosine(sim, bands, ringSpacing, innerRadius) {
+  for (let i = 0; i < bands.length; i++) {
+    if (sim >= bands[i].minSim) {
+      return { ringIdx: i, ringR: innerRadius + i * ringSpacing, label: bands[i].label };
+    }
+  }
+  // Shouldn't reach (last band has minSim -1) but be safe
+  const last = bands.length - 1;
+  return { ringIdx: last, ringR: innerRadius + last * ringSpacing, label: bands[last].label };
+}
+
+// Measure label widths once per draw cycle. Cached on the node so the
+// sim step has access without re-measuring every tick.
+function measureNodeLabels(ctx) {
+  ctx.font = "13px 'Newsreader', serif";
+  for (const n of GRAPH.nodes) {
+    if (!n._labelMeasured) {
+      n.labelW = ctx.measureText(n.name).width;
+      n._labelMeasured = true;
+    }
+  }
+}
+
 function graphSimStep() {
   const cv = document.getElementById('graph-canvas');
   if (!cv) return;
   const W = cv.clientWidth || 800;
   const H = cv.clientHeight || 600;
-  const SIM = { charge: -350, linkLen: 130, linkK: 0.08, centerK: 0.012, damping: 0.86 };
-  for (const n of GRAPH.nodes) { n.fx = 0; n.fy = 0; }
-  for (let i = 0; i < GRAPH.nodes.length; i++) {
-    for (let j = i+1; j < GRAPH.nodes.length; j++) {
-      const a = GRAPH.nodes[i], b = GRAPH.nodes[j];
-      const dx = b.x - a.x, dy = b.y - a.y;
-      let d2 = dx*dx + dy*dy;
-      if (d2 < 1) d2 = 1;
-      const d = Math.sqrt(d2);
-      const f = SIM.charge / d2;
-      const fx = (dx/d) * f, fy = (dy/d) * f;
-      a.fx -= fx; a.fy -= fy;
-      b.fx += fx; b.fy += fy;
+  const isPivoted = GRAPH.pivotEntityId != null;
+
+  // Reserve space at the bottom for unembedded entities. They sit in
+  // a single line, evenly spaced, not subject to spatial forces.
+  const BOTTOM_ROW_H = 40;
+  const BOTTOM_ROW_Y = H - BOTTOM_ROW_H / 2;
+  const SPATIAL_H = H - BOTTOM_ROW_H;
+
+  // ── BOTTOM ROW: unembedded entities ──
+  // Without a centroid, the entity has no honest spatial position. We
+  // place these in a row at the bottom — visible but visually marked
+  // as not-positioned-by-the-perspective.
+  const bottomNodes = [];
+  const spatialNodes = [];
+  if (isPivoted) {
+    for (const n of GRAPH.nodes) {
+      if (n.hasEmbedding) spatialNodes.push(n);
+      else bottomNodes.push(n);
+    }
+  } else {
+    // Without a pivot, all nodes participate in spatial layout
+    for (const n of GRAPH.nodes) spatialNodes.push(n);
+  }
+
+  // Position bottom-row nodes in a line. Don't run forces on them.
+  if (bottomNodes.length > 0) {
+    const margin = 40;
+    const usable = W - 2 * margin;
+    const step = bottomNodes.length > 1 ? usable / (bottomNodes.length - 1) : 0;
+    bottomNodes.forEach((n, i) => {
+      const targetX = bottomNodes.length === 1 ? W / 2 : margin + i * step;
+      // Ease into position rather than snapping (looks better when
+      // entities flip between bottom and spatial during pivot changes)
+      n.x += (targetX - n.x) * 0.20;
+      n.y += (BOTTOM_ROW_Y - n.y) * 0.20;
+      n.vx = 0;
+      n.vy = 0;
+    });
+  }
+
+  // ── PIVOT MODE: precompute target ring per spatial node ──
+  // Cosine to pivot's centroid → band → target ring radius.
+  // Ring radii sized to fit available canvas height.
+  let pivotNode = null;
+  let pivotCenter = { x: W / 2, y: SPATIAL_H / 2 };
+  if (isPivoted) {
+    pivotNode = GRAPH.nodes.find(n => n.id === GRAPH.pivotEntityId);
+    if (pivotNode && pivotNode.centroid) {
+      // Spatial area dimensions
+      const innerR = 70;
+      const outerR = Math.min(W, SPATIAL_H) * 0.42;
+      const ringSpacing = (outerR - innerR) / (GRAPH.pivotBands.length - 1);
+      for (const n of spatialNodes) {
+        if (n === pivotNode) {
+          n._targetR = 0;  // pivot anchors at center
+          n._bandIdx = -1;
+        } else if (n.centroid) {
+          const sim = cosineInt8(pivotNode.centroid, n.centroid);
+          const band = bandForCosine(sim, GRAPH.pivotBands, ringSpacing, innerR);
+          n._targetR = band.ringR;
+          n._bandIdx = band.ringIdx;
+          n._cosToPivot = sim;
+        } else {
+          n._targetR = outerR;
+          n._bandIdx = GRAPH.pivotBands.length - 1;
+        }
+      }
     }
   }
+
+  // ── FORCES ──
+  // Tuning differs by mode. Pivot mode wants ring-respecting positions;
+  // free mode wants standard force-directed layout. Label-bounds collision
+  // applies in both.
+  const SIM = isPivoted
+    ? { charge: -200, linkLen: 80, linkK: 0.04, damping: 0.84, ringK: 0.10 }
+    : { charge: -350, linkLen: 130, linkK: 0.08, damping: 0.86, centerK: 0.012 };
+
+  for (const n of spatialNodes) { n.fx = 0; n.fy = 0; }
+
+  // Pairwise repulsion + label-bounds collision
+  for (let i = 0; i < spatialNodes.length; i++) {
+    for (let j = i + 1; j < spatialNodes.length; j++) {
+      const a = spatialNodes[i], b = spatialNodes[j];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      let d2 = dx * dx + dy * dy;
+      if (d2 < 1) d2 = 1;
+      const d = Math.sqrt(d2);
+
+      // Standard charge repulsion
+      const f = SIM.charge / d2;
+      const fx = (dx / d) * f, fy = (dy / d) * f;
+      a.fx -= fx; a.fy -= fy;
+      b.fx += fx; b.fy += fy;
+
+      // Label-bounds collision: hard repulsion if labels would overlap.
+      // Effective "size" of each node = circle radius + half label width.
+      const aR = 5 + Math.min(8, a.degree * 1.2);
+      const bR = 5 + Math.min(8, b.degree * 1.2);
+      const aSize = aR + (a.labelW || 0) / 2 + 4;
+      const bSize = bR + (b.labelW || 0) / 2 + 4;
+      // Horizontal-overlap component matters more (labels are wide & short)
+      const minDx = aSize + bSize;
+      const labelOverlap = minDx - Math.abs(dx);
+      const verticalNear = Math.abs(dy) < 14;  // label height ~ 13px
+      if (labelOverlap > 0 && verticalNear) {
+        // Push apart horizontally
+        const sign = dx >= 0 ? 1 : -1;
+        const push = labelOverlap * 0.20;
+        a.fx -= sign * push;
+        b.fx += sign * push;
+      }
+    }
+  }
+
+  // Edge attraction (spatial nodes only)
+  const spatialIdSet = new Set(spatialNodes.map(n => n.id));
   for (const l of GRAPH.links) {
     const a = GRAPH.nodes[l.source], b = GRAPH.nodes[l.target];
+    if (!spatialIdSet.has(a.id) || !spatialIdSet.has(b.id)) continue;
     const dx = b.x - a.x, dy = b.y - a.y;
-    const d = Math.sqrt(dx*dx + dy*dy) || 1;
-    const f = (d - SIM.linkLen) * SIM.linkK;
-    const fx = (dx/d) * f, fy = (dy/d) * f;
+    const d = Math.sqrt(dx * dx + dy * dy) || 1;
+    let attraction = SIM.linkK;
+    // In pivot mode, weaken cross-band attraction so links don't pull
+    // entities out of their cosine ring. Keeps the radial structure.
+    if (isPivoted && a._bandIdx != null && b._bandIdx != null) {
+      const bandDiff = Math.abs(a._bandIdx - b._bandIdx);
+      attraction = SIM.linkK * Math.pow(0.6, bandDiff);
+    }
+    const f = (d - SIM.linkLen) * attraction;
+    const fx = (dx / d) * f, fy = (dy / d) * f;
     a.fx += fx; a.fy += fy;
     b.fx -= fx; b.fy -= fy;
   }
-  for (const n of GRAPH.nodes) {
-    n.fx += (W/2 - n.x) * SIM.centerK;
-    n.fy += (H/2 - n.y) * SIM.centerK;
+
+  if (isPivoted && pivotNode && pivotNode.centroid) {
+    // Ring force: pull each node toward its target radius from pivot center
+    for (const n of spatialNodes) {
+      if (n === pivotNode) continue;
+      const dx = n.x - pivotCenter.x;
+      const dy = n.y - pivotCenter.y;
+      const r = Math.sqrt(dx * dx + dy * dy) || 1;
+      const targetR = n._targetR || 0;
+      const radialDelta = targetR - r;
+      // Pull along the radial axis toward the target ring
+      n.fx += (dx / r) * radialDelta * SIM.ringK;
+      n.fy += (dy / r) * radialDelta * SIM.ringK;
+    }
+    // Strong anchor for the pivot itself
+    pivotNode.fx = (pivotCenter.x - pivotNode.x) * 0.5;
+    pivotNode.fy = (pivotCenter.y - pivotNode.y) * 0.5;
+  } else {
+    // Free mode: gentle pull toward canvas center
+    const cx = W / 2, cy = SPATIAL_H / 2;
+    for (const n of spatialNodes) {
+      n.fx += (cx - n.x) * SIM.centerK;
+      n.fy += (cy - n.y) * SIM.centerK;
+    }
   }
-  for (const n of GRAPH.nodes) {
+
+  // Integrate
+  for (const n of spatialNodes) {
     if (n === GRAPH.draggingNode) continue;
     n.vx = (n.vx + n.fx) * SIM.damping;
     n.vy = (n.vy + n.fy) * SIM.damping;
     n.x += n.vx;
     n.y += n.vy;
+    // Keep spatial nodes out of the bottom-row strip
+    if (n.y > SPATIAL_H - 20) {
+      n.y = SPATIAL_H - 20;
+      n.vy = Math.min(0, n.vy);
+    }
   }
 }
 
@@ -8011,9 +8489,69 @@ function graphDraw() {
   const W = cv.clientWidth || 800;
   const H = cv.clientHeight || 600;
   ctx.clearRect(0, 0, W, H);
+
+  // Measure node labels once per draw (cheap; only first-time per node)
+  measureNodeLabels(ctx);
+
+  // ── Bottom row separator ──
+  // Light visual rule between spatial layout and unembedded entities.
+  const BOTTOM_ROW_H = 40;
+  const SPATIAL_H = H - BOTTOM_ROW_H;
+  const hasBottomRow = GRAPH.pivotEntityId != null &&
+                       GRAPH.nodes.some(n => !n.hasEmbedding);
+  if (hasBottomRow) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.08)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(0, SPATIAL_H);
+    ctx.lineTo(W, SPATIAL_H);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Tiny label
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+    ctx.font = "9px 'IBM Plex Mono', monospace";
+    ctx.textAlign = 'left';
+    ctx.fillText('no propositional evidence', 8, SPATIAL_H + 14);
+    ctx.restore();
+  }
+
   ctx.save();
   ctx.translate(GRAPH.view.x, GRAPH.view.y);
   ctx.scale(GRAPH.view.k, GRAPH.view.k);
+
+  // ── Pivot rings ──
+  // Draw faint concentric circles indicating the cosine bands so the
+  // perspective is legible. Drawn under everything else.
+  if (GRAPH.pivotEntityId != null) {
+    const pivotNode = GRAPH.nodes.find(n => n.id === GRAPH.pivotEntityId);
+    if (pivotNode) {
+      const innerR = 70;
+      const outerR = Math.min(W, SPATIAL_H) * 0.42;
+      const ringSpacing = (outerR - innerR) / (GRAPH.pivotBands.length - 1);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.10)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 4]);
+      for (let i = 0; i < GRAPH.pivotBands.length; i++) {
+        const r = innerR + i * ringSpacing;
+        ctx.beginPath();
+        ctx.arc(pivotNode.x, pivotNode.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      // Band labels at the top of each ring
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.30)';
+      ctx.font = "9px 'IBM Plex Mono', monospace";
+      ctx.textAlign = 'left';
+      for (let i = 0; i < GRAPH.pivotBands.length; i++) {
+        const r = innerR + i * ringSpacing;
+        ctx.fillText(GRAPH.pivotBands[i].label, pivotNode.x + 6, pivotNode.y - r + 4);
+      }
+      ctx.restore();
+    }
+  }
 
   ctx.lineCap = 'round';
   for (const l of GRAPH.links) {
@@ -8081,16 +8619,34 @@ function graphDraw() {
   for (const n of GRAPH.nodes) {
     const isHover = (GRAPH.hoveredNode === n);
     const isSelected = (GRAPH.selectedNode != null && GRAPH.nodes[GRAPH.selectedNode] === n);
+    const isPivot = (GRAPH.pivotEntityId === n.id);
+    const isInBottomRow = GRAPH.pivotEntityId != null && !n.hasEmbedding && !isPivot;
     const isConnectedToSelected = GRAPH.selectedNode != null && GRAPH.links.some(l =>
       (l.source === GRAPH.selectedNode && GRAPH.nodes[l.target] === n) ||
       (l.target === GRAPH.selectedNode && GRAPH.nodes[l.source] === n)
     );
     let radius = 5 + Math.min(8, n.degree * 1.2);
     if (isHover || isSelected) radius += 3;
+    if (isPivot) radius += 4;
     let alpha = 1;
-    if (GRAPH.selectedNode != null && !isSelected && !isConnectedToSelected) alpha = 0.4;
+    if (isInBottomRow) alpha = 0.5;
+    if (GRAPH.selectedNode != null && !isSelected && !isConnectedToSelected) alpha = Math.min(alpha, 0.4);
     ctx.globalAlpha = alpha;
-    if (isSelected) {
+
+    // Pivot gets faint outer halo to mark "this is the perspective"
+    if (isPivot) {
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, radius + 10, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(31, 26, 20, 0.08)';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, radius + 6, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(31, 26, 20, 0.35)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    if (isSelected && !isPivot) {
       ctx.beginPath();
       ctx.arc(n.x, n.y, radius + 6, 0, Math.PI*2);
       ctx.fillStyle = 'rgba(31, 26, 20, 0.07)';
@@ -8098,9 +8654,9 @@ function graphDraw() {
     }
     ctx.beginPath();
     ctx.arc(n.x, n.y, radius, 0, Math.PI*2);
-    ctx.fillStyle = isSelected ? '#1f1a14' : '#f4efe6';
+    ctx.fillStyle = (isSelected || isPivot) ? '#1f1a14' : '#f4efe6';
     ctx.fill();
-    ctx.lineWidth = isSelected ? 2 : 1.5;
+    ctx.lineWidth = (isSelected || isPivot) ? 2 : 1.5;
     ctx.strokeStyle = '#1f1a14';
     ctx.stroke();
 
@@ -8247,6 +8803,7 @@ function wireGraphInteractions() {
     const idx = graphNodeAt(sx, sy);
     if (idx >= 0) {
       GRAPH.draggingNode = GRAPH.nodes[idx];
+      GRAPH.draggingNode._mouseDownAt = { x: e.clientX, y: e.clientY };
       GRAPH.draggingNode.vx = GRAPH.draggingNode.vy = 0;
       GRAPH.frozen = false;
       cv.style.cursor = 'grabbing';
@@ -8286,10 +8843,40 @@ function wireGraphInteractions() {
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
       const idx = graphNodeAt(sx, sy);
-      if (idx >= 0 && GRAPH.nodes[idx] === GRAPH.draggingNode) {
+      // Distinguish click vs drag: only treat as click if mouse barely moved
+      const movedDist = GRAPH.draggingNode._mouseDownAt
+        ? Math.hypot(e.clientX - GRAPH.draggingNode._mouseDownAt.x, e.clientY - GRAPH.draggingNode._mouseDownAt.y)
+        : 999;
+      if (idx >= 0 && GRAPH.nodes[idx] === GRAPH.draggingNode && movedDist < 4) {
+        const clickedId = GRAPH.draggingNode.id;
+        // Click on a node: pivot to it (and update detail panel)
+        if (GRAPH.pivotEntityId === clickedId) {
+          // Click on the current pivot releases it
+          GRAPH.pivotEntityId = null;
+          GRAPH.pivotTransitionStart = Date.now();
+        } else {
+          GRAPH.pivotEntityId = clickedId;
+          GRAPH.pivotTransitionStart = Date.now();
+          // Strong unfreeze so the layout settles into the new perspective
+          GRAPH.frozen = false;
+          GRAPH.freezeAt = Date.now() + 4000;
+        }
         selectGraphNode(idx);
       }
       GRAPH.draggingNode = null;
+    } else if (GRAPH.panning) {
+      // Empty-canvas click (no drag) releases the pivot
+      const dragDist = Math.hypot(
+        e.clientX - GRAPH.panning.x,
+        e.clientY - GRAPH.panning.y
+      );
+      if (dragDist < 4 && GRAPH.pivotEntityId != null) {
+        GRAPH.pivotEntityId = null;
+        GRAPH.pivotTransitionStart = Date.now();
+        GRAPH.frozen = false;
+        GRAPH.freezeAt = Date.now() + 2000;
+        selectGraphNode(null);
+      }
     }
     GRAPH.panning = null;
     cv.style.cursor = (GRAPH.hoveredNode || GRAPH.hoveredEdge) ? 'pointer' : 'grab';
@@ -8318,6 +8905,193 @@ function wireGraphInteractions() {
     if (STATE.activeView === 'graph') fitGraphCanvas();
   });
 }
+
+// ─── LOG VIEW (EO event stream) ─────────────────────────────────────
+// Walks G in time order, renders each event in canonical EO notation.
+//
+// Format per line:
+//   [span]  OP(subject_canonical, predicate, value)  cell-tag  source-tag
+//
+// span = global span position from the source-concatenation timeline,
+// or "—" for off-timeline events (hypothesis DEFs, source INS).
+//
+// Filters at top: by operator, by source, free-text. Click any line to
+// open the source modal at the event's span if it has one.
+//
+// This is the canonical EO trace of what the system has read. Useful
+// for debugging, for inspection, and for proving claims back to their
+// structural origin.
+
+const LOG_FILTER = {
+  op: null,        // 'CON' | 'SYN' | ... or null for all
+  sourceId: null,  // source ID or null for all
+  search: '',      // free text on subject/predicate/value
+};
+
+function eoFormatEvent(ev, offsets) {
+  const p = ev.payload || {};
+  const op = ev.op;
+  const ent = id => STATE.entities.get(id);
+  const subjectStr = (() => {
+    const sid = p.subject || p.from;
+    if (sid && ent(sid)) return ent(sid).canonical;
+    return sid || '∅';
+  })();
+  const predicate = p.predicate || p.relation || p.kind || '';
+  const valueStr = (() => {
+    const isEntity = p.valueIsEntity || p.toIsEntity;
+    const v = p.value !== undefined ? p.value : p.to;
+    if (isEntity && ent(v)) return ent(v).canonical;
+    if (v == null) return '∅';
+    return String(v);
+  })();
+  // Canonical form: OP(subject, predicate, value)
+  // For NUL events without subject/value, just render as OP(kind, surface)
+  if (op === 'NUL') {
+    return `NUL(${escapeHtml(p.kind || '')}, ${escapeHtml(p.surface || '')})`;
+  }
+  if (op === 'INS' && !predicate) {
+    return `INS(${escapeHtml(p.kind || '')}, ${escapeHtml(p.name || '')})`;
+  }
+  return `${op}(${escapeHtml(subjectStr)}, ${escapeHtml(predicate)}, ${escapeHtml(valueStr)})`;
+}
+
+function renderLogView() {
+  const el = document.getElementById('log-body');
+  const meta = document.getElementById('log-meta');
+  if (!el) return;
+  if (STATE.G.length === 0) {
+    el.innerHTML = `<div class="empty-state">No events yet.</div>`;
+    if (meta) meta.textContent = 'empty';
+    return;
+  }
+  const offsets = sourceSpanOffsets();
+
+  // Apply filters
+  const filtered = STATE.G.filter(ev => {
+    if (LOG_FILTER.op && ev.op !== LOG_FILTER.op) return false;
+    if (LOG_FILTER.sourceId && ev.sourceId !== LOG_FILTER.sourceId) return false;
+    if (LOG_FILTER.search) {
+      const q = LOG_FILTER.search.toLowerCase();
+      const fmt = eoFormatEvent(ev, offsets).toLowerCase();
+      if (!fmt.includes(q)) return false;
+    }
+    return true;
+  });
+
+  if (meta) meta.textContent = `${filtered.length} of ${STATE.G.length} events · ${LOG_FILTER.op || 'all ops'}${LOG_FILTER.sourceId ? ' · filtered to source' : ''}`;
+
+  // Operator color palette (reuse the graph palette)
+  const opColor = op => phasepostColor(op + '(_)') || '#6a6358';
+
+  // Filter chips at top
+  const ops = ['NUL', 'SIG', 'INS', 'SEG', 'CON', 'SYN', 'ALT', 'SUP', 'REC', 'EVA', 'DEF'];
+  let html = `<div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; align-items: center;">`;
+  html += `<span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-right:6px;">filter:</span>`;
+  html += `<button class="log-filter-pill${LOG_FILTER.op === null ? ' active' : ''}" data-op="">all</button>`;
+  for (const op of ops) {
+    const count = STATE.G.filter(e => e.op === op).length;
+    if (count === 0) continue;
+    const c = opColor(op);
+    const active = LOG_FILTER.op === op ? ' active' : '';
+    html += `<button class="log-filter-pill${active}" data-op="${op}" style="border-color:${c};color:${c};">${op} <span style="opacity:0.6;">${count}</span></button>`;
+  }
+  // Source filter
+  if (STATE.sources.size > 1) {
+    html += `<span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-left:12px;margin-right:6px;">source:</span>`;
+    html += `<button class="log-filter-pill${LOG_FILTER.sourceId === null ? ' active' : ''}" data-source="">all</button>`;
+    for (const [id, src] of STATE.sources) {
+      const active = LOG_FILTER.sourceId === id ? ' active' : '';
+      html += `<button class="log-filter-pill${active}" data-source="${escapeHtml(id)}">${escapeHtml(src.name)}</button>`;
+    }
+  }
+  // Search
+  html += `<input type="text" id="log-search" placeholder="search subject/predicate/value…" value="${escapeHtml(LOG_FILTER.search)}" style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 8px;border:1px solid var(--rule);background:var(--paper);min-width:220px;" />`;
+  html += `</div>`;
+
+  // Event lines
+  html += `<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:1.65;">`;
+  // Cap at 500 events for performance; show oldest to newest by default
+  const cap = 500;
+  const showing = filtered.slice(-cap);
+  if (filtered.length > cap) {
+    html += `<div style="color: var(--ink-faint); font-style: italic; margin-bottom: 8px;">showing latest ${cap} of ${filtered.length} matching events</div>`;
+  }
+  for (const ev of showing) {
+    const c = opColor(ev.op);
+    const span = eventSpanPosition(ev, offsets);
+    const spanLabel = span >= 0 ? String(span).padStart(4, ' ') : '   —';
+    const cell = ev.llmCell || (ev.empiricalCells?.[0]?.cell);
+    const cellTag = cell ? `<span style="color:var(--ink-faint);font-size:10px;margin-left:8px;">${escapeHtml(cell)}</span>` : '';
+    const src = STATE.sources.get(ev.sourceId);
+    const srcTag = src ? `<span style="color:var(--ink-faint);font-size:10px;margin-left:8px;">${escapeHtml(src.name)}</span>` : '';
+    const eo = eoFormatEvent(ev, offsets);
+    // Color the operator
+    const eoColored = eo.replace(/^(\w+)\(/, (m, op) => `<span style="color:${c};font-weight:500;">${op}</span>(`);
+    const author = ev.authoredBy === 'hypothesis' ? `<span style="color:var(--ink-faint);font-size:9px;margin-left:6px;">[hypothesis]</span>` :
+                   ev.authoredBy === 'reader' ? `<span style="color:var(--ink-faint);font-size:9px;margin-left:6px;">[reader]</span>` : '';
+    html += `<div class="log-line" data-event-id="${escapeHtml(ev.id)}" style="display:flex;align-items:baseline;padding:2px 6px;cursor:pointer;border-radius:2px;">
+      <span style="color:var(--ink-faint);min-width:48px;">${spanLabel}</span>
+      <span>${eoColored}</span>
+      ${cellTag}${author}${srcTag}
+    </div>`;
+  }
+  html += `</div>`;
+
+  el.innerHTML = html;
+
+  // Wire filters
+  el.querySelectorAll('.log-filter-pill[data-op]').forEach(b => {
+    b.addEventListener('click', () => {
+      LOG_FILTER.op = b.getAttribute('data-op') || null;
+      renderLogView();
+    });
+  });
+  el.querySelectorAll('.log-filter-pill[data-source]').forEach(b => {
+    b.addEventListener('click', () => {
+      LOG_FILTER.sourceId = b.getAttribute('data-source') || null;
+      renderLogView();
+    });
+  });
+  const searchInput = el.querySelector('#log-search');
+  if (searchInput) {
+    let t = null;
+    searchInput.addEventListener('input', (e) => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        LOG_FILTER.search = e.target.value;
+        renderLogView();
+      }, 150);
+    });
+  }
+  // Click line → open source modal at the span
+  el.querySelectorAll('.log-line[data-event-id]').forEach(line => {
+    line.addEventListener('click', () => {
+      const eid = line.getAttribute('data-event-id');
+      const ev = STATE.G.find(e => e.id === eid);
+      if (!ev || !ev.sourceId || ev.narrativePos == null) {
+        // Off-timeline — just show event payload in a small inline popover.
+        // For now no-op; could show a non-source modal later.
+        return;
+      }
+      // Construct a grounding-shaped object so we can reuse showSourceSpanModal
+      showSourceSpanModal({
+        sourceEventId: ev.id,
+        sourceId: ev.sourceId,
+        sentenceIdx: ev.narrativePos.sentenceIdx,
+        spanText: ev.spanText || '',
+        authoredBy: ev.authoredBy,
+      });
+    });
+    line.addEventListener('mouseenter', () => {
+      line.style.background = 'var(--paper-soft)';
+    });
+    line.addEventListener('mouseleave', () => {
+      line.style.background = '';
+    });
+  });
+}
+
 
 function renderCursorStatus() {
   const el = document.getElementById('cursor-status');
@@ -8362,11 +9136,7 @@ function renderHeaderStatus() {
     if (EMBEDDER.status === 'loading') {
       embedderDot.className = 'dot loading';
       embedderStatus.innerHTML = `<strong>EMBEDDER</strong> <span class="backend-detail">downloading model… ~22MB</span>`;
-      embedderPill.title = 'Sentence embedder downloading. About 22MB on first load. Cached after.';
-    } else if (EMBEDDER.status === 'ready' && !referenceGestaltsReady) {
-      embedderDot.className = 'dot loading';
-      embedderStatus.innerHTML = `<strong>EMBEDDER</strong> <span class="backend-detail">building reference gestalts…</span>`;
-      embedderPill.title = 'Embedder ready. Computing the 9 reference Site centroids from curated exemplars.';
+      embedderPill.title = 'Sentence embedder downloading. About 22MB on first load. Cached after. Used for the gestalt pipeline (semantic positioning, not site classification).';
     } else if (EMBEDDER.status === 'ready' && BACKFILL.running) {
       embedderDot.className = 'dot loading';
       embedderStatus.innerHTML = `<strong>EMBEDDER</strong> <span class="backend-detail">backfilling ${BACKFILL.current}/${BACKFILL.total}</span>`;
@@ -8375,11 +9145,11 @@ function renderHeaderStatus() {
       embedderDot.className = 'dot ready';
       const embedded = EMBEDDING_STORE.byEventId.size;
       embedderStatus.innerHTML = `<strong>EMBEDDER</strong> <span class="backend-detail">ready · ${embedded} embedded</span>`;
-      embedderPill.title = `Embedder ready. ${embedded} events embedded. ${Object.keys(REFERENCE_GESTALTS).length} reference Sites.`;
+      embedderPill.title = `Gestalt embedder ready. ${embedded} events embedded. Site classification reads phasepost faces directly and does not depend on this.`;
     } else if (EMBEDDER.status === 'failed') {
       embedderDot.className = 'dot error';
       embedderStatus.innerHTML = `<strong>EMBEDDER</strong> <span class="backend-detail">failed — click for detail</span>`;
-      embedderPill.title = `Embedder failed to load: ${EMBEDDER.error || 'unknown'}. Site classification will fall back to hypothesis declarations.`;
+      embedderPill.title = `Embedder failed to load: ${EMBEDDER.error || 'unknown'}. Gestalt pipeline (semantic neighbors) will be unavailable; role profiles still compute.`;
     } else {
       embedderDot.className = 'dot';
       embedderStatus.innerHTML = `<strong>EMBEDDER</strong> <span class="backend-detail">idle</span>`;
@@ -8389,7 +9159,7 @@ function renderHeaderStatus() {
     // model" pill in the same conceptual category — runs entirely in
     // the browser, no remote calls except for the initial model fetch).
     embedderPill.classList.remove('backend-cloud', 'backend-local', 'backend-none');
-    if (EMBEDDER.status === 'ready' && referenceGestaltsReady && !BACKFILL.running) {
+    if (EMBEDDER.status === 'ready' && !BACKFILL.running) {
       embedderPill.classList.add('backend-local');
     } else if (EMBEDDER.status === 'failed') {
       embedderPill.classList.add('backend-none');
@@ -8609,26 +9379,34 @@ document.getElementById('export-btn').addEventListener('click', () => {
     // Don't ship the int8 centroid through JSON — it's derived from
     // accumulated embeddings which are also not shipped.
     delete cleaned._centroid;
-    // Summary: latest computed site
-    const summary = computeEntitySite(ent.id);
-    if (summary) {
-      cleaned.computedSite = {
-        site: summary.site,
-        confidence: summary.confidence,
-        evidenceCount: summary.total,
-        runners: summary.runners ? summary.runners.slice(0, 3) : null,
+    // Role profile: three-face distributions per entity. Compact
+    // top-3-per-face form, with totals.
+    const profile = computeRoleProfile(ent.id);
+    if (profile && (profile.subjectTotal > 0 || profile.targetTotal > 0)) {
+      cleaned.roleProfile = {
+        subjectTotal: profile.subjectTotal,
+        targetTotal: profile.targetTotal,
+        subject: {
+          act: topProfileCells(profile.subjectAct, OPERATOR_NAMES, 3),
+          site: topProfileCells(profile.subjectSite, SITE_NAMES, 3),
+          resolution: topProfileCells(profile.subjectResolution, RESOLUTION_NAMES, 3),
+        },
+        target: {
+          act: topProfileCells(profile.targetAct, OPERATOR_NAMES, 3),
+          site: topProfileCells(profile.targetSite, SITE_NAMES, 3),
+          resolution: topProfileCells(profile.targetResolution, RESOLUTION_NAMES, 3),
+        },
       };
     }
-    // Trajectory is already serializable (plain arrays + scalar fields)
-    // but include it explicitly so it's clear what the export contains.
-    if (ent.siteTrajectory && ent.siteTrajectory.length > 0) {
-      cleaned.siteTrajectory = ent.siteTrajectory;
+    // Trajectory of role profiles + gestalt positions across the read.
+    if (ent.roleTrajectory && ent.roleTrajectory.length > 0) {
+      cleaned.roleTrajectory = ent.roleTrajectory;
     }
     return cleaned;
   });
 
   const data = {
-    formatVersion: 'v25.5-collapsed',
+    formatVersion: 'v25.6-roleprofile',
     sources: [...STATE.sources.values()],
     entities: entitiesForExport,
     G: eventsForExport,
@@ -8839,12 +9617,54 @@ document.getElementById('ollama-model').addEventListener('change', e => STATE.ol
 document.getElementById('lmstudio-url').addEventListener('change', e => STATE.lmstudioUrl = e.target.value.trim());
 document.getElementById('lmstudio-model').addEventListener('change', e => STATE.lmstudioModel = e.target.value.trim());
 
-// Query button
+// Conversation history — gives the librarian context across turns so
+// follow-up questions like "what about her sisters?" can resolve.
+const CHAT_HISTORY = [];
+
+// Query button — "Ask"
 document.getElementById('query-go').addEventListener('click', async () => {
-  const q = document.getElementById('query-input').value.trim();
+  const input = document.getElementById('query-input');
+  const q = input.value.trim();
   if (!q) return;
-  const result = await runQuery(q, STATE.activeCursor, STATE.activeFraming, STATE.compareCursor);
+
+  // Clear the input immediately so the user can start typing the next
+  // question while the librarian works.
+  input.value = '';
+
+  // Resolve the question, possibly using conversation context for
+  // pronoun-y follow-ups. For now we pass the prior subject as a hint
+  // to runQuery if the question doesn't independently resolve.
+  let result = await runQuery(q, STATE.activeCursor, STATE.activeFraming, STATE.compareCursor);
+
+  // Follow-up resolution: if no subject was found and the previous turn
+  // had one, retry with the prior subject's name prepended as context.
+  if (result.kind === 'pre-distinction' && CHAT_HISTORY.length > 0) {
+    const prior = CHAT_HISTORY[CHAT_HISTORY.length - 1];
+    if (prior.subject) {
+      const augmented = `${prior.subject.canonical} — ${q}`;
+      const retry = await runQuery(augmented, STATE.activeCursor, STATE.activeFraming, STATE.compareCursor);
+      if (retry.kind !== 'pre-distinction') {
+        retry.question = q;  // show the user's actual question, not the rewrite
+        retry.followUpFrom = prior.subject.canonical;
+        result = retry;
+      }
+    }
+  }
+
   renderQueryResult(result);
+  // Save in history for follow-ups
+  CHAT_HISTORY.push({
+    question: q,
+    subject: result.subject || null,
+    cursor: result.cursor,
+    timestamp: Date.now(),
+  });
+
+  // Find the most recent turn block + its per-turn commentary id
+  const transcript = document.getElementById('chat-transcript');
+  const turns = transcript.querySelectorAll('.chat-turn');
+  const lastTurn = turns[turns.length - 1];
+  const commentaryBodyId = lastTurn ? lastTurn._commentaryBodyId : null;
 
   // Generate commentary if backend is ready
   if (isLLMReady() && result.kind !== 'pre-distinction') {
@@ -8855,13 +9675,26 @@ document.getElementById('query-go').addEventListener('click', async () => {
         describeCursor(result.cursor),
         describeFraming(result.framing)
       );
-      const body = document.getElementById('commentary-body');
-      if (body) body.textContent = commentary;
+      if (commentaryBodyId) {
+        const body = document.getElementById(commentaryBodyId);
+        if (body) body.textContent = commentary;
+      }
     } catch (e) {
-      const body = document.getElementById('commentary-body');
-      if (body) body.innerHTML = `<span class="commentary-loading">commentary error: ${escapeHtml(e.message)}</span>`;
+      if (commentaryBodyId) {
+        const body = document.getElementById(commentaryBodyId);
+        if (body) body.innerHTML = `<span class="commentary-loading">commentary error: ${escapeHtml(e.message)}</span>`;
+      }
     }
   }
+});
+
+// Clear chat
+document.getElementById('chat-clear').addEventListener('click', () => {
+  const transcript = document.getElementById('chat-transcript');
+  if (transcript) {
+    transcript.innerHTML = `<div class="empty-state">Ingest a source, then ask the librarian. Answers come as commentary paired with cited findings and source spans.</div>`;
+  }
+  CHAT_HISTORY.length = 0;
 });
 
 document.getElementById('query-input').addEventListener('keydown', (e) => {
@@ -9046,16 +9879,15 @@ async function boot() {
   });
 
   // Auto-load the sentence embedder (Transformers.js, all-MiniLM-L6-v2,
-  // ~22MB). Runs in parallel with everything else. Once loaded, builds
-  // reference gestalts for the 9 Sites from curated exemplars (or
-  // restores them from OPFS if cached). After both are ready,
-  // computeEntitySite() switches from hypothesis-guess to gestalt-
-  // derived classifications.
+  // ~22MB). Used for the gestalt pipeline: per-entity semantic centroids,
+  // pairwise similarity, future spatial graph layout. Site classification
+  // does NOT depend on the embedder — it reads the per-clause phasepost
+  // faces (Act / Site / Resolution) which only need the LLM classifier.
   initEmbedder().then(() => {
     if (EMBEDDER.status === 'ready') {
-      buildReferenceGestalts().catch(err => {
-        console.warn('Reference gestalt build failed:', err);
-      });
+      // Backfill embeddings for any events that landed before the
+      // embedder finished loading.
+      backfillEmbeddings().catch(err => console.warn('Boot backfill failed:', err));
     }
   }).catch(err => {
     console.warn('Embedder load failed:', err);
