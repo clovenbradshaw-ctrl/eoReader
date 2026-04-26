@@ -429,7 +429,47 @@ button.secondary.danger:hover { background: var(--accent); color: var(--paper); 
 .log-table td.col-source  { width: 14%;   font-size: 10px; color: var(--ink-faint); }
 .log-table td.col-subject { font-family: 'Newsreader', serif; font-size: 13px; color: var(--ink); }
 .log-table td.col-value   { font-family: 'Newsreader', serif; font-size: 13px; color: var(--ink); }
+.log-table td.col-edit    { width: 38px;  text-align: right; padding: 4px 6px; }
 .log-table .empty-cell { color: var(--ink-faint); font-style: italic; }
+
+/* Correction affordance — bare ✎ shows on hover; the ✎N audit badge
+   stays visible whenever a row carries any correction. The row itself
+   gets a faint left border in the supersede color so corrected entries
+   are scannable in a long log. */
+.log-edit-btn {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--ink-faint);
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s, border-color 0.12s;
+}
+.log-table tbody tr:hover .log-edit-btn { opacity: 0.7; }
+.log-edit-btn:hover { opacity: 1; color: var(--accent); border-color: var(--rule); background: var(--paper); }
+.log-edit-btn.corrected {
+  opacity: 1;
+  color: var(--supersede);
+  border-color: var(--supersede);
+  background: var(--supersede-soft);
+  font-weight: 500;
+}
+.log-edit-btn.corrected:hover { color: var(--ink); }
+.log-table tbody tr.corrected td.col-op {
+  position: relative;
+}
+.log-table tbody tr.corrected td.col-op::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--supersede);
+}
 
 .example-queries {
   display: flex;
@@ -2314,6 +2354,39 @@ code {
   </div>
 </div>
 
+<!-- ── CORRECTION MODAL ──────────────────────────────────────────
+     Reader records a correction on a log entry. Submitting appends to
+     STATE.corrections (sidecar, not in G) so the corrected value
+     surfaces at the original span without ever overwriting the
+     original record. -->
+<div class="modal-overlay" id="correction-overlay">
+  <div class="modal" style="max-width: 620px;">
+    <div class="modal-header">
+      <div class="modal-title" id="correction-title">Correct entry</div>
+      <button class="modal-close" id="correction-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="correction-context" style="margin-bottom: 14px; padding: 10px 12px; background: var(--paper-soft); border: 1px solid var(--rule); font-family: 'IBM Plex Mono', monospace; font-size: 12px;"></div>
+      <div id="correction-history" style="margin-bottom: 14px;"></div>
+      <div class="label" style="margin-bottom: 6px;">Field to correct</div>
+      <select id="correction-field" style="width: 100%; padding: 6px 8px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; background: var(--paper); border: 1px solid var(--rule); margin-bottom: 10px;"></select>
+      <div class="label" style="margin-bottom: 6px;">Current value <span style="color: var(--ink-faint); font-weight: 400;">(read-only)</span></div>
+      <div id="correction-current" style="padding: 6px 8px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; background: var(--paper-soft); border: 1px solid var(--rule); margin-bottom: 10px; min-height: 18px; word-break: break-word;"></div>
+      <div class="label" style="margin-bottom: 6px;">Corrected value</div>
+      <textarea id="correction-new" placeholder="What should this say?" style="width: 100%; min-height: 60px; padding: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; background: var(--paper); border: 1px solid var(--rule); resize: vertical; box-sizing: border-box; margin-bottom: 10px;"></textarea>
+      <div class="label" style="margin-bottom: 6px;">Why <span style="color: var(--ink-faint); font-weight: 400;">(optional, kept in audit)</span></div>
+      <textarea id="correction-rationale" placeholder="Why was the original wrong?" style="width: 100%; min-height: 60px; padding: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; background: var(--paper); border: 1px solid var(--rule); resize: vertical; box-sizing: border-box;"></textarea>
+      <div style="margin-top: 14px; padding: 10px 12px; background: var(--supersede-soft); border-left: 3px solid var(--supersede); font-size: 12px; line-height: 1.5;">
+        <strong>How this records:</strong> the original is preserved untouched in the log. Your correction becomes the value seen at this span when scrubbing — and is logged with its own submission timestamp in the audit history. Corrections do not appear as their own events on the timeline.
+      </div>
+      <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px;">
+        <button class="secondary" id="correction-cancel-btn">Cancel</button>
+        <button class="primary" id="correction-submit-btn" disabled>Record correction</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script type="module">
 // ═══════════════════════════════════════════════════════════════════════
 // ANCHORAGE v25 — Integral RAG
@@ -2678,6 +2751,14 @@ const STATE = {
 
   // REC records (chronological)
   recs: [],
+
+  // Reader-authored corrections — append-only sidecar patches applied at
+  // render time. Never mutate STATE.G; corrections inherit the target's
+  // position (intakeTs/narrativePos/layoutPos), so when scrubbing across
+  // the corpus the cursor sees the corrected value at the original span.
+  // Corrections themselves do NOT appear as events on the timeline; they
+  // surface only in audit history.
+  corrections: [],
 
   // Sources
   sources: new Map(),  // source id → { id, name, publicationDate, intakeTs, sentences:[], events:[] }
@@ -4275,6 +4356,98 @@ function supersedeDef(targetDef, successorDef, kind, rationale, authoredBy = 'sy
     authoredBy,
     timestamp: Date.now(),
   });
+}
+
+// ─── CORRECTIONS ─────────────────────────────────────────────────────
+// A correction is a non-event sidecar patch on an existing record. It
+// never mutates the original — STATE.G stays append-only. At render
+// time the patch is layered onto the target so the displayed value is
+// "what we now think was true at that span". Multiple corrections to
+// the same target form a chain (latest correctedAt wins per field);
+// the full chain is preserved for audit.
+//
+// CORR_FIELDS lists which fields on a log event a reader is allowed to
+// correct from the UI. The set is intentionally narrow — corrections
+// are about reader-visible content (subject/predicate/value/spanText),
+// not internal coordinates like intakeTs or eoCoord.
+const CORR_FIELDS = {
+  event: [
+    { path: 'payload.subject',   label: 'subject',   note: 'entity id of the subject (e.g. ent_…)' },
+    { path: 'payload.predicate', label: 'predicate', note: 'relation name' },
+    { path: 'payload.value',     label: 'value',     note: 'literal value or entity id' },
+    { path: 'spanText',          label: 'span text', note: 'the source clause this event was extracted from' },
+  ],
+};
+
+function _getByPath(obj, path) {
+  if (!obj) return undefined;
+  const parts = path.split('.');
+  let cur = obj;
+  for (const p of parts) {
+    if (cur == null) return undefined;
+    cur = cur[p];
+  }
+  return cur;
+}
+
+function _setByPath(obj, path, value) {
+  const parts = path.split('.');
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const p = parts[i];
+    if (cur[p] == null || typeof cur[p] !== 'object') cur[p] = {};
+    cur = cur[p];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+
+function getCorrectionsFor(kind, id) {
+  return STATE.corrections
+    .filter(c => c.targetKind === kind && c.targetId === id)
+    .sort((a, b) => a.correctedAt - b.correctedAt);
+}
+
+// Returns a shallow-cloned target with all corrections applied. The
+// clone carries __corrected (count) so renderers can show an audit
+// badge without re-querying. If there are no corrections, returns the
+// original (no clone overhead). Never mutates the input.
+function applyCorrections(target, kind) {
+  if (!target) return target;
+  const chain = getCorrectionsFor(kind, target.id);
+  if (chain.length === 0) return target;
+  // Deep-ish clone: payload is the only nested object that gets patched.
+  const patched = { ...target, payload: { ...(target.payload || {}) } };
+  for (const c of chain) _setByPath(patched, c.field, c.newValue);
+  patched.__corrected = chain.length;
+  return patched;
+}
+
+// Convenience wrapper for events.
+function correctedEvent(ev) { return applyCorrections(ev, 'event'); }
+
+// Record a new correction. Captures the value-as-currently-displayed
+// (i.e. after any prior corrections in the chain) as originalValue, so
+// the audit history reads as a sequence of intentional edits rather
+// than each one re-asserting the same baseline.
+function addCorrection({ targetKind, targetId, field, newValue, rationale }) {
+  if (targetKind !== 'event') return null; // only event scope wired up for now
+  const original = STATE.G.find(e => e.id === targetId);
+  if (!original) return null;
+  const current = applyCorrections(original, targetKind);
+  const previousValue = _getByPath(current, field);
+  const correction = {
+    id: uid('cor'),
+    targetKind,
+    targetId,
+    field,
+    previousValue: previousValue === undefined ? null : previousValue,
+    newValue,
+    rationale: (rationale || '').trim(),
+    authoredBy: 'reader',
+    correctedAt: Date.now(),
+  };
+  STATE.corrections.push(correction);
+  return correction;
 }
 
 // Mint or fetch an entity by canonical name + aliases
@@ -9946,6 +10119,113 @@ function submitReaderFeedback() {
   renderHeaderStatus();
 }
 
+// ─── CORRECTION MODAL ─────────────────────────────────────────────
+const CORRECTION_STATE = { eventId: null };
+
+function showCorrectionModal(eventId) {
+  const ev = STATE.G.find(e => e.id === eventId);
+  if (!ev) return;
+  CORRECTION_STATE.eventId = eventId;
+
+  const overlay = document.getElementById('correction-overlay');
+  const ctx = document.getElementById('correction-context');
+  const fieldSel = document.getElementById('correction-field');
+  const newVal = document.getElementById('correction-new');
+  const rat = document.getElementById('correction-rationale');
+  const submit = document.getElementById('correction-submit-btn');
+  if (!overlay || !ctx || !fieldSel) return;
+
+  // Header context: which row is being corrected
+  const display = correctedEvent(ev);
+  const c = eoComponents(display);
+  const offsets = sourceSpanOffsets();
+  const span = eventSpanPosition(ev, offsets);
+  const spanLabel = span >= 0 ? `span #${span}` : 'unpositioned';
+  ctx.innerHTML = `<div style="color: var(--ink-faint); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 4px;">target · ${escapeHtml(spanLabel)} · ${escapeHtml(ev.id)}</div>
+    <div style="font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 13px;"><strong>${escapeHtml(ev.op)}</strong>(${escapeHtml(c.subject || '∅')}, ${escapeHtml(c.predicate || '∅')}, ${escapeHtml(c.value || '∅')})</div>`;
+
+  // Field options
+  fieldSel.innerHTML = CORR_FIELDS.event
+    .map(f => `<option value="${escapeHtml(f.path)}">${escapeHtml(f.label)} — ${escapeHtml(f.note)}</option>`)
+    .join('');
+
+  newVal.value = '';
+  rat.value = '';
+  submit.disabled = true;
+
+  refreshCorrectionCurrentValue();
+  renderCorrectionHistory(eventId);
+
+  overlay.classList.add('active');
+  setTimeout(() => newVal.focus(), 0);
+}
+
+function refreshCorrectionCurrentValue() {
+  const ev = STATE.G.find(e => e.id === CORRECTION_STATE.eventId);
+  const fieldSel = document.getElementById('correction-field');
+  const cur = document.getElementById('correction-current');
+  if (!ev || !fieldSel || !cur) return;
+  const display = correctedEvent(ev);
+  const v = _getByPath(display, fieldSel.value);
+  cur.textContent = v == null || v === '' ? '— (empty)' : String(v);
+}
+
+function renderCorrectionHistory(eventId) {
+  const histEl = document.getElementById('correction-history');
+  if (!histEl) return;
+  const chain = getCorrectionsFor('event', eventId);
+  if (chain.length === 0) {
+    histEl.innerHTML = '';
+    return;
+  }
+  const fieldLabel = path => (CORR_FIELDS.event.find(f => f.path === path)?.label) || path;
+  let html = `<div class="label" style="margin-bottom: 6px;">Audit history <span style="color: var(--ink-faint); font-weight: 400;">(${chain.length} correction${chain.length === 1 ? '' : 's'})</span></div>
+    <div style="border: 1px solid var(--rule); background: var(--paper-soft); padding: 8px; max-height: 180px; overflow-y: auto; font-family: 'IBM Plex Mono', monospace; font-size: 11px;">`;
+  for (const c of chain) {
+    const when = new Date(c.correctedAt).toLocaleString();
+    const prev = c.previousValue == null || c.previousValue === '' ? '— (empty)' : String(c.previousValue);
+    const next = c.newValue == null || c.newValue === '' ? '— (empty)' : String(c.newValue);
+    html += `<div style="padding: 6px 0; border-bottom: 1px solid var(--rule);">
+      <div style="color: var(--ink-faint); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 3px;">${escapeHtml(when)} · ${escapeHtml(c.authoredBy)} · ${escapeHtml(fieldLabel(c.field))}</div>
+      <div style="color: var(--ink-soft); text-decoration: line-through; word-break: break-word;">${escapeHtml(prev)}</div>
+      <div style="color: var(--ink); word-break: break-word;">${escapeHtml(next)}</div>
+      ${c.rationale ? `<div style="margin-top: 3px; color: var(--ink-soft); font-style: italic;">${escapeHtml(c.rationale)}</div>` : ''}
+    </div>`;
+  }
+  html += `</div>`;
+  histEl.innerHTML = html;
+}
+
+function hideCorrectionModal() {
+  CORRECTION_STATE.eventId = null;
+  document.getElementById('correction-overlay')?.classList.remove('active');
+}
+
+function submitCorrection() {
+  const eventId = CORRECTION_STATE.eventId;
+  if (!eventId) return;
+  const fieldSel = document.getElementById('correction-field');
+  const newVal = document.getElementById('correction-new');
+  const rat = document.getElementById('correction-rationale');
+  if (!fieldSel || !newVal) return;
+  const newValueText = (newVal.value || '').trim();
+  if (newValueText === '') return;
+
+  addCorrection({
+    targetKind: 'event',
+    targetId: eventId,
+    field: fieldSel.value,
+    newValue: newValueText,
+    rationale: rat?.value || '',
+  });
+
+  hideCorrectionModal();
+  // Full re-render is the safe path: the row is in a virtualized cap
+  // and the search filter may now match (or stop matching) the row.
+  if (STATE.activeView === 'log') renderLogView();
+  else notifyDataChanged();
+}
+
 function renderDefRow(def, predicate, highlight, isSuperposed, totalInSlot) {
   const valStr = def.valueIsEntity ? (STATE.entities.get(def.value)?.canonical || def.value) : def.value;
   // Clickable groundings — clicking opens the source-span modal
@@ -11911,15 +12191,23 @@ function logEventPasses(ev, offsets) {
   if (LOG_FILTER.sourceId && ev.sourceId !== LOG_FILTER.sourceId) return false;
   if (LOG_FILTER.search) {
     const q = LOG_FILTER.search.toLowerCase();
-    const fmt = eoFormatEvent(ev, offsets).toLowerCase();
+    // Search the corrected projection so a fix made by the reader is
+    // findable by the new value. The original is preserved in the
+    // audit chain (and remains searchable via the audit modal).
+    const fmt = eoFormatEvent(correctedEvent(ev), offsets).toLowerCase();
     if (!fmt.includes(q)) return false;
   }
   return true;
 }
 
 function logRowHtml(ev, offsets, opColor) {
+  // Render through any corrections so the cursor at this span sees the
+  // current value. Span/cell/source are properties of the original
+  // event (positional / classification metadata) — not user-correctable
+  // — so we read those off the raw ev.
+  const display = correctedEvent(ev);
   const c = opColor(ev.op);
-  const comp = eoComponents(ev);
+  const comp = eoComponents(display);
   const span = eventSpanPosition(ev, offsets);
   const spanLabel = span >= 0 ? String(span) : '—';
   const cell = ev.llmCell || (ev.empiricalCells?.[0]?.cell) || '';
@@ -11931,7 +12219,15 @@ function logRowHtml(ev, offsets, opColor) {
   const predicate = comp.predicate ? escapeHtml(comp.predicate) : empty;
   const value = comp.value ? escapeHtml(comp.value) : empty;
   const flashCls = LOG_RENDER.flashIds.has(ev.id) ? ' flash' : '';
-  return `<tr class="log-row${flashCls}" data-event-id="${escapeHtml(ev.id)}">
+  const corrCount = display.__corrected || 0;
+  const rowCls = corrCount ? ' corrected' : '';
+  // Edit affordance: ✎N badge when corrected (audit count visible);
+  // bare ✎ on hover otherwise. Both routes open the same modal — the
+  // modal renders audit chain at top and a new-correction form below.
+  const editBtn = corrCount
+    ? `<button class="log-edit-btn corrected" data-edit-event-id="${escapeHtml(ev.id)}" title="${corrCount} correction${corrCount === 1 ? '' : 's'} — click to view audit history or add another">✎${corrCount}</button>`
+    : `<button class="log-edit-btn" data-edit-event-id="${escapeHtml(ev.id)}" title="Correct this entry">✎</button>`;
+  return `<tr class="log-row${flashCls}${rowCls}" data-event-id="${escapeHtml(ev.id)}">
     <td class="col-span">${spanLabel}</td>
     <td class="col-op" style="color:${c};">${escapeHtml(ev.op)}</td>
     <td class="col-subject">${subject}</td>
@@ -11940,6 +12236,7 @@ function logRowHtml(ev, offsets, opColor) {
     <td class="col-cell">${cell ? escapeHtml(cell) : ''}</td>
     <td class="col-author">${author ? '[' + escapeHtml(author) + ']' : ''}</td>
     <td class="col-source">${escapeHtml(srcLabel)}</td>
+    <td class="col-edit">${editBtn}</td>
   </tr>`;
 }
 
@@ -11947,15 +12244,25 @@ function wireLogTable(el) {
   el.querySelectorAll('.log-row[data-event-id]').forEach(line => {
     if (line._wired) return;
     line._wired = true;
-    line.addEventListener('click', () => {
+    line.addEventListener('click', (e) => {
+      // The edit button lives inside the row but routes to the
+      // correction modal instead of the source-span modal.
+      const editBtn = e.target.closest('.log-edit-btn[data-edit-event-id]');
+      if (editBtn) {
+        e.stopPropagation();
+        showCorrectionModal(editBtn.getAttribute('data-edit-event-id'));
+        return;
+      }
       const eid = line.getAttribute('data-event-id');
-      const ev = STATE.G.find(e => e.id === eid);
+      const ev = STATE.G.find(ev => ev.id === eid);
       if (!ev || !ev.sourceId || ev.narrativePos == null) return;
+      // Display the corrected span text (matches what's shown in the row).
+      const display = correctedEvent(ev);
       showSourceSpanModal({
         sourceEventId: ev.id,
         sourceId: ev.sourceId,
         sentenceIdx: ev.narrativePos.sentenceIdx,
-        spanText: ev.spanText || '',
+        spanText: display.spanText || '',
         authoredBy: ev.authoredBy,
       });
     });
@@ -12027,6 +12334,7 @@ function renderLogView() {
         <th class="col-cell">cell</th>
         <th class="col-author">author</th>
         <th class="col-source">source</th>
+        <th class="col-edit"></th>
       </tr></thead>
       <tbody id="log-tbody">`;
   for (const ev of showing) html += logRowHtml(ev, offsets, opColor);
@@ -12593,11 +12901,25 @@ document.querySelectorAll('.feedback-btn[data-verdict]').forEach(btn => {
 // submit button, not silent acceptance)
 document.getElementById('feedback-submit-btn').addEventListener('click', submitReaderFeedback);
 
+// ── Correction modal wiring ──────────────────────────────────────
+document.getElementById('correction-close')?.addEventListener('click', hideCorrectionModal);
+document.getElementById('correction-cancel-btn')?.addEventListener('click', hideCorrectionModal);
+document.getElementById('correction-overlay')?.addEventListener('click', (e) => {
+  if (e.target.id === 'correction-overlay') hideCorrectionModal();
+});
+document.getElementById('correction-field')?.addEventListener('change', refreshCorrectionCurrentValue);
+document.getElementById('correction-new')?.addEventListener('input', (e) => {
+  const submit = document.getElementById('correction-submit-btn');
+  if (submit) submit.disabled = (e.target.value || '').trim() === '';
+});
+document.getElementById('correction-submit-btn')?.addEventListener('click', submitCorrection);
+
 // ESC closes any open modal
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     hideSourceSpanModal();
     hideFeedbackModal();
+    hideCorrectionModal();
     document.getElementById('settings-overlay').classList.remove('active');
   }
 });
