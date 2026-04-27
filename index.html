@@ -4815,6 +4815,13 @@ async function callAnthropic(systemPrompt, userMsg, maxTokens = 800, opts = null
     ? [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }]
     : systemPrompt;
 
+  // claude-haiku-4-5 rejects requests that specify both temperature
+  // and top_p. When a caller (e.g. the Dreamer) sets both, prefer
+  // temperature and drop top_p.
+  const sampling = {};
+  if (opts?.temperature != null) sampling.temperature = opts.temperature;
+  else if (opts?.top_p != null) sampling.top_p = opts.top_p;
+
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -4829,8 +4836,7 @@ async function callAnthropic(systemPrompt, userMsg, maxTokens = 800, opts = null
       system: systemBlock,
       messages: [{ role: 'user', content: userMsg }],
       stop_sequences: opts?.stop !== undefined ? (opts.stop || []) : COMMENTARY_STOP_SEQUENCES,
-      ...(opts?.temperature != null ? { temperature: opts.temperature } : {}),
-      ...(opts?.top_p != null ? { top_p: opts.top_p } : {}),
+      ...sampling,
     }),
   });
   if (!res.ok) {
@@ -11043,7 +11049,11 @@ function renderGraphView() {
     return;
   }
   empty.style.display = 'none';
-  container.style.display = '';
+  // Must be 'flex' (not '') — the inline style declares display: none
+  // alongside flex-direction: column, so clearing display falls back to
+  // the div default 'block', which collapses the canvas to its
+  // intrinsic 150px height (the squished-graph bug).
+  container.style.display = 'flex';
 
   const cellCounts = {};
   for (const l of data.links) cellCounts[l.cell || 'unclassified'] = (cellCounts[l.cell || 'unclassified'] || 0) + 1;
