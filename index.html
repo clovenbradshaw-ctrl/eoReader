@@ -774,41 +774,11 @@ sup.citation:hover {
   color: var(--accent);
 }
 
-/* ── TYPED-EDIT LAYER (visible smoothing markup) ────────────────── */
-/* Bracketed inserts use the journalism convention: editor-added words
-   appear in light brackets so the reader sees, at a glance, that the
-   word came from the editor and not the source. Hovering reveals the
-   edit kind. */
-.edit-insert {
-  color: var(--ink-soft);
-  background: var(--paper-soft);
-  border-bottom: 1px dotted var(--ink-ghost);
-  cursor: help;
-}
-.edit-insert::before, .edit-insert::after { /* the brackets are already in the text */ }
-.edit-substitute {
-  font-style: italic;
-  background: var(--paper-soft);
-  border-bottom: 1px dotted var(--cursor);
-  cursor: help;
-  position: relative;
-}
-.edit-substitute::after {
-  content: '↻';
-  font-size: 9px;
-  color: var(--cursor);
-  vertical-align: super;
-  margin-left: 1px;
-}
-.answer-mode-diff .edit-insert,
-.answer-mode-diff .edit-substitute { background: var(--paper); border-bottom-style: solid; }
-.answer-mode-diff .edit-substitute::before {
-  content: attr(data-original) ' → ';
-  color: var(--ink-faint);
-  font-style: normal;
-  text-decoration: line-through;
-  margin-right: 2px;
-}
+/* ── GRAMMAR POLISH LAYER ───────────────────────────────────────── */
+/* The polish layer rewrites the templated answer for fluent English.
+   The polished version renders identically to the raw version (same
+   serif body), but the per-turn .polish-toggle and the global pills
+   let the reader see the mechanical original. */
 .answer-raw-companion {
   margin-top: 8px;
   padding: 8px 12px;
@@ -846,6 +816,30 @@ sup.citation:hover {
   vertical-align: middle;
 }
 .edits-badge.pending { color: var(--cursor); border-color: var(--cursor); font-style: italic; }
+
+/* Per-turn raw/polished toggle. Sits inline at the end of the answer
+   so the user can flip between the mechanical templated text and the
+   LLM-polished grammar version without leaving the answer card. */
+.polish-toggle {
+  display: inline-block;
+  margin-left: 6px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  padding: 2px 7px;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: all 0.12s;
+}
+button.polish-toggle:hover { color: var(--ink); border-color: var(--ink-soft); background: var(--paper-soft); }
+.polish-toggle.pending { color: var(--cursor); border-color: var(--cursor); font-style: italic; cursor: default; text-transform: none; }
+.polish-toggle.errored { color: var(--gap); border-color: var(--gap); }
+
+p.templated.polished { /* reserved hook — polished text styled identically to raw for now */ }
 
 /* ── COMPILED-PLAN BADGES & CONFIDENCE ──────────────────────────── */
 .compiled-badge { color: var(--ink-soft); }
@@ -2071,10 +2065,10 @@ code {
           <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: 0.06em;">cursor:</span>
           <button class="cursor-pill active" data-cursor="now">now</button>
           <button class="cursor-pill" data-cursor="custom">custom...</button>
-          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: 0.06em; margin-left:auto;">edits:</span>
-          <button class="edit-mode-pill active" data-edit-mode="edited" title="LLM stylistic smoothing on, brackets visible">edited</button>
-          <button class="edit-mode-pill" data-edit-mode="raw" title="Mechanical answer only — no LLM edits applied">raw</button>
-          <button class="edit-mode-pill" data-edit-mode="diff" title="Show every edit annotated">diff</button>
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: 0.06em; margin-left:auto;">grammar:</span>
+          <button class="edit-mode-pill active" data-edit-mode="polished" title="LLM polishes the templated answer for fluent English. Default.">polished</button>
+          <button class="edit-mode-pill" data-edit-mode="raw" title="Mechanical templated answer only — no LLM polish">raw</button>
+          <button class="edit-mode-pill" data-edit-mode="diff" title="Show polished version with raw companion below">diff</button>
           <button id="chat-clear" style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);background:none;border:1px solid var(--rule);padding:4px 8px;cursor:pointer;">clear</button>
         </div>
         <div class="example-queries" id="example-queries"></div>
@@ -2837,12 +2831,12 @@ const STATE = {
   // Reading cursor — which sentence ingest is currently working on
   currentlyProcessing: null,  // {sourceId, sentenceIdx, escalationDepth}
 
-  // Typed-edit layer toggles. editsEnabled gates whether the editor
-  // LLM call runs at all; editsRenderMode picks which view of the
-  // result the user sees ('raw' | 'edited' | 'diff'). Defaults: ON,
-  // edited-with-brackets (the journalism convention).
+  // Grammar-polish layer toggles. editsEnabled gates whether the
+  // polish LLM call runs at all; editsRenderMode picks the global
+  // default view ('raw' | 'polished' | 'diff'). Each turn can also
+  // override via t.viewMode, set by the inline per-turn toggle.
   editsEnabled: true,
-  editsRenderMode: 'edited',
+  editsRenderMode: 'polished',
 
   // ─── DREAMER ──────────────────────────────────────────────────────
   // Modal sessions: each completed dream lives here as a namespaced
@@ -9213,25 +9207,40 @@ function renderLibrarianTranscript() {
       const cands = (t.compiled?.subject_candidates || []).map(c => escapeHtml(c)).join(' or ');
       answerHtml = `<div class="turn-answer loading">${escapeHtml(t.compiled?.clarifying_question || 'Which one did you mean?')} — ${cands || 'see chooser at right'}</div>`;
     } else if (t.answer) {
-      const mode = STATE.editsRenderMode || 'edited';
+      // Per-turn override (set by the inline toggle) wins over the
+      // global default. 'polished' / 'raw' / 'diff' are the three views.
+      const globalMode = STATE.editsRenderMode || 'polished';
+      const mode = t.viewMode || globalMode;
       const haveEdits = !!(t.editedAnswer && t.edits && t.edits.length);
       let bodyHTML;
       if (haveEdits && mode === 'diff') {
-        // Diff mode shows the edited version with edits annotated for
-        // hover-explain — the visual signal is preserved (brackets
-        // around inserts, italic/highlight on substitutions).
         bodyHTML = `<div class="answer-mode-diff">${t.editedAnswer}</div>`;
         bodyHTML += `<div class="answer-raw-companion"><span class="muted">raw:</span> ${t.answer}</div>`;
-      } else if (haveEdits && mode === 'edited') {
+      } else if (haveEdits && mode === 'polished') {
         bodyHTML = t.editedAnswer;
       } else {
         // mode === 'raw', or no edits available yet
         bodyHTML = t.answer;
       }
-      const editsBadge = haveEdits
-        ? `<span class="edits-badge" data-turn-id="${escapeHtml(t.turnId)}">${t.edits.length} edit${t.edits.length === 1 ? '' : 's'}${mode === 'edited' ? '' : ' · ' + mode}</span>`
-        : (t.editsRequested && !t.editsError ? `<span class="edits-badge pending">editor working…</span>` : '');
-      answerHtml = `<div class="turn-answer">${bodyHTML}${editsBadge ? ' ' + editsBadge : ''}</div>`;
+
+      // Inline per-turn toggle. Only meaningful when a polish is
+      // available (or pending / errored).
+      let toggle = '';
+      if (haveEdits) {
+        const showingPolished = mode === 'polished' || mode === 'diff';
+        const otherMode = showingPolished ? 'raw' : 'polished';
+        const label = showingPolished ? 'show raw' : 'show polished';
+        toggle = `<button class="polish-toggle" data-turn-id="${escapeHtml(t.turnId)}" data-set-mode="${otherMode}" title="Toggle between the mechanical templated answer and the LLM-polished grammar version">${label}</button>`;
+      } else if (t.editsRequested && !t.editsError) {
+        toggle = `<span class="polish-toggle pending">polishing grammar…</span>`;
+      } else if (t.editsError) {
+        toggle = `<button class="polish-toggle errored" data-turn-id="${escapeHtml(t.turnId)}" data-set-mode="retry-polish" title="${escapeHtml(t.editsError)}">retry polish</button>`;
+      }
+
+      const modeBadge = haveEdits && mode !== 'polished'
+        ? `<span class="edits-badge" data-turn-id="${escapeHtml(t.turnId)}">view: ${mode}</span>`
+        : '';
+      answerHtml = `<div class="turn-answer">${bodyHTML}${toggle ? ' ' + toggle : ''}${modeBadge ? ' ' + modeBadge : ''}</div>`;
     } else {
       answerHtml = `<div class="turn-answer loading">no findings — see right pane for spans matching this query</div>`;
     }
@@ -9277,9 +9286,31 @@ function renderLibrarianTranscript() {
   // Wire turn focus
   transcript.querySelectorAll('.chat-turn').forEach(el => {
     el.addEventListener('click', (e) => {
-      // Don't intercept clicks on entity links or citation markers
-      if (e.target.closest('.entity-link') || e.target.closest('.citation')) return;
+      // Don't intercept clicks on entity links, citation markers, or the
+      // per-turn polish toggle (handled separately below).
+      if (e.target.closest('.entity-link') || e.target.closest('.citation') || e.target.closest('.polish-toggle')) return;
       focusLibrarianTurn(el.getAttribute('data-turn-id'));
+    });
+  });
+
+  // Wire per-turn raw/polished toggle. Sets t.viewMode and re-renders.
+  transcript.querySelectorAll('button.polish-toggle').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const turnId = el.getAttribute('data-turn-id');
+      const setMode = el.getAttribute('data-set-mode');
+      if (!turnId) return;
+      if (setMode === 'retry-polish') {
+        // Clear the error/requested flags and re-fire the polish.
+        updateLibrarianTurn(turnId, x => {
+          x.editsRequested = false;
+          x.editsError = null;
+        });
+        fireEditorForTurn(turnId).catch(err => console.warn('[polish retry]', err));
+        return;
+      }
+      updateLibrarianTurn(turnId, x => { x.viewMode = setMode; });
     });
   });
 
@@ -9538,81 +9569,21 @@ function renderConstructionTrace(turn) {
   </div>`;
 }
 
-// Generate the optional explanatory summary. Reuses the LLM but feeds it
-// only the templated answer (which already contains nothing the model
-// shouldn't see) and asks for a polished restatement. The result is
-// stored on the turn and rendered below the citation-bearing answer
-// with a warning header — never replacing it.
-// ─── TYPED-EDIT LAYER (STYLISTIC EDITOR) ────────────────────────────
-// The mechanical templated answer is the canonical truth. The editor
-// proposes a small set of typed stylistic edits (insertions of
-// determiners / honorifics / pronouns, substitutions of pronouns or
-// near-synonymous predicates) over that text. Each edit is bounded to
-// a closed vocabulary; the validator rejects anything outside it.
-// Three render modes — raw (unsmoothed), edited (default, brackets-on-
-// inserts), diff (every change visible) — let the reader pick a register.
+// ─── GRAMMAR POLISH LAYER ───────────────────────────────────────────
+// The mechanical templated answer is the canonical truth, but the
+// templating produces broken English: uncongugated verbs ("Mr. Bennet
+// possess quick parts"), awkward genitives ("Mr. Bennet's become is
+// softened"), broken connectives ("Mr. Bennet is speak to Mrs. Bennet").
+// The polish layer asks the LLM to rewrite the answer for fluent
+// English while preserving every fact, every citation marker, and
+// every named entity. The raw mechanical version is always available
+// behind a per-turn toggle.
 //
-// Forbidden by the schema, not by hope: adding nouns/verbs/adjectives
-// the original lacked, changing entity attribution, changing numbers /
-// dates / quoted values, or dropping citation markers. The validator
-// re-checks every claim by stripping the markers and comparing the
-// residual text to the original, character-for-character.
-
-const EDIT_VOCAB = {
-  determiner: ['a', 'an', 'the'],
-  preposition: ['at', 'in', 'of', 'on', 'by', 'with', 'from', 'to', 'for', 'into', 'about', 'after', 'before'],
-  honorific: ['Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Sir', 'Lord', 'Lady', 'Prof.', 'Rev.'],
-  pronoun: ['he', 'she', 'it', 'they', 'his', 'her', 'its', 'their', 'him', 'them', 'who', 'which', 'that'],
-  conjunction: ['and', 'but', 'or', 'yet', 'so'],
-  glue: ['also', 'however', 'then', 'later', 'instead', 'as', 'while', 'though', 'although'],
-};
-
-function isInsertAllowed(text) {
-  const w = String(text || '').trim();
-  if (!w) return false;
-  const wl = w.toLowerCase();
-  for (const cat of Object.keys(EDIT_VOCAB)) {
-    for (const v of EDIT_VOCAB[cat]) {
-      if (v.toLowerCase() === wl || v === w) return cat;
-    }
-  }
-  return false;
-}
-
-const LIBRARIAN_EDITOR_SYSTEM = `You smooth a templated sentence assembled from a typed graph. You make only the bounded stylistic edits below, marked inline. You DO NOT rewrite, paraphrase, add facts, or change the meaning.
-
-ALLOWED EDITS
-
-INSERT a single allowed word at a position. Mark in [square brackets] where you insert it.
-  Example input:  Elizabeth Bennet marries Darcy at Pemberley.
-  Edited:         Elizabeth Bennet marries [Mr.] Darcy at [the] Pemberley estate.
-  (No, "estate" is NOT allowed — it is a content word. Only insert from the closed vocabulary below.)
-
-SUBSTITUTE a repeated entity name with a pronoun, ONLY if the antecedent is unambiguous in the preceding sentence:
-  Example: Elizabeth Bennet marries Mr. Darcy. Elizabeth Bennet later moved to Pemberley.
-  Edited:  Elizabeth Bennet marries Mr. Darcy. {Elizabeth Bennet → She} later moved to Pemberley.
-
-SUBSTITUTE a predicate verb with a near-synonym from the same predicate cluster (graph-defined):
-  {marries → wed} {is described as → described as}
-
-CLOSED VOCABULARY for INSERTs:
-  determiners: a, an, the
-  prepositions: at, in, of, on, by, with, from, to, for, into, about, after, before
-  honorifics: Mr., Mrs., Ms., Dr., Sir, Lord, Lady, Prof., Rev.
-  pronouns: he, she, it, they, his, her, its, their, him, them, who, which, that
-  conjunctions: and, but, or, yet, so
-  glue: also, however, then, later, instead, as, while, though, although
-
-FORBIDDEN
-- Adding any noun, verb, adjective, or adverb not in the vocabulary above.
-- Changing what entity does what.
-- Changing numbers, dates, or quoted values.
-- Removing or moving citation markers like [1], [2]. They MUST appear in the same positions.
-- Reordering words from the original outside the edit syntax.
-- Adding commentary, headers, or any text outside the edited sentence itself.
-
-OUTPUT
-Just the edited sentence, with [insertions] and {substitutions} marked in place. No preamble, no quotes, no explanation. If no edits would help, output the original sentence unchanged.`;
+// Validation: every [N] citation marker in the original must appear
+// in the polished output (same multiset), every entity canonical name
+// must appear at least once, and every number/date in the original
+// must appear in the polished output. If any of these fail, the
+// polish is discarded and the raw answer continues to render.
 
 // Strip the templated answer's HTML to a plain-text form the editor can
 // reason about. Entity-link inner text is preserved as plain words;
@@ -9646,217 +9617,178 @@ function answerToEditableText(html) {
   return { plain: plain.replace(/\s+/g, ' ').trim(), tokens };
 }
 
-// Validate an LLM-emitted edited string against the original plain
-// answer. Parses [insertions] and {original → replacement} markers,
-// verifies the residual text matches the original (citation markers
-// preserved at the same positions). Returns either { ok: true,
-// editedPlain, ops } or { ok: false, error }.
-function validateEditedText(originalPlain, edited, context = {}) {
-  if (!edited) return { ok: false, error: 'empty edit' };
-  let s = String(edited).trim();
-  // Strip surrounding quotes/preamble the model may have added
-  s = s.replace(/^["'`]|["'`]$/g, '');
+const LIBRARIAN_POLISH_SYSTEM = `You polish a templated answer assembled from a typed knowledge graph. The mechanical templating produces broken English — unconjugated verbs ("Mr. Bennet possess"), awkward genitive constructions ("Mr. Bennet's become is softened"), missing articles, broken verb phrases ("is speak to"). Rewrite the answer for fluent English while preserving every fact, every entity reference, and every citation marker.
 
-  const ops = [];
-  // To check the edit is bounded, we reconstruct what the *original* text
-  // must have looked like before the edits. Inserts are removed; substitutions
-  // are reverted to the original. The result should equal the input original.
-  // Pass 1: extract substitutions {orig -> repl} — revert to original
-  let work = s.replace(/\{([^{}|→\-]+?)\s*(?:→|->|→)\s*([^{}|→\-]+?)\}/g, (m, orig, repl) => {
-    const op = { kind: 'substitute', original: orig.trim(), replacement: repl.trim() };
-    ops.push(op);
-    return op.original;  // revert: restore what was there before substitution
-  });
-  // Pass 2: extract insertions [word]. NOTE: citation markers like [1]
-  // are also bracketed but contain ONLY digits; we leave those alone.
-  // Honorifics like "Mr." contain a period — match accordingly.
-  // Inserts get REMOVED to recover the pre-edit text.
-  work = work.replace(/\s*\[([A-Za-z][A-Za-z'.]*)\]\s*/g, (m, word) => {
-    ops.push({ kind: 'insert', text: word });
-    return ' ';  // remove the inserted word, leaving a single space
-  });
+CONSTRAINTS
 
-  // Now `work` should equal `originalPlain` modulo whitespace
-  const norm = x => String(x || '').replace(/\s+/g, ' ').trim();
-  const wo = norm(work);
-  const oo = norm(originalPlain);
+Citation markers: every [N] in the input (e.g. [1], [2], [3]) MUST appear in your output, with the same numbers and the same count. Do not add new citation numbers. Do not drop any. Each marker should sit immediately after the claim it supports.
 
-  if (wo !== oo) {
-    // Edits altered the underlying text — disallowed.
-    return { ok: false, error: `edited text deviates from original (after stripping markers).\n  expected: "${oo}"\n  got:      "${wo}"` };
+Entity names: every named entity (e.g. "Mr. Bennet", "Mrs. Bennet", "Elizabeth", "Pride and Prejudice") must remain spelled exactly as in the input. The canonical form must appear at least once. After it has been mentioned, you MAY use a pronoun (he / she / it / they / his / her) for repeat references when unambiguous.
+
+Numbers, dates, quoted values: must remain unchanged.
+
+Do NOT invent facts not in the input. Do NOT drop facts. Do NOT change which entity does what.
+
+You MAY:
+- Conjugate verbs ("possess" → "possesses", "is speak to" → "speaks to").
+- Fix subject-verb agreement and tense.
+- Insert articles (a / an / the) where natural.
+- Smooth awkward "X's predicate is Y" or "X is described as Y for predicate" constructions into fluent English, keeping the same predicate words and value.
+- Reorder words and split or merge sentences for clarity.
+- Add light connective glue (and, but, however, also, while, though).
+- Replace repeat entity mentions with pronouns when the antecedent is clear.
+
+OUTPUT
+Just the polished prose. No preamble, no quotes, no headers, no explanation. One paragraph.`;
+
+// Pull all citation marker numbers out of a plain string as a sorted
+// multiset (so order doesn't matter, but counts do).
+function extractCitationMultiset(s) {
+  return [...String(s || '').matchAll(/\[(\d+)\]/g)].map(m => m[1]).sort();
+}
+
+// Pull standalone numeric tokens from text, skipping anything inside
+// citation brackets. Used to verify the polish hasn't dropped or
+// changed numbers/dates.
+function extractNumericTokens(s) {
+  const stripped = String(s || '').replace(/\[\d+\]/g, ' ');
+  return [...stripped.matchAll(/\b\d+(?:[.,\-/]\d+)*\b/g)].map(m => m[0]).sort();
+}
+
+// Validate that the LLM's polish preserves citations, entities, and
+// numbers. Returns { ok: true } on success or { ok: false, error } on
+// failure.
+function validatePolishedText(originalPlain, polished, tokens) {
+  if (!polished || !polished.trim()) return { ok: false, error: 'empty polish output' };
+
+  const oCites = extractCitationMultiset(originalPlain);
+  const pCites = extractCitationMultiset(polished);
+  if (oCites.length !== pCites.length || oCites.some((v, i) => v !== pCites[i])) {
+    return { ok: false, error: `citation markers differ. orig=[${oCites.join(',')}] polished=[${pCites.join(',')}]` };
   }
 
-  // Validate each op against the closed vocabulary
-  for (const op of ops) {
-    if (op.kind === 'insert') {
-      if (!isInsertAllowed(op.text)) {
-        return { ok: false, error: `insert "${op.text}" not in allowed vocabulary` };
-      }
-    } else if (op.kind === 'substitute') {
-      // Pronoun substitutions: replacement must be a pronoun, AND the
-      // antecedent (original) must be unambiguous in the preceding context.
-      const replIsPronoun = EDIT_VOCAB.pronoun.some(p => p.toLowerCase() === op.replacement.toLowerCase());
-      if (replIsPronoun) {
-        // Coreference check: does the original entity appear earlier in
-        // the originalPlain than this position, AND no other entity of
-        // compatible type appears between?
-        const checkCtx = (context.compiled || {});
-        if (!isPronounSubstitutionUnambiguous(originalPlain, op.original, op.replacement, checkCtx)) {
-          return { ok: false, error: `pronoun substitution {${op.original} → ${op.replacement}} is ambiguous in context` };
-        }
-        continue;
-      }
-      // Predicate substitutions: replacement must be a member of the
-      // same predicate cluster as the original. We accept conservatively
-      // by checking the readablePredicate forms match or the replacement
-      // is in PREDICATE_CLUSTER_CACHE alongside the original.
-      const norm1 = readablePredicate(op.original);
-      const norm2 = readablePredicate(op.replacement);
-      if (norm1.toLowerCase() === norm2.toLowerCase()) continue;  // identical concept
-      const sameCluster = PREDICATE_CLUSTER_CACHE.classes.some(c => {
-        const memsLower = c.members.map(m => m.toLowerCase());
-        return memsLower.includes(op.original.toLowerCase()) && memsLower.includes(op.replacement.toLowerCase());
-      });
-      if (sameCluster) continue;
-      return { ok: false, error: `substitution {${op.original} → ${op.replacement}} not pronoun and not in same predicate cluster` };
-    } else {
-      return { ok: false, error: `unknown op kind "${op.kind}"` };
+  const entityNames = new Set();
+  for (const tok of tokens) {
+    if (tok.kind === 'entity') entityNames.add(tok.plain);
+  }
+  for (const name of entityNames) {
+    if (!polished.includes(name)) {
+      return { ok: false, error: `entity "${name}" missing from polished text` };
     }
   }
 
-  return { ok: true, editedPlain: s, ops };
-}
-
-// Coreference check for pronoun substitutions. A pronoun replacement is
-// allowed only when there is exactly one entity in the preceding text
-// that the pronoun could refer to. For the conservative v1 we just
-// check that the replaced entity name appears earlier in the answer
-// and no other entity name appears between the previous mention and
-// the substitution position. Future: gender/number compatibility.
-function isPronounSubstitutionUnambiguous(originalPlain, entityName, pronoun, ctx) {
-  // Find the position of the substitution target
-  const targetIdx = originalPlain.indexOf(entityName, originalPlain.indexOf(entityName) + 1);
-  if (targetIdx < 0) return false;  // there must be at least 2 mentions
-  const before = originalPlain.slice(0, targetIdx);
-  const firstMentionIdx = before.lastIndexOf(entityName);
-  if (firstMentionIdx < 0) return false;
-  const between = before.slice(firstMentionIdx + entityName.length);
-  // Look for OTHER entity canonicals appearing in `between`. If any
-  // entity besides `entityName` appears, the pronoun is ambiguous.
-  for (const [, info] of STATE.entities) {
-    if (info.canonical === entityName) continue;
-    if (between.indexOf(info.canonical) >= 0) return false;
-    for (const alias of info.aliases) {
-      if (alias.length < 2 || alias === info.canonical) continue;
-      const re = new RegExp('\\b' + escapeRegex(alias) + '\\b');
-      if (re.test(between)) return false;
-    }
+  const oNums = extractNumericTokens(originalPlain);
+  const pNums = extractNumericTokens(polished);
+  // Every original number must appear in the polished output; the polish
+  // may not introduce new ones. (Equal multisets after sorting.)
+  if (oNums.length !== pNums.length || oNums.some((v, i) => v !== pNums[i])) {
+    return { ok: false, error: `numeric tokens differ. orig=[${oNums.join(',')}] polished=[${pNums.join(',')}]` };
   }
-  return true;
+
+  return { ok: true };
 }
 
-// Re-inject the entity-link and citation HTML chunks into the edited
-// plain text, preserving the original markup at every preserved
-// position. Inserts ([word]) become <span class="edit-insert">[word]</span>;
-// substitutions ({a → b}) become <span class="edit-substitute"
-// data-original="a">b</span>. Citation markers in the edited string
-// (which look like [1], [2], …) are restored from the captured tokens.
-function applyEditsToTemplatedHTML(originalHTML, editedPlain, ops) {
-  // We rebuild the HTML by walking the edited string and re-injecting
-  // the original entity-link <a> tags and <sup> citation markers
-  // wherever they would have appeared. Because the edit contract
-  // guarantees the residual text equals the original (modulo markers),
-  // we can match canonical entity names and citation [N]s back into
-  // the edited stream.
+// Re-inject entity links and citation markers into the polished plain
+// text. Walks left to right; at each step pick the earliest occurrence
+// of any entity canonical name OR citation [N] and swap in the
+// original HTML tag. Every occurrence of an entity name becomes a
+// link (so subsequent mentions remain clickable). Plain text outside
+// these tokens is HTML-escaped.
+function applyPolishToTemplatedHTML(originalHTML, polishedPlain) {
   const { tokens } = answerToEditableText(originalHTML);
 
-  // First, replace marker syntax in `editedPlain` with HTML span tags.
-  let html = String(editedPlain);
-  // Substitutions first (so we don't mistake their { } for inserts)
-  html = html.replace(/\{([^{}|→\-]+?)\s*(?:→|->|→)\s*([^{}|→\-]+?)\}/g, (m, orig, repl) => {
-    const o = orig.trim();
-    const r = repl.trim();
-    return `<span class="edit-substitute" data-original="${escapeHtml(o)}" data-justification="pronoun/synonym substitute">${escapeHtml(r)}</span>`;
-  });
-  // Inserts (skip pure-digit brackets — those are citations)
-  html = html.replace(/\[([A-Za-z][A-Za-z'.]*)\]/g, (m, word) => {
-    return `<span class="edit-insert" data-justification="${escapeHtml(isInsertAllowed(word) || 'insert')}">[${escapeHtml(word)}]</span>`;
-  });
-
-  // Now walk the html and re-inject entity links and citation sups.
-  // Strategy: for each entity token in `tokens`, find the next plain-text
-  // occurrence of its canonical text in `html` (skipping content already
-  // inside spans / tags) and replace with the original <a> markup.
+  const entityHTMLByName = new Map();    // canonical → original <a> markup
+  const citationHTMLByN = new Map();     // N → original <sup> markup
   for (const tok of tokens) {
-    if (tok.kind === 'entity') {
-      const idx = findOutsideTag(html, tok.plain);
-      if (idx >= 0) {
-        html = html.slice(0, idx) + tok.html + html.slice(idx + tok.plain.length);
-      }
-    } else if (tok.kind === 'citation') {
-      const marker = `[${tok.n}]`;
-      const idx = findOutsideTag(html, marker);
-      if (idx >= 0) {
-        html = html.slice(0, idx) + tok.html + html.slice(idx + marker.length);
-      }
+    if (tok.kind === 'entity' && !entityHTMLByName.has(tok.plain)) {
+      entityHTMLByName.set(tok.plain, tok.html);
+    }
+    if (tok.kind === 'citation' && !citationHTMLByN.has(tok.n)) {
+      citationHTMLByN.set(tok.n, tok.html);
     }
   }
-  return `<p class="templated">${html}</p>`;
-}
 
-// Find the first occurrence of `needle` in `haystack` that is NOT
-// inside an HTML tag, NOT inside an existing entity-link's text content,
-// and NOT inside a citation marker. We track depth across <a>..</a> and
-// <sup>..</sup> as opaque blocks. Returns -1 if none.
-function findOutsideTag(haystack, needle) {
-  let i = 0;
-  let inTag = false;
-  let opaqueDepth = 0;  // inside <a> or <sup> we treat as opaque
-  while (i <= haystack.length - needle.length) {
-    const c = haystack[i];
-    if (c === '<') {
-      // Detect opening/closing of opaque blocks
-      const close = haystack.startsWith('</a', i) || haystack.startsWith('</sup', i);
-      const open = !close && (haystack.startsWith('<a ', i) || haystack.startsWith('<a>', i) || haystack.startsWith('<sup ', i) || haystack.startsWith('<sup>', i));
-      if (close) opaqueDepth = Math.max(0, opaqueDepth - 1);
-      if (open) opaqueDepth++;
-      inTag = true; i++; continue;
+  // Sort entity names by length descending so "Mr. Bennet" wins over
+  // "Bennet" when both could match — longer canonical first.
+  const entityNamesByLen = [...entityHTMLByName.keys()].sort((a, b) => b.length - a.length);
+
+  let html = '';
+  let rest = String(polishedPlain);
+
+  while (rest.length) {
+    let bestIdx = -1;
+    let bestKind = null;
+    let bestKey = null;
+    let bestLen = 0;
+
+    const cm = rest.match(/\[(\d+)\]/);
+    if (cm) {
+      bestIdx = cm.index;
+      bestKind = 'citation';
+      bestKey = cm[1];
+      bestLen = cm[0].length;
     }
-    if (c === '>') { inTag = false; i++; continue; }
-    if (!inTag && opaqueDepth === 0 && haystack.slice(i, i + needle.length) === needle) return i;
-    i++;
+
+    for (const name of entityNamesByLen) {
+      const i = rest.indexOf(name);
+      if (i < 0) continue;
+      if (bestIdx < 0 || i < bestIdx) {
+        bestIdx = i;
+        bestKind = 'entity';
+        bestKey = name;
+        bestLen = name.length;
+      }
+    }
+
+    if (bestIdx < 0) {
+      html += escapeHtml(rest);
+      break;
+    }
+
+    html += escapeHtml(rest.slice(0, bestIdx));
+    if (bestKind === 'entity') {
+      html += entityHTMLByName.get(bestKey);
+    } else {
+      html += citationHTMLByN.get(parseInt(bestKey, 10)) || `<sup class="citation">[${bestKey}]</sup>`;
+    }
+    rest = rest.slice(bestIdx + bestLen);
   }
-  return -1;
+
+  return `<p class="templated polished">${html}</p>`;
 }
 
-// Request stylistic edits from the LLM, validate, and return either
-// { editedHTML, ops, raw } or { error }. Idempotent — caller decides
-// whether to re-run.
+// Ask the LLM to polish the templated answer for grammatical fluency,
+// validate the result, and re-inject entity links + citation markers.
+// Returns { editedHTML, ops, raw } on success or { error, raw? } on
+// failure.
 async function requestStylisticEdits(turn) {
   if (!isLLMReady() || !turn || !turn.answer) return null;
-  const { plain } = answerToEditableText(turn.answer);
+  const { plain, tokens } = answerToEditableText(turn.answer);
   if (!plain) return null;
-  const userMsg = `Original sentence:\n${plain}\n\nEdited sentence (with [inserts] and {substitutions} marked inline; otherwise unchanged):`;
+  const userMsg = `Templated answer (broken grammar from mechanical assembly):\n${plain}\n\nPolished version (fluent English; same facts, same [N] citations, same entity names):`;
   let raw;
   try {
-    raw = await callLLM(LIBRARIAN_EDITOR_SYSTEM, userMsg, 320, 'librarian-editor');
+    raw = await callLLM(LIBRARIAN_POLISH_SYSTEM, userMsg, 480, 'librarian-polish');
   } catch (e) { return { error: e.message }; }
-  if (!raw) return { error: 'empty editor response' };
-  // The model may wrap in quotes or add preamble; trim to first line of
-  // text after stripping common preambles.
+  if (!raw) return { error: 'empty polish response' };
+
   let candidate = String(raw).trim();
-  candidate = candidate.replace(/^Edited(?:\s+sentence)?\s*:\s*/i, '');
+  candidate = candidate.replace(/^Polished(?:\s+version)?\s*:\s*/i, '');
   candidate = candidate.replace(/^["'`]|["'`]$/g, '');
-  // Take only the first paragraph / line if model added trailing chatter
+  // If the model emitted a trailing explanation block separated by a
+  // blank line, take just the first paragraph.
   const nl = candidate.indexOf('\n\n');
   if (nl > 0) candidate = candidate.slice(0, nl);
+  candidate = candidate.trim();
 
-  const v = validateEditedText(plain, candidate, { compiled: turn.compiled });
+  const v = validatePolishedText(plain, candidate, tokens);
   if (!v.ok) return { error: v.error, raw: candidate };
-  if (!v.ops.length) return { ops: [], editedHTML: turn.answer, raw: candidate };  // model declined
 
-  const editedHTML = applyEditsToTemplatedHTML(turn.answer, candidate, v.ops);
-  return { ops: v.ops, editedHTML, raw: candidate };
+  // No change? Treat as a no-op (no badge, raw stays canonical).
+  if (candidate === plain) return { ops: [], editedHTML: turn.answer, raw: candidate };
+
+  const editedHTML = applyPolishToTemplatedHTML(turn.answer, candidate);
+  return { ops: [{ kind: 'polish' }], editedHTML, raw: candidate };
 }
 
 // Background editor: fired after a turn lands. Updates the turn in
@@ -13428,19 +13360,27 @@ document.querySelectorAll('.framing-pill').forEach(pill => {
   });
 });
 
-// Edit-mode pills (raw / edited / diff). Toggling disables the editor
-// LLM call when 'raw' is the only mode the user wants — but for v1 the
-// toggle only changes the render; the editor still fires in the
-// background when LLM is ready, so flipping back to 'edited' is instant.
+// Global grammar-polish pills (polished / raw / diff). Setting the
+// global mode also clears any per-turn overrides so the user's
+// intent is consistent across the transcript. 'raw' also disables
+// future polish LLM calls so the user truly opts out.
 document.querySelectorAll('.edit-mode-pill').forEach(pill => {
   pill.addEventListener('click', () => {
     document.querySelectorAll('.edit-mode-pill').forEach(p => p.classList.remove('active'));
     pill.classList.add('active');
     const mode = pill.getAttribute('data-edit-mode');
     STATE.editsRenderMode = mode;
-    // 'raw' mode: also disable future editor calls. The user has
-    // explicitly opted out of stylistic smoothing for this session.
     STATE.editsEnabled = (mode !== 'raw');
+    for (const t of LIBRARIAN_TURNS) t.viewMode = null;
+    // If polish was disabled and is now back on, fire it for any
+    // turns that don't have one yet.
+    if (mode !== 'raw') {
+      for (const t of LIBRARIAN_TURNS) {
+        if (t.answer && !t.editsRequested && !t.pending && !t.pending_disambiguation) {
+          fireEditorForTurn(t.turnId).catch(err => console.warn('[polish on enable]', err));
+        }
+      }
+    }
     if (typeof renderLibrarianTranscript === 'function') renderLibrarianTranscript();
   });
 });
