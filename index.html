@@ -13619,25 +13619,145 @@ function _dreamSplitSentences(prose) {
   return out;
 }
 
+// ─── Dream session lifecycle ────────────────────────────────────────
+// A "dream session" is the namespace inside which modal-mode ingestion
+// runs. Sessions never write to STATE.G directly; they accumulate SIG
+// candidates that the user can promote. Lifecycle functions below own
+// the only legitimate path to mutate STATE.modalSessions /
+// STATE.activeDreamSessionId / STATE.dreamRunner.
+
+function startDreamSession(opts) {
+  opts = opts || {};
+  const id = `dream:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
+  const session = {
+    id,
+    startedAt: Date.now(),
+    endedAt: null,
+    stoppingReason: null,
+    modelId: opts.modelId || STATE.llmBackend,
+    stepCount: 0,
+    journal: [],
+    grounded: [],
+    ungrounded: [],
+    currentInjection: null,
+  };
+  STATE.modalSessions.set(id, session);
+  STATE.activeDreamSessionId = id;
+  return id;
+}
+
+function endDreamSession(sessionId, reason) {
+  const session = STATE.modalSessions.get(sessionId);
+  if (!session) return;
+  if (!session.endedAt) {
+    session.endedAt = Date.now();
+    session.stoppingReason = reason || 'unspecified';
+  }
+  if (STATE.activeDreamSessionId === sessionId) {
+    STATE.activeDreamSessionId = null;
+  }
+  if (STATE.dreamRunner && STATE.dreamRunner.sessionId === sessionId) {
+    STATE.dreamRunner = null;
+  }
+}
+
+// Cancellable sleep for the cycle loop. resolves immediately if the
+// runner's signal has already aborted, otherwise on timeout or abort.
+function dreamSleep(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal && signal.aborted) return resolve();
+    let timer = null;
+    const onAbort = () => {
+      if (timer !== null) clearTimeout(timer);
+      resolve();
+    };
+    timer = setTimeout(() => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function makeDreamRunner(sessionId) {
+  const controller = new AbortController();
+  const runner = {
+    sessionId,
+    signal: controller.signal,
+    get aborted() { return controller.signal.aborted; },
+    stoppingReason: null,
+    abort(reason) {
+      if (controller.signal.aborted) return;
+      runner.stoppingReason = reason || 'user-stop';
+      controller.abort();
+    },
+  };
+  return runner;
+}
+
+function abortDreamRun(reason) {
+  if (STATE.dreamRunner) STATE.dreamRunner.abort(reason || 'user-stop');
+}
+
+function _dreamUpdateStatus(text) {
+  const el = document.getElementById('dream-status');
+  if (el) el.textContent = text || '';
+}
+
+function _dreamUpdateButtons() {
+  const startBtn = document.getElementById('dream-start-btn');
+  const stopBtn  = document.getElementById('dream-stop-btn');
+  const running  = !!(STATE.dreamRunner && !STATE.dreamRunner.aborted);
+  if (startBtn) startBtn.disabled = running;
+  if (stopBtn)  stopBtn.disabled  = !running;
+}
+
+async function _dreamHandleStart() {
+  if (STATE.dreamRunner && !STATE.dreamRunner.aborted) return;
+  const sessionId = startDreamSession({});
+  STATE.dreamRunner = makeDreamRunner(sessionId);
+  _dreamUpdateButtons();
+  _dreamUpdateStatus(`session ${sessionId.slice(6)} · idle (batch loop pending)`);
+  // Phase 4 will await runDreamBatch(sessionId) here. For now the
+  // session simply exists; user must press Stop to end it.
+}
+
+function _dreamHandleStop() {
+  const sessionId = STATE.dreamRunner && STATE.dreamRunner.sessionId;
+  abortDreamRun('user-stop');
+  if (sessionId) endDreamSession(sessionId, 'user-stop');
+  _dreamUpdateButtons();
+  _dreamUpdateStatus(sessionId ? `session ${sessionId.slice(6)} · stopped` : '');
+}
+
 function renderDreamView() {
   const journal = document.getElementById('dream-journal');
   const rail    = document.getElementById('dream-rail-body');
-  const meta    = document.getElementById('dream-meta');
-  const stopBtn = document.getElementById('dream-stop-btn');
   const startBtn = document.getElementById('dream-start-btn');
-  if (meta) meta.textContent = 'collision loop · rebuilding';
-  if (stopBtn) stopBtn.disabled = true;
-  if (startBtn) startBtn.disabled = true;
+  const stopBtn  = document.getElementById('dream-stop-btn');
   if (journal) {
     journal.innerHTML = `<div class="empty-state" style="padding: 40px 24px; font-family:'Newsreader',serif;color:var(--ink-soft);max-width: 540px;">
       <p>The dream loop is being rewritten.</p>
-      <p style="margin-top: 0.8em;">Old architecture: linear paraphrase walk + regex co-occurrence extractor. Output was nearly all noise.</p>
-      <p style="margin-top: 0.8em;">New architecture: stochastic collisions over the existing graph + embeddings. Dream prose runs through the same ingester that reads source documents — but in modal mode, where the extracted ops land as SIG candidates the user can promote via INS, never directly into <code>STATE.G</code>. Novelty + truth filters between the modal commit and the surfaced card.</p>
-      <p style="margin-top: 0.8em;font-style: italic;">Modal-mode plumbing is in place. Picker, prose generator, cycle, filters, and surfacing UI to follow.</p>
+      <p style="margin-top: 0.8em;">New architecture: stochastic collisions over the existing graph + embeddings. Dream prose runs through the same ingester that reads source documents — but in modal mode, where extracted ops land as SIG candidates you can promote via INS, never directly into <code>STATE.G</code>. Novelty + truth filters sit between the modal commit and the surfaced card.</p>
+      <p style="margin-top: 0.8em;font-style: italic;">Phase 1 (session lifecycle) is wired. Picker, prose generator, cycle, filters, and surfacing UI to follow.</p>
     </div>`;
   }
   if (rail) {
     rail.innerHTML = `<div class="empty-state" style="padding: 20px;font-family:'Newsreader',serif;font-style:italic;color:var(--ink-soft);">No candidates yet.</div>`;
+  }
+  if (startBtn && !startBtn.dataset.dreamWired) {
+    startBtn.addEventListener('click', _dreamHandleStart);
+    startBtn.dataset.dreamWired = '1';
+  }
+  if (stopBtn && !stopBtn.dataset.dreamWired) {
+    stopBtn.addEventListener('click', _dreamHandleStop);
+    stopBtn.dataset.dreamWired = '1';
+  }
+  _dreamUpdateButtons();
+  if (STATE.activeDreamSessionId) {
+    _dreamUpdateStatus(`session ${STATE.activeDreamSessionId.slice(6)} · active`);
+  } else {
+    _dreamUpdateStatus('');
   }
 }
 
