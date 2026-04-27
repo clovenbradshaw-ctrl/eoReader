@@ -319,6 +319,57 @@ button.secondary.danger:hover { background: var(--accent); color: var(--paper); 
   padding: 50px 20px;
 }
 
+/* ── DREAM PANE ──────────────────────────────────────────────────── */
+/* The journal fades at the top and bottom edges so freshly committed
+   lines arrive into a focal middle band and older lines drift out of
+   focus as they scroll up. Scrolling restores them to the focal zone. */
+#dream-journal {
+  -webkit-mask-image: linear-gradient(to bottom,
+    transparent 0,
+    rgba(0,0,0,0.05) 28px,
+    rgba(0,0,0,0.55) 90px,
+    #000 200px,
+    #000 calc(100% - 60px),
+    rgba(0,0,0,0.6) calc(100% - 24px),
+    transparent 100%);
+          mask-image: linear-gradient(to bottom,
+    transparent 0,
+    rgba(0,0,0,0.05) 28px,
+    rgba(0,0,0,0.55) 90px,
+    #000 200px,
+    #000 calc(100% - 60px),
+    rgba(0,0,0,0.6) calc(100% - 24px),
+    transparent 100%);
+  scroll-behavior: smooth;
+}
+.dream-step { margin-bottom: 26px; }
+.dream-step-header {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 8px;
+}
+.dream-step-body {
+  font-family: 'Newsreader', serif;
+  font-size: 14.5px;
+  line-height: 1.75;
+  color: var(--ink);
+}
+.dream-line {
+  display: inline;
+  opacity: 0;
+  animation: dream-line-in 1500ms cubic-bezier(0.18, 0.7, 0.2, 1) both;
+  will-change: opacity, filter, letter-spacing;
+}
+.dream-line--instant { animation: none; opacity: 1; }
+@keyframes dream-line-in {
+  0%   { opacity: 0;    filter: blur(4px);   letter-spacing: 0.10em; }
+  35%  { opacity: 0.45; filter: blur(2px);   letter-spacing: 0.04em; }
+  100% { opacity: 1;    filter: blur(0);     letter-spacing: 0; }
+}
+
 /* ── QUERY PANE ──────────────────────────────────────────────────── */
 .query-composer {
   padding: 14px 22px;
@@ -4814,6 +4865,24 @@ async function callAnthropic(systemPrompt, userMsg, maxTokens = 800, opts = null
     ? [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }]
     : systemPrompt;
 
+  // claude-haiku-4-5 rejects requests that specify both temperature
+  // and top_p. When a caller (e.g. the Dreamer) sets both, prefer
+  // temperature and drop top_p.
+  const sampling = {};
+  if (opts?.temperature != null) sampling.temperature = opts.temperature;
+  else if (opts?.top_p != null) sampling.top_p = opts.top_p;
+
+  const stream = typeof opts?.onChunk === 'function';
+  const reqBody = {
+    model: 'claude-haiku-4-5',
+    max_tokens: maxTokens,
+    system: systemBlock,
+    messages: [{ role: 'user', content: userMsg }],
+    stop_sequences: opts?.stop !== undefined ? (opts.stop || []) : COMMENTARY_STOP_SEQUENCES,
+    ...sampling,
+    ...(stream ? { stream: true } : {}),
+  };
+
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -4822,31 +4891,71 @@ async function callAnthropic(systemPrompt, userMsg, maxTokens = 800, opts = null
       'anthropic-version': '2023-06-01',
       'anthropic-dangerous-direct-browser-access': 'true',
     },
-    body: JSON.stringify({
-      model: 'claude-haiku-4-5',
-      max_tokens: maxTokens,
-      system: systemBlock,
-      messages: [{ role: 'user', content: userMsg }],
-      stop_sequences: opts?.stop !== undefined ? (opts.stop || []) : COMMENTARY_STOP_SEQUENCES,
-      ...(opts?.temperature != null ? { temperature: opts.temperature } : {}),
-      ...(opts?.top_p != null ? { top_p: opts.top_p } : {}),
-    }),
+    body: JSON.stringify(reqBody),
   });
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(`Anthropic ${res.status}: ${errText.slice(0, 200)}`);
   }
-  const data = await res.json();
-  // Stash cache hit/miss info on STATE for the Prompts log to display
-  if (data.usage) {
-    STATE.lastAnthropicUsage = {
-      input: data.usage.input_tokens,
-      output: data.usage.output_tokens,
-      cacheCreate: data.usage.cache_creation_input_tokens || 0,
-      cacheRead: data.usage.cache_read_input_tokens || 0,
-    };
+
+  if (!stream) {
+    const data = await res.json();
+    if (data.usage) {
+      STATE.lastAnthropicUsage = {
+        input: data.usage.input_tokens,
+        output: data.usage.output_tokens,
+        cacheCreate: data.usage.cache_creation_input_tokens || 0,
+        cacheRead: data.usage.cache_read_input_tokens || 0,
+      };
+    }
+    return data.content[0]?.text || '';
   }
-  return data.content[0]?.text || '';
+
+  // SSE streaming. Anthropic emits events:
+  //   message_start (usage.input_tokens, cache stats),
+  //   content_block_delta (delta.text), repeated,
+  //   message_delta (usage.output_tokens), message_stop.
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let fullText = '';
+  const usage = { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n\n')) >= 0) {
+      const block = buf.slice(0, nl);
+      buf = buf.slice(nl + 2);
+      let dataLine = '';
+      for (const line of block.split('\n')) {
+        if (line.startsWith('data:')) dataLine = line.slice(5).trim();
+      }
+      if (!dataLine || dataLine === '[DONE]') continue;
+      let evt;
+      try { evt = JSON.parse(dataLine); } catch { continue; }
+      if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
+        const delta = evt.delta.text || '';
+        if (delta) {
+          fullText += delta;
+          try { opts.onChunk(delta); } catch {}
+        }
+      } else if (evt.type === 'message_start' && evt.message?.usage) {
+        usage.input = evt.message.usage.input_tokens || 0;
+        usage.cacheCreate = evt.message.usage.cache_creation_input_tokens || 0;
+        usage.cacheRead = evt.message.usage.cache_read_input_tokens || 0;
+      } else if (evt.type === 'message_delta' && evt.usage) {
+        usage.output = evt.usage.output_tokens || 0;
+      } else if (evt.type === 'error') {
+        const msg = evt.error?.message || JSON.stringify(evt.error || evt);
+        throw new Error(`Anthropic stream error: ${msg.slice(0, 200)}`);
+      }
+    }
+  }
+  STATE.lastAnthropicUsage = usage;
+  return fullText;
 }
 
 // ─── WebLLM backend ──────────────────────────────────────────────────
@@ -11318,7 +11427,11 @@ function renderGraphView() {
     return;
   }
   empty.style.display = 'none';
-  container.style.display = '';
+  // Must be 'flex' (not '') — the inline style declares display: none
+  // alongside flex-direction: column, so clearing display falls back to
+  // the div default 'block', which collapses the canvas to its
+  // intrinsic 150px height (the squished-graph bug).
+  container.style.display = 'flex';
 
   const cellCounts = {};
   for (const l of data.links) cellCounts[l.cell || 'unclassified'] = (cellCounts[l.cell || 'unclassified'] || 0) + 1;
@@ -13456,6 +13569,55 @@ function renderSamples() {
 //   - Promotion path (insDreamObservation reads proposedOp/proposedPayload)
 //   - Render (SIG cards + instrumentation footer)
 //   - Wiring (start button → run batch)
+
+// Make-or-find a step container in the journal. Each container holds
+// an inline body where individual sentence spans (.dream-line) are
+// appended one at a time with a fade-in animation.
+function _dreamEnsureStepEl(journal, stepMeta) {
+  let el = journal.querySelector(`[data-dream-step="${stepMeta.step}"]`);
+  if (el) return el;
+  el = document.createElement('div');
+  el.className = 'dream-step';
+  el.dataset.dreamStep = String(stepMeta.step);
+  const hdr = document.createElement('div');
+  hdr.className = 'dream-step-header';
+  hdr.textContent = `step ${stepMeta.step}` + (stepMeta.injectionLongDistanceEntityId ? ' · stray fragment present' : '');
+  const body = document.createElement('div');
+  body.className = 'dream-step-body';
+  el.appendChild(hdr);
+  el.appendChild(body);
+  journal.appendChild(el);
+  return el;
+}
+
+function _dreamCommitLine(journal, stepMeta, text, opts) {
+  if (!text) return;
+  const stepEl = _dreamEnsureStepEl(journal, stepMeta);
+  const body = stepEl.querySelector('.dream-step-body');
+  const span = document.createElement('span');
+  span.className = 'dream-line' + (opts && opts.instant ? ' dream-line--instant' : '');
+  span.textContent = text + ' ';
+  body.appendChild(span);
+  // Auto-scroll while live so freshly committed lines arrive at the
+  // bottom edge of the focal zone. The CSS mask handles the fade.
+  if (STATE.dreamRunner && STATE.activeDreamSessionId) {
+    journal.scrollTop = journal.scrollHeight;
+  }
+}
+
+function _dreamSplitSentences(prose) {
+  const re = /[^.!?\n]+(?:[.!?]+["')\]]*|\n+)/g;
+  const out = [];
+  let m, last = 0;
+  while ((m = re.exec(prose)) !== null) {
+    const piece = m[0].trim();
+    if (piece) out.push(piece);
+    last = re.lastIndex;
+  }
+  const trail = prose.slice(last).trim();
+  if (trail) out.push(trail);
+  return out;
+}
 
 function renderDreamView() {
   const journal = document.getElementById('dream-journal');
