@@ -2725,6 +2725,119 @@ function normalizePredicate(verb) {
   return v;
 }
 
+// ─── PREDICATE REGISTRY ─────────────────────────────────────────────
+// Single source of truth for: how a predicate inflects on display, whether
+// it's multi-valued (accumulates without conflict) or single-valued (a new
+// value supersedes the prior), and what category it belongs to.
+//
+// Bare verb stems read as broken English when concatenated for display
+// ("Mr. Bennet possess quick parts"). The `inflect` form is the
+// human-readable surface used in propositionTextForEvent.
+//
+// Cardinality matters for the EVA conflict logic in foldEvents. A subject
+// can possess many traits (multi → no conflict), but can hold only one
+// "becomes" final state (single → conflict + supersession). Unknown
+// predicates default to single, preserving prior behaviour.
+const PREDICATE_REGISTRY = {
+  // Identity / structure
+  'has-alias':          { cardinality: 'multi',  category: 'identity',  inflect: 'has alias' },
+  'has-principal':      { cardinality: 'multi',  category: 'structure', inflect: 'has principal' },
+
+  // Kinship — LLM tends to reach for "possess"/"have" here; we steer it
+  // via the prompt (PER_CLAUSE_SYSTEM) and rewrite where unambiguous.
+  'has-child':          { cardinality: 'multi',  category: 'kinship',   inflect: 'has child' },
+  'has-parent':         { cardinality: 'multi',  category: 'kinship',   inflect: 'has parent' },
+  'has-spouse':         { cardinality: 'multi',  category: 'kinship',   inflect: 'has spouse' },
+  'has-sibling':        { cardinality: 'multi',  category: 'kinship',   inflect: 'has sibling' },
+
+  // Traits / parts
+  'possess':            { cardinality: 'multi',  category: 'trait',     inflect: 'possesses' },
+  'has-trait':          { cardinality: 'multi',  category: 'trait',     inflect: 'has trait' },
+  'has-part':           { cardinality: 'multi',  category: 'part',      inflect: 'has part' },
+  'have':               { cardinality: 'multi',  category: 'trait',     inflect: 'has' },
+
+  // Roles
+  'serve-as':           { cardinality: 'multi',  category: 'role',      inflect: 'serves as' },
+  'work-for':           { cardinality: 'multi',  category: 'role',      inflect: 'works for' },
+
+  // State / copula
+  'be':                 { cardinality: 'single', category: 'state',     inflect: 'is' },
+  'become':             { cardinality: 'single', category: 'state',     inflect: 'became' },
+
+  // Speech / mental / action
+  'say':                { cardinality: 'multi',  category: 'speech',    inflect: 'said' },
+  'speak-to':           { cardinality: 'multi',  category: 'speech',    inflect: 'spoke to' },
+  'show-to':            { cardinality: 'multi',  category: 'action',    inflect: 'showed' },
+  'fancy':              { cardinality: 'multi',  category: 'mental',    inflect: 'fancied' },
+  'fail-to-understand': { cardinality: 'multi',  category: 'mental',    inflect: 'fails to understand' },
+
+  // Temporal
+  'persist-for':        { cardinality: 'single', category: 'temporal',  inflect: 'persisted for' },
+  'complaint-to':       { cardinality: 'multi',  category: 'speech',    inflect: 'complains to' },
+};
+
+function getPredicateMeta(predicate) {
+  const p = String(predicate || '').toLowerCase().trim();
+  return PREDICATE_REGISTRY[p] || null;
+}
+
+function getPredicateCardinality(predicate) {
+  const m = getPredicateMeta(predicate);
+  // Unknown predicates default to single-valued so the existing conflict +
+  // supersession path still triggers; multi-valuedness is opt-in.
+  return m ? m.cardinality : 'single';
+}
+
+// Human-readable surface form used when concatenating subject + predicate
+// + value into prose (empiricalText, inspect view labels). Falls back to
+// a heuristic third-person -s for unknown stems.
+function formatPredicateForDisplay(predicate) {
+  const meta = getPredicateMeta(predicate);
+  if (meta && meta.inflect) return meta.inflect;
+  const p = String(predicate || '').trim();
+  if (!p) return '';
+  // Hyphens become spaces; conjugate the head word.
+  const words = p.replace(/-/g, ' ').split(/\s+/).filter(Boolean);
+  if (words.length === 0) return p;
+  const head = words[0];
+  let inflected = head;
+  if (head.length > 1 && !/s$/.test(head)) {
+    if (/[sxz]$|sh$|ch$/.test(head)) inflected = head + 'es';
+    else if (/[^aeiou]y$/.test(head)) inflected = head.slice(0, -1) + 'ies';
+    else inflected = head + 's';
+  }
+  return [inflected, ...words.slice(1)].join(' ');
+}
+
+// Format a single salience entry for the per-clause prompt. Carries the
+// canonical name, last-seen sentence index, and gender hint when known.
+// Example: "Mrs. Bennet@s0 [f]". Used by llmProcessClause's salience line.
+function formatSalienceEntry(ent) {
+  if (!ent) return '';
+  let s = ent.canonical;
+  if (typeof ent.lastSeenSentence === 'number' && ent.lastSeenSentence >= 0) {
+    s += `@s${ent.lastSeenSentence}`;
+  } else if (typeof ent.lastSeenSentence === 'number') {
+    // -1 means "preminted from hypothesis, not yet seen in text"
+    s += '@pre';
+  }
+  if (ent.gender && ent.gender !== 'unknown') s += ` [${ent.gender}]`;
+  return s;
+}
+
+// Pronoun → grammatical category for gender-aware coref hints. The set of
+// English pronouns is small enough to enumerate; this returns 'm'/'f'/'n'/'p'
+// (masc/fem/neuter/plural) or null if the surface isn't a familiar pronoun.
+function pronounCategory(surface) {
+  const s = String(surface || '').toLowerCase().trim();
+  if (!s) return null;
+  if (['he','him','his','himself'].includes(s)) return 'm';
+  if (['she','her','hers','herself'].includes(s)) return 'f';
+  if (['it','its','itself'].includes(s)) return 'n';
+  if (['they','them','their','theirs','themselves'].includes(s)) return 'p';
+  return null;
+}
+
 // Lightweight inflection stripper for predicate matching: handles the
 // common cases the dictionary above doesn't cover. "marries" → "marri",
 // "loved" → "lov", "running" → "runn". Imperfect but lets the heuristic
@@ -3187,13 +3300,13 @@ function propositionTextForEvent(ev) {
   if (ev.op === 'DEF') {
     const subj = canonOf(p.subject);
     const val = p.valueIsEntity ? canonOf(p.value) : (p.value || '');
-    const text = `${subj} ${p.predicate || ''} ${val}`.trim();
+    const text = `${subj} ${formatPredicateForDisplay(p.predicate)} ${val}`.replace(/\s+/g, ' ').trim();
     return text || ev.spanText || '';
   }
   if (ev.op === 'CON') {
     const from = canonOf(p.from);
     const to = p.toIsEntity ? canonOf(p.to) : (p.to || '');
-    const text = `${from} ${p.relation || ''} ${to}`.trim();
+    const text = `${from} ${formatPredicateForDisplay(p.relation)} ${to}`.replace(/\s+/g, ' ').trim();
     return text || ev.spanText || '';
   }
   if (ev.op === 'SIG') return String(p.surface || ev.spanText || '');
@@ -5204,7 +5317,15 @@ EVENTS:
 
 ATOMICITY: one proposition per DEF. Split compound clauses into multiple DEFs. Named things (deals, contracts, organizations, places) are entities — emit SIG for them and reference via valueIsEntity:true. Don't bake objects into predicate names.
 
-PREDICATES: lowercase verb stems (say, serve-as, work-for, possess, fund, withdraw-from). Reuse from supplied vocabulary when fits.
+PREDICATES: lowercase verb stems (say, serve-as, work-for, fund, withdraw-from). Reuse from supplied vocabulary when fits.
+
+PREDICATE FAMILIES — prefer these stems over ad-hoc verbs where they fit:
+- KINSHIP: has-child, has-parent, has-spouse, has-sibling. NOT possess. "They had five daughters: Jane, Elizabeth..." → has-child Jane, has-child Elizabeth (one DEF per daughter).
+- TRAIT (qualities, character, mental attributes, body parts): has-trait. "Mr. Bennet was a mixture of quick parts, sarcastic humour..." → has-trait quick parts, has-trait sarcastic humour. "She was a woman of mean understanding" → has-trait mean understanding (NOT fail-to-understand — she POSSESSES poor understanding, not fails to grasp something called "mean understanding"). "Her mind was..." → has-part mind.
+- ROLE / OCCUPATION: serve-as, work-for. "X is a correspondent for Y" → serve-as correspondent + work-for Y.
+- STATE / COPULA: be (for "X is/was Y" stative descriptions — e.g. {predicate:"be", value:"different"}). Use "become" ONLY when a transition is asserted ("became", "turned", "grew into"). Plain past-tense "was" is be, not become.
+- SPEECH / MENTAL: say, speak-to, ask, fancy, believe.
+- POSSESSION (literal property/object ownership only): possess. NOT for kinship, NOT for traits, NOT for body parts.
 
 WHAT COUNTS AS A REFERENT: a person, a place, a category, a region, an atmosphere, a frame — anything the document anchors claims around. The "Document:" line, when present, names the principals; use exactly those canonical names. Don't restrict to physical-thing nouns; principals can be conditions, fields, or interpretive frames as easily as named entities.
 
@@ -5226,13 +5347,15 @@ Output:
 ],"unresolved":[],"needs":[]}
 
 UNRESOLVED vs NEEDS — these are different fields:
-- "unresolved": pronouns or descriptions you genuinely cannot resolve (e.g., "he", "the official"). Plain text strings only.
-- "needs": requests for graph context to unblock a specific resolution. Format MUST start with one of: "integral:", "edges:", "history:". The system fulfills these and re-calls you.
+- "unresolved": pronouns or descriptions you genuinely cannot resolve (e.g., "he", "the official"). Plain text strings only. The system auto-escalates pronouns here — every pronoun you list will trigger a coref:<pronoun> follow-up call with gender-compatible candidates and prior sentences. Listing a pronoun in unresolved is the right move when you cannot pick an antecedent from the current salience line; do NOT make a guess and emit a DEF with the pronoun as the value.
+- "needs": requests for graph context to unblock a specific resolution. Format MUST start with one of: "integral:", "edges:", "history:", "coref:". The system fulfills these and re-calls you.
 
-Use needs when: pronouns lack antecedent in salience, definite descriptions ("the deal") might match an existing entity, claims with "again"/"still" suggest prior context, coref confirmation needed.
+Use needs when: pronouns lack antecedent in salience (or use unresolved — both trigger coref escalation), definite descriptions ("the deal") might match an existing entity, claims with "again"/"still" suggest prior context, coref confirmation needed.
 
-Example: clause "He withdrew from it in 2018" with no entity in salience → 
-unresolved: [], needs: ["edges:Mr. Trump", "edges:Obama"]
+PRONOUN BINDING: salience entries are formatted "Name@sN [g]" — sentence index of last mention and gender hint (m/f/n/p). Bind a pronoun to the most recent gender-compatible candidate. "Her" in sentence 1, with salience "Mr. Bennet@s0 [m]; Mrs. Bennet@s0 [f]; Mary@pre [f]; Lydia@pre [f]" → bind to Mrs. Bennet (most recent female actually seen in the text), NOT to Mary or Lydia (which are preminted but not yet introduced). "@pre" means preminted from the document hypothesis but never appeared in any prior sentence.
+
+Example: clause "He withdrew from it in 2018" with no entity in salience →
+unresolved: ["he", "it"], needs: ["edges:Mr. Trump", "edges:Obama"]
 NOT: unresolved: ["integral:Mr. Trump"]  ← wrong, that belongs in needs
 
 Conservative: emit DEFs only when the clause asserts substantive claims. SIG-only is fine for clauses that just mention entities without claims about them.
@@ -5344,8 +5467,12 @@ async function llmProcessClause(clauseText, mentionedEntities, salienceWindow, a
     ? mentionedEntities.map(e => e.canonical).join(', ')
     : null;
 
+  // Salience as ordered list, oldest→newest, with sentence-offset and
+  // gender hints so the LLM can pick the right antecedent for a pronoun
+  // ("Her" in sentence 1 should bind to the female principal last seen at
+  // s0, not to one of five women preminted at s−1).
   const salLine = salienceWindow.length > 0
-    ? salienceWindow.map(e => e.canonical).join(', ')
+    ? salienceWindow.map(e => formatSalienceEntry(e)).join('; ')
     : null;
 
   const predLine = buildPredicateVocabularyContext(mentionedEntities);
@@ -5452,7 +5579,7 @@ async function llmProcessClause(clauseText, mentionedEntities, salienceWindow, a
   if (droppedCount > 0) console.log(`Dropped ${droppedCount} garbage events from LLM output`);
 
   // 2. Reroute and validate needs
-  const NEED_PREFIX = /^\s*(integral|edges|history)\s*:\s*\S/i;  // require something AFTER the colon
+  const NEED_PREFIX = /^\s*(integral|edges|history|coref)\s*:\s*\S/i;  // require something AFTER the colon
   const rawUnresolved = Array.isArray(parsed.unresolved) ? parsed.unresolved : [];
   const rawNeeds = Array.isArray(parsed.needs) ? parsed.needs : [];
   const reroutedNeeds = [];
@@ -5491,12 +5618,72 @@ async function llmProcessClause(clauseText, mentionedEntities, salienceWindow, a
 
 const MAX_ESCALATION_DEPTH = 3;
 
-function fulfillNeed(need) {
+function fulfillNeed(need, ctx = {}) {
   if (typeof need !== 'string') return null;
   const colonIdx = need.indexOf(':');
   if (colonIdx < 0) return null;
   const type = need.slice(0, colonIdx).trim().toLowerCase();
   const arg = need.slice(colonIdx + 1).trim();
+
+  // coref:<pronoun> — return a richer pronoun-resolution context: every
+  // gender-compatible candidate the document has minted, with its last
+  // sentence and aliases, plus the prior sentences' raw text so the LLM
+  // can re-resolve. The escalation loop synthesizes this need whenever
+  // the previous LLM call left a pronoun in `unresolved`.
+  if (type === 'coref') {
+    const pronoun = arg.toLowerCase();
+    const cat = pronounCategory(pronoun);
+    const lines = [`Coref candidates for "${arg}"${cat ? ` (gender ${cat})` : ''}:`];
+    // Filter active entities by gender compatibility when known. "n" or
+    // unknown match anything; "p" matches groups; "m"/"f" require the
+    // entity's gender to match (or be unset, which we treat as compatible
+    // since hypothesis didn't decide).
+    const candidates = [];
+    for (const ent of STATE.entities.values()) {
+      if (!isEntityActive(ent.id)) continue;
+      if (cat && ent.gender && ent.gender !== 'unknown') {
+        if (cat === 'm' && ent.gender !== 'm') continue;
+        if (cat === 'f' && ent.gender !== 'f') continue;
+        if (cat === 'p' && ent.gender !== 'p') continue;
+        // 'n' (it/its) is intentionally permissive
+      }
+      candidates.push(ent);
+    }
+    // Sort by recency (most recent first), preferring entities seen in text
+    candidates.sort((a, b) => {
+      const al = typeof a.lastSeenSentence === 'number' ? a.lastSeenSentence : -2;
+      const bl = typeof b.lastSeenSentence === 'number' ? b.lastSeenSentence : -2;
+      return bl - al;
+    });
+    for (const ent of candidates.slice(0, 12)) {
+      const aliasNote = ent.aliases && ent.aliases.length > 1
+        ? ` (aliases: ${ent.aliases.filter(a => a !== ent.canonical).slice(0, 3).join(', ')})`
+        : '';
+      const seen = typeof ent.lastSeenSentence === 'number'
+        ? (ent.lastSeenSentence === -1 ? 'preminted, not yet seen in text' : `last seen at s${ent.lastSeenSentence}`)
+        : 'never seen';
+      const g = ent.gender && ent.gender !== 'unknown' ? `[${ent.gender}] ` : '';
+      lines.push(`  ${g}${ent.canonical} — ${seen}${aliasNote}`);
+    }
+    if (candidates.length === 0) lines.push('  (no gender-compatible candidates)');
+
+    // Include prior 3 sentences' text so the LLM can re-read them looking
+    // for the antecedent. Comes from the source we're currently ingesting.
+    const source = ctx.source;
+    const currentIdx = ctx.sentenceIdx;
+    if (source && Array.isArray(source.sentences) && typeof currentIdx === 'number') {
+      const priorRange = source.sentences.filter(s => s.idx < currentIdx).slice(-3);
+      if (priorRange.length > 0) {
+        lines.push('Prior sentences (most recent last):');
+        for (const s of priorRange) {
+          lines.push(`  s${s.idx}: ${s.text}`);
+        }
+      }
+    }
+
+    return lines.join('\n');
+  }
+
 
   if (type === 'integral') {
     const ent = findEntityByMention(arg);
@@ -5551,7 +5738,7 @@ function fulfillNeed(need) {
   return `unknown need type: "${type}" (supported: integral, edges, history)`;
 }
 
-async function processClauseWithEscalation(clauseText, mentions, salience, rawMentions = [], source = null) {
+async function processClauseWithEscalation(clauseText, mentions, salience, rawMentions = [], source = null, sentenceIdx = null) {
   let context = [];
   let lastResult = null;
   for (let depth = 0; depth <= MAX_ESCALATION_DEPTH; depth++) {
@@ -5560,7 +5747,23 @@ async function processClauseWithEscalation(clauseText, mentions, salience, rawMe
 
     lastResult = await llmProcessClause(clauseText, mentions, salience, context, rawMentions, source);
 
-    if (!lastResult.needs || lastResult.needs.length === 0) return lastResult;
+    // If the LLM left a pronoun in `unresolved` and didn't request anything
+    // explicit, synthesize a coref:<pronoun> need so the escalation loop
+    // expands context and asks again. The reader keeps requesting until
+    // the pronoun resolves (or depth limit is hit).
+    const synthNeeds = [];
+    const seenSyn = new Set();
+    for (const u of (lastResult.unresolved || [])) {
+      const surface = String(u || '').trim();
+      if (!surface || !isPronoun(surface)) continue;
+      const need = `coref:${surface.toLowerCase()}`;
+      if (seenSyn.has(need)) continue;
+      seenSyn.add(need);
+      synthNeeds.push(need);
+    }
+    const allNeeds = [...(lastResult.needs || []), ...synthNeeds];
+
+    if (allNeeds.length === 0) return lastResult;
     if (depth >= MAX_ESCALATION_DEPTH) {
       console.warn(`Escalation depth limit reached for clause: ${clauseText.slice(0, 60)}`);
       return lastResult;
@@ -5569,10 +5772,10 @@ async function processClauseWithEscalation(clauseText, mentions, salience, rawMe
     // Fulfill needs (deduped against what's already in context)
     const seen = new Set(context.map(c => c.request));
     let added = 0;
-    for (const need of lastResult.needs) {
+    for (const need of allNeeds) {
       if (seen.has(need)) continue;
       seen.add(need);
-      const content = fulfillNeed(need);
+      const content = fulfillNeed(need, { source, sentenceIdx });
       if (content) { context.push({ request: need, content }); added++; }
     }
     if (added === 0) return lastResult; // nothing new to provide → stop
@@ -5636,7 +5839,8 @@ You are given a sample of the document — typically the first 1500 words. Outpu
     {
       "name": "<canonical name as it appears in text, or best descriptor if unnamed>",
       "aliases": ["<other surface forms>"],
-      "site": "Void|Entity|Kind|Field|Link|Network|Atmosphere|Lens|Paradigm"
+      "site": "Void|Entity|Kind|Field|Link|Network|Atmosphere|Lens|Paradigm",
+      "gender": "m|f|n|p|unknown"
     }
   ],
   "authorship": [
@@ -5651,6 +5855,7 @@ Rules for principals:
 - Aim for 3-15. Recurring across multiple events.
 - For unnamed-but-describable principals (Austen's "his lady" before Mrs. Bennet is named, news article's "the senior official" before Smith is named), give the descriptor as name. The aliases array is where you record other surface forms — including the descriptor itself if name later resolves to a proper name.
 - Aliases: include short forms, titled forms, alternative spellings the same referent uses. Don't merge distinct referents (a place "Colombia" is not an alias for a place "Colombian military base" even though one contains the other).
+- Gender: m (he/him), f (she/her), n (it/its), p (they/them as plural), or unknown. This is what tells the per-clause coref resolver which principal a pronoun is allowed to bind to. Always set it for human characters; set "n" for objects and abstractions; "unknown" only when truly indeterminate.
 
 Rules for authorship:
 - Anyone WRITING ABOUT the events rather than participating in them. Empty array is fine for fiction or any document without explicit authorship apparatus.
@@ -5685,6 +5890,7 @@ async function hypothesizeDocument(text) {
   // we receive is either a mistake or an older format; default to Entity.
   const VALID_SITES = new Set(['Void','Entity','Kind','Field','Link','Network','Atmosphere','Lens','Paradigm']);
   if (!Array.isArray(parsed.principals)) parsed.principals = [];
+  const VALID_GENDERS = new Set(['m','f','n','p','unknown']);
   parsed.principals = parsed.principals.filter(p => p && p.name).map(p => {
     let site = String(p.site || '').trim();
     // Tolerate older outputs that may use lowercase or singular variants
@@ -5694,10 +5900,14 @@ async function hypothesizeDocument(text) {
     } else {
       site = 'Entity';
     }
+    // Gender hint for coref. Old hypotheses won't carry it; default unknown.
+    let gender = String(p.gender || '').toLowerCase().trim();
+    if (!VALID_GENDERS.has(gender)) gender = 'unknown';
     return {
       name: String(p.name).trim(),
       aliases: Array.isArray(p.aliases) ? p.aliases.map(s => String(s).trim()).filter(Boolean) : [],
       site,
+      gender,
     };
   });
   // Authorship: separate from principals. Reporters/photographers/publishers
@@ -5766,6 +5976,11 @@ function preMintHypothesisPrincipals(h, sourceId) {
       // The hypothesis's site guess is conditioning, not a claim. Stored
       // separately from any computed site (which folds over evidence).
       ent.hypothesisSite = p.site;
+    }
+    // Gender propagates from hypothesis to entity so the per-clause coref
+    // formatter can show pronoun-compatibility hints in the salience line.
+    if (ent && p.gender && p.gender !== 'unknown') {
+      ent.gender = p.gender;
     }
     minted.push(ent);
   }
@@ -7224,8 +7439,11 @@ async function ingestSource(text, opts = {}) {
         emitHypothesisDEFs(hyp, source, preminted);
         // Seed salience with preminted principals so the per-clause
         // extractor sees them in the salience window from sentence 1.
+        // -1 marks "preminted, not yet seen in text" — distinct from a
+        // real sentence index so the LLM can deprioritize unseen principals.
         for (const ent of preminted) {
           if (!salience.includes(ent.id)) salience.push(ent.id);
+          if (ent.lastSeenSentence == null) ent.lastSeenSentence = -1;
         }
         if (progressEl) {
           progressEl.innerHTML = `hypothesis: ${escapeHtml(hyp.summary || hyp.kind)} · ${preminted.length} principals preminted · beginning extraction…`;
@@ -7311,7 +7529,7 @@ async function ingestSource(text, opts = {}) {
     if (!opts.rawMode && isLLMReady() && isProseClause(clause)) {
       STATE.clausesProcessed++;
       try {
-        llmResult = await processClauseWithEscalation(clause, allMentioned, salWindow, mentions, source);
+        llmResult = await processClauseWithEscalation(clause, allMentioned, salWindow, mentions, source, i);
       } catch (e) {
         console.error('LLM clause processing failed:', e);
         llmResult = { events: [], unresolved: [], needs: [], _error: e.message };
@@ -7377,13 +7595,16 @@ async function ingestSource(text, opts = {}) {
     // of how understanding evolved across the read.
     snapshotTrajectoriesForSentence(source, i, sentenceEventIds);
 
-    // Update salience window
+    // Update salience window. Record the sentence index on the entity so
+    // the next clause's salience line shows recency (Mrs. Bennet@s0 vs
+    // Mary@pre); the per-clause LLM uses that to break pronoun ties.
     for (const e of allMentioned) {
       if (!salience.includes(e.id)) salience.push(e.id);
       else {
         salience.splice(salience.indexOf(e.id), 1);
         salience.push(e.id);
       }
+      e.lastSeenSentence = i;
     }
 
     // Record any unresolved as NUL events
@@ -7526,6 +7747,20 @@ async function foldEvents(proposedEvents, clauseText, source, sentenceIdx, chrom
         else valueIsEntity = false;
       }
 
+      // Drop DEFs whose value is a bare unresolved pronoun. The LLM kept
+      // the surface pronoun as a literal value instead of resolving it;
+      // those reads are noise (e.g. "Mr. Bennet show-to her") and the
+      // pronoun belongs in `unresolved` for the escalation loop. Surface
+      // it via a NUL so the loop has something to chew on.
+      if (!valueIsEntity && typeof value === 'string' && isPronoun(value)) {
+        appendEvent({
+          ...baseCoords,
+          op: 'NUL',
+          payload: { kind: 'unresolved-pronoun-value', surface: value, predicate, subject: subj.id },
+        });
+        continue;
+      }
+
       const ev = appendEvent({
         ...baseCoords,
         op: 'DEF',
@@ -7546,12 +7781,15 @@ async function foldEvents(proposedEvents, clauseText, source, sentenceIdx, chrom
         }
       }
       if (!matched) {
-        // Either first DEF for this slot, or new value → superposition
+        // Either first DEF for this slot, or new value → superposition.
         const newDef = addDef(subj.id, predicate, value, valueIsEntity, [grounding], 'system');
-        if (existingDefs.length > 0) {
-          // Superposition: mark via EVA conflict against existing
+        // Multi-valued predicates (possess, has-child, has-trait, ...)
+        // accumulate values across clauses without conflicting. Only
+        // single-valued predicates (be, become, persist-for, ...) trigger
+        // EVA-conflict on the prior DEF, which is what feeds supersession.
+        if (existingDefs.length > 0 && getPredicateCardinality(predicate) === 'single') {
           for (const existing of existingDefs) {
-            conflictDef(existing, grounding, ev.id, 'new value differs from prior DEF');
+            conflictDef(existing, grounding, ev.id, 'new value differs from prior single-valued DEF');
           }
         }
       }
@@ -7737,7 +7975,7 @@ async function ingestDreamProse(proseText, sessionId) {
 
     let llmResult;
     try {
-      llmResult = await processClauseWithEscalation(clause, existingMentioned, salWindow, mentions, synthSource);
+      llmResult = await processClauseWithEscalation(clause, existingMentioned, salWindow, mentions, synthSource, i);
     } catch (e) {
       console.warn('[dream] clause extraction failed:', e.message);
       continue;
