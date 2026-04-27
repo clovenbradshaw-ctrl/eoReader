@@ -13920,14 +13920,123 @@ function _dreamUpdateButtons() {
   if (stopBtn)  stopBtn.disabled  = !running;
 }
 
+// ─── Dream cycle orchestrator ───────────────────────────────────────
+// One cycle = pick → generate prose → ingest into modal session →
+// (filter, surface — Phases 5+6+7). The orchestrator runs batchSize
+// cycles unless the runner is aborted or several cycles in a row
+// produce nothing surfaceable.
+
+async function _dreamCycle(session) {
+  if (!session) return { skipped: 'no-session' };
+  const injection = _dreamPickInjection(session);
+  if (!injection) return { skipped: 'no-injection' };
+  session.currentInjection = injection;
+  const stepNum = session.stepCount + 1;
+  _dreamUpdateStatus(`step ${stepNum} · ${injection.summary}`);
+
+  let prose = '';
+  try {
+    prose = await _dreamGenerateProse(session, injection);
+  } catch (e) {
+    console.warn('[dream] prose failed:', e.message);
+    return { skipped: 'prose-error', error: e.message };
+  }
+  if (!prose) return { skipped: 'empty-prose', injection };
+
+  const before = session.grounded.length;
+  let ingestResult = { sentenceCount: 0, candidatesAdded: 0 };
+  try {
+    ingestResult = await ingestDreamProse(prose, session.id);
+  } catch (e) {
+    console.warn('[dream] ingest failed:', e.message);
+  }
+  const newCandidates = session.grounded.slice(before);
+
+  // Phase 5 hook: novelty filter will tag newCandidates here.
+  // Phase 6 hook: truth filter will tag newCandidates here.
+  // Phase 7 hook: SIG card renderer will surface them here.
+
+  session.stepCount = stepNum;
+  session.journal.push({
+    step: stepNum,
+    ts: Date.now(),
+    prose,
+    injectionSummary: injection.summary,
+    injection: {
+      entityIds: injection.entityIds.slice(),
+      foreground: injection.foreground.slice(),
+      longDistance: injection.longDistance,
+    },
+    sentenceCount: ingestResult.sentenceCount,
+    candidatesProduced: newCandidates.length,
+  });
+
+  return { stepNum, injection, prose, candidatesProduced: newCandidates.length };
+}
+
+async function runDreamBatch(sessionId) {
+  const session = STATE.modalSessions.get(sessionId);
+  if (!session) return;
+  const cfg = STATE.dreamConfig;
+  const runner = STATE.dreamRunner;
+  if (!runner || runner.sessionId !== sessionId) return;
+
+  const maxConsecutiveEmpty = 3;
+  let consecutiveEmpty = 0;
+  let stopReason = 'batch-complete';
+
+  for (let i = 0; i < cfg.batchSize; i++) {
+    if (runner.aborted) { stopReason = runner.stoppingReason || 'user-stop'; break; }
+
+    let result;
+    try {
+      result = await _dreamCycle(session);
+    } catch (e) {
+      console.error('[dream] cycle threw:', e);
+      result = { skipped: 'exception', error: e.message };
+    }
+
+    if (runner.aborted) { stopReason = runner.stoppingReason || 'user-stop'; break; }
+
+    const productive = result && !result.skipped && (result.candidatesProduced > 0);
+    consecutiveEmpty = productive ? 0 : consecutiveEmpty + 1;
+    if (consecutiveEmpty >= maxConsecutiveEmpty) {
+      stopReason = `${maxConsecutiveEmpty}-empty-cycles`;
+      break;
+    }
+
+    if (i < cfg.batchSize - 1 && !runner.aborted) {
+      await dreamSleep(cfg.cycleDelayMs, runner.signal);
+    }
+  }
+
+  endDreamSession(sessionId, stopReason);
+  _dreamUpdateButtons();
+  _dreamUpdateStatus(`session ${sessionId.slice(6)} · ${stopReason} · ${session.stepCount} step(s)`);
+}
+
 async function _dreamHandleStart() {
   if (STATE.dreamRunner && !STATE.dreamRunner.aborted) return;
+  if (!isLLMReady()) {
+    _dreamUpdateStatus('LLM not ready — configure a backend first');
+    return;
+  }
+  if (STATE.entities.size === 0) {
+    _dreamUpdateStatus('no entities to dream on — ingest a source first');
+    return;
+  }
   const sessionId = startDreamSession({});
   STATE.dreamRunner = makeDreamRunner(sessionId);
   _dreamUpdateButtons();
-  _dreamUpdateStatus(`session ${sessionId.slice(6)} · idle (batch loop pending)`);
-  // Phase 4 will await runDreamBatch(sessionId) here. For now the
-  // session simply exists; user must press Stop to end it.
+  _dreamUpdateStatus(`session ${sessionId.slice(6)} · starting`);
+  try {
+    await runDreamBatch(sessionId);
+  } catch (e) {
+    console.error('[dream] batch threw:', e);
+    endDreamSession(sessionId, 'error');
+    _dreamUpdateButtons();
+    _dreamUpdateStatus(`session ${sessionId.slice(6)} · error: ${e.message}`);
+  }
 }
 
 function _dreamHandleStop() {
