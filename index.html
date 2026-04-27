@@ -13920,6 +13920,152 @@ function _dreamUpdateButtons() {
   if (stopBtn)  stopBtn.disabled  = !running;
 }
 
+// ─── Dream filters: novelty + truth ─────────────────────────────────
+// Two gates a candidate must pass before it surfaces as a primary SIG
+// card.
+//
+//   novelty: the proposed op is not already expressed in STATE.G (or
+//   any equivalent form — same slot, same value, etc.). Lexical-first;
+//   could grow to cosine-on-relation embeddings later.
+//
+//   entailment: the proposed op is supported by existing source-
+//   attested events under reasonable inference. Asks the LLM PASS or
+//   FAIL given an evidence pack of related claims.
+//
+// Both gates tag the candidate in place; nothing is dropped, so the
+// UI can render filtered-out candidates in a muted speculation rail.
+
+function _dreamRenderClaimLine(op, payload) {
+  if (op === 'DEF') {
+    const sub = STATE.entities.get(payload.subject)?.canonical || payload.subject;
+    const val = payload.valueIsEntity
+      ? (STATE.entities.get(payload.value)?.canonical || payload.value)
+      : payload.value;
+    return `${sub}.${payload.predicate} = ${val}`;
+  }
+  if (op === 'CON') {
+    const fr = STATE.entities.get(payload.from)?.canonical || payload.from;
+    const to = payload.toIsEntity
+      ? (STATE.entities.get(payload.to)?.canonical || payload.to)
+      : payload.to;
+    return `${fr} —${payload.relation}→ ${to}`;
+  }
+  return `${op} ${JSON.stringify(payload).slice(0, 100)}`;
+}
+
+function _dreamCheckNovelty(candidate) {
+  const op = candidate.proposedOp;
+  const p = candidate.proposedPayload;
+
+  if (op === 'DEF') {
+    const existing = getDefsForSlot(p.subject, p.predicate).filter(d => d.status === 'T');
+    for (const ex of existing) {
+      if (defValuesMatch(ex, p.value, p.valueIsEntity)) {
+        return { pass: false, reason: `slot ${p.subject}.${p.predicate} already has equivalent DEF` };
+      }
+    }
+    return { pass: true, reason: existing.length ? 'distinct value at populated slot' : 'empty slot' };
+  }
+
+  if (op === 'CON') {
+    for (const ev of STATE.G) {
+      if (!isEventActive(ev)) continue;
+      if (ev.op !== 'CON') continue;
+      const ep = ev.payload || {};
+      if (ep.from !== p.from) continue;
+      if (ep.relation !== p.relation) continue;
+      if (p.toIsEntity && ep.toIsEntity && ep.to === p.to) {
+        return { pass: false, reason: 'CON already in graph' };
+      }
+      if (!p.toIsEntity && !ep.toIsEntity) {
+        const a = String(ep.to).toLowerCase().trim();
+        const b = String(p.to).toLowerCase().trim();
+        if (a === b) return { pass: false, reason: 'CON already in graph' };
+      }
+    }
+    return { pass: true, reason: 'no equivalent CON in graph' };
+  }
+
+  // EVA/REC: not deduped at this layer.
+  return { pass: true, reason: `${op} not subject to novelty dedup` };
+}
+
+function _dreamGatherEvidence(candidate, maxLines = 30) {
+  const ids = new Set();
+  if (candidate.subjectId) ids.add(candidate.subjectId);
+  if (candidate.objectId) ids.add(candidate.objectId);
+  if (ids.size === 0) return [];
+  const out = [];
+  for (const ev of STATE.G) {
+    if (!isEventActive(ev)) continue;
+    const p = ev.payload || {};
+    let touches = false;
+    if (ev.op === 'DEF') {
+      if (ids.has(p.subject)) touches = true;
+      else if (p.valueIsEntity && ids.has(p.value)) touches = true;
+    } else if (ev.op === 'CON') {
+      if (ids.has(p.from)) touches = true;
+      else if (p.toIsEntity && ids.has(p.to)) touches = true;
+    }
+    if (!touches) continue;
+    const line = _dreamRenderClaimLine(ev.op, p);
+    if (line) out.push(line);
+    if (out.length >= maxLines) break;
+  }
+  return out;
+}
+
+const DREAM_TRUTH_SYSTEM = `You judge whether a proposed claim is supported by existing evidence.
+
+Output exactly two lines:
+1. PASS or FAIL
+2. one short sentence explaining your judgment.
+
+PASS — the proposed claim follows from, or is strongly suggested by, the evidence. The evidence does not have to state it word-for-word; reasonable inference is acceptable.
+
+FAIL — the proposed claim has no support in the evidence, contradicts it, or is a leap.
+
+No preamble, no markdown, no extra lines.`;
+
+async function _dreamCheckEntailment(candidate) {
+  const evidence = _dreamGatherEvidence(candidate);
+  const claim = _dreamRenderClaimLine(candidate.proposedOp, candidate.proposedPayload);
+  const userMsg = `Existing source-attested claims:\n${
+    evidence.length ? evidence.map(l => `- ${l}`).join('\n') : '(none in graph)'
+  }\n\nProposed claim:\n- ${claim}\n\nDream prose that produced this:\n"${(candidate.spanText || '').slice(0, 240)}"`;
+  let raw = '';
+  try {
+    raw = await callLLM(
+      DREAM_TRUTH_SYSTEM, userMsg,
+      STATE.dreamConfig.truthMaxTokens, 'dream-truth',
+      { temperature: 0.2 }
+    );
+  } catch (e) {
+    return { pass: false, reason: `judge error: ${e.message}` };
+  }
+  const text = String(raw || '').trim();
+  const firstLine = text.split('\n')[0].trim().toUpperCase();
+  const pass = firstLine.startsWith('PASS');
+  const reasonLine = text.split('\n').slice(1).join(' ').trim();
+  return { pass, reason: reasonLine || (pass ? 'supported' : 'not supported'), evidenceCount: evidence.length };
+}
+
+async function _dreamApplyFilters(candidates) {
+  for (const c of candidates) {
+    c.novelty = _dreamCheckNovelty(c);
+  }
+  // Truth gate runs only on novel candidates — cheap dedup before
+  // expensive LLM calls.
+  for (const c of candidates) {
+    if (c.novelty && c.novelty.pass) {
+      c.entailment = await _dreamCheckEntailment(c);
+    } else {
+      c.entailment = { pass: false, reason: 'skipped (not novel)' };
+    }
+  }
+  return candidates;
+}
+
 // ─── Dream cycle orchestrator ───────────────────────────────────────
 // One cycle = pick → generate prose → ingest into modal session →
 // (filter, surface — Phases 5+6+7). The orchestrator runs batchSize
@@ -13952,8 +14098,10 @@ async function _dreamCycle(session) {
   }
   const newCandidates = session.grounded.slice(before);
 
-  // Phase 5 hook: novelty filter will tag newCandidates here.
-  // Phase 6 hook: truth filter will tag newCandidates here.
+  await _dreamApplyFilters(newCandidates);
+  const surfaced = newCandidates.filter(c => c.novelty?.pass && c.entailment?.pass).length;
+  const speculative = newCandidates.filter(c => c.novelty?.pass && !c.entailment?.pass).length;
+
   // Phase 7 hook: SIG card renderer will surface them here.
 
   session.stepCount = stepNum;
@@ -13969,9 +14117,11 @@ async function _dreamCycle(session) {
     },
     sentenceCount: ingestResult.sentenceCount,
     candidatesProduced: newCandidates.length,
+    surfaced,
+    speculative,
   });
 
-  return { stepNum, injection, prose, candidatesProduced: newCandidates.length };
+  return { stepNum, injection, prose, candidatesProduced: newCandidates.length, surfaced };
 }
 
 async function runDreamBatch(sessionId) {
@@ -13998,7 +14148,7 @@ async function runDreamBatch(sessionId) {
 
     if (runner.aborted) { stopReason = runner.stoppingReason || 'user-stop'; break; }
 
-    const productive = result && !result.skipped && (result.candidatesProduced > 0);
+    const productive = result && !result.skipped && (result.surfaced > 0);
     consecutiveEmpty = productive ? 0 : consecutiveEmpty + 1;
     if (consecutiveEmpty >= maxConsecutiveEmpty) {
       stopReason = `${maxConsecutiveEmpty}-empty-cycles`;
