@@ -2859,22 +2859,21 @@ const STATE = {
   activeDreamSessionId: null,
   dreamRunner: null,        // { abort: () => void } while a session is live
   dreamConfig: {
-    temperature: 0.92,
-    top_p: 0.95,
-    maxTokens: 160,
-    maxSteps: 50,
+    // The dream is the orthogonal move to the linear ingest pass: small,
+    // stochastic, generative-but-mostly-discarded. Each cycle picks a
+    // few entities, asks the LLM for a short reflective passage, runs
+    // the same ingester used on source documents (in modal mode) on the
+    // resulting prose, and applies novelty + truth filters. What
+    // survives is surfaced as a SIG candidate with citations.
+    batchSize: 8,                // cycles per "Run a batch" click
     foregroundMin: 2,
-    foregroundMax: 4,
-    evaMin: 1,
-    evaMax: 3,
-    longDistanceProb: 0.15,
-    injectionTokenBudget: 600,
-    tailTokens: 140,
-    spanCharCap: 320,            // ~80 words per quoted span
-    stepDelayMs: 250,            // small breath between calls so the UI updates
-    stoppingWindow: 5,           // rolling window for low-yield termination
-    stoppingMinNew: 1,           // <1 new grounded candidate per 3 of last 5 steps
-    stoppingMinSteps: 8,         // never auto-stop earlier than this
+    foregroundMax: 3,
+    longDistanceProb: 0.25,      // chance to splice in a far-away entity
+    spanCharCap: 280,
+    proseMaxTokens: 360,         // 100-200 words of plain prose
+    proseTemperature: 0.85,      // looser than ingest, tighter than rambling
+    truthMaxTokens: 200,         // PASS/FAIL + 1-line reason
+    cycleDelayMs: 80,            // small breath between cycles
   },
 };
 
@@ -7456,8 +7455,23 @@ async function ingestSource(text, opts = {}) {
   return source;
 }
 
-// Validate and fold LLM-proposed events into G/S/M
-async function foldEvents(proposedEvents, clauseText, source, sentenceIdx, chromeSuspect = false) {
+// Validate and fold LLM-proposed events into G/S/M.
+//
+// `target` selects where the folded events land:
+//   {kind:'main'}                  — default; commits to STATE.G + STATE.edges
+//   {kind:'modal', sessionId}      — diverts every would-be commit into the
+//                                    named modal session as a SIG candidate
+//                                    carrying the proposedOp + proposedPayload.
+//                                    Used by ingestDreamProse so the dream's
+//                                    extracted ops never enter the main graph
+//                                    until the user promotes them via INS.
+//
+// Modal mode also drops any event whose subject/from doesn't resolve to an
+// existing entity — the dream is not allowed to mint.
+async function foldEvents(proposedEvents, clauseText, source, sentenceIdx, chromeSuspect = false, target = { kind: 'main' }) {
+  if (target && target.kind === 'modal') {
+    return foldEventsModal(proposedEvents, clauseText, source, sentenceIdx, target);
+  }
   const eventIds = [];
   const baseCoords = {
     sourceId: source.id,
@@ -7549,6 +7563,198 @@ async function foldEvents(proposedEvents, clauseText, source, sentenceIdx, chrom
   }
 
   return eventIds;
+}
+
+// ─── Modal-mode foldEvents (dream) ──────────────────────────────────
+// Diverts the per-clause LLM extractor's output away from STATE.G and
+// into a modal session as SIG candidates. Each candidate carries the
+// op the ingester *would* have committed on the main path
+// (proposedOp + proposedPayload), plus the dream sentence as
+// citation. The user's INS click later replays appendEvent with the
+// stored op/payload, promoting the candidate into the real graph.
+//
+// Resolution falls back through findEntityByMention exactly like the
+// main path; the only difference is that an unresolved entity here
+// drops the op rather than minting. The dream cannot create entities.
+async function foldEventsModal(proposedEvents, clauseText, source, sentenceIdx, target) {
+  const session = STATE.modalSessions.get(target.sessionId);
+  if (!session) return [];
+  const candidateIds = [];
+  for (const pe of proposedEvents) {
+    if (!pe || !pe.op) continue;
+    const cand = makeModalCandidate(pe, clauseText, sentenceIdx, target.sessionId, source.id);
+    if (!cand) continue;
+    session.grounded.push(cand);
+    candidateIds.push(cand.id);
+  }
+  return candidateIds;
+}
+
+function makeModalCandidate(pe, clauseText, sentenceIdx, sessionId, sourceId) {
+  // Note: SIG bare-mentions are NOT surfaced as user-actionable candidates
+  // (a name alone is not a claim). They remain in the session as
+  // attention-only signals, but the candidate object isn't created.
+  // The interesting ops are DEF, CON, REC — the dream's structural claims.
+  if (pe.op === 'SIG') return null;
+
+  if (pe.op === 'CON') {
+    const fromEnt = pe.from ? findEntityByMention(pe.from) : null;
+    if (!fromEnt) return null;
+    let toRef = pe.to;
+    let toIsEntity = !!pe.toIsEntity;
+    if (toIsEntity) {
+      const toEnt = findEntityByMention(pe.to);
+      if (toEnt) toRef = toEnt.id;
+      else toIsEntity = false;
+    }
+    const relation = normalizePredicate(pe.relation);
+    if (!relation || NON_RELATION_WORDS.has(relation) || relation.length < 2) return null;
+    return {
+      id: uid('mcand'),
+      kind: 'SIG',
+      proposedOp: 'CON',
+      proposedPayload: { from: fromEnt.id, to: toRef, toIsEntity, relation },
+      subjectId: fromEnt.id,
+      objectId: toIsEntity ? toRef : null,
+      objectLiteral: toIsEntity ? null : toRef,
+      spanText: clauseText,
+      sentenceIdx,
+      sessionId,
+      sourceId,
+      agent: 'dream-ingester:v1',
+      commitment: 'modal',
+      namespace: `modal:${sessionId}`,
+      accepted: false,
+      rejection: null,
+    };
+  }
+
+  if (pe.op === 'DEF') {
+    const subj = pe.subject ? findEntityByMention(pe.subject) : null;
+    if (!subj) return null;
+    const predicate = normalizePredicate(pe.predicate);
+    if (!predicate || NON_RELATION_WORDS.has(predicate) || predicate.length < 2) return null;
+    let value = pe.value;
+    let valueIsEntity = !!pe.valueIsEntity;
+    if (valueIsEntity) {
+      const valEnt = findEntityByMention(value);
+      if (valEnt) value = valEnt.id;
+      else valueIsEntity = false;
+    }
+    return {
+      id: uid('mcand'),
+      kind: 'SIG',
+      proposedOp: 'DEF',
+      proposedPayload: { subject: subj.id, predicate, value, valueIsEntity },
+      subjectId: subj.id,
+      objectId: valueIsEntity ? value : null,
+      objectLiteral: valueIsEntity ? null : value,
+      spanText: clauseText,
+      sentenceIdx,
+      sessionId,
+      sourceId,
+      agent: 'dream-ingester:v1',
+      commitment: 'modal',
+      namespace: `modal:${sessionId}`,
+      accepted: false,
+      rejection: null,
+    };
+  }
+
+  // EVA/REC: pass-through with payload preserved. The promotion path
+  // commits whatever payload the extractor produced.
+  if (pe.op === 'EVA' || pe.op === 'REC') {
+    return {
+      id: uid('mcand'),
+      kind: 'SIG',
+      proposedOp: pe.op,
+      proposedPayload: { ...pe },
+      subjectId: null,
+      objectId: null,
+      objectLiteral: null,
+      spanText: clauseText,
+      sentenceIdx,
+      sessionId,
+      sourceId,
+      agent: 'dream-ingester:v1',
+      commitment: 'modal',
+      namespace: `modal:${sessionId}`,
+      accepted: false,
+      rejection: null,
+    };
+  }
+
+  return null;
+}
+
+// ─── ingestDreamProse ───────────────────────────────────────────────
+// Run the per-clause extractor on dream prose with target=modal so the
+// extracted ops land in a dream session as SIG candidates rather than
+// in STATE.G. No entity minting, no source registration, no phasepost
+// classification, no embedding — none of those make sense for prose
+// the system itself produced. The dream is a generator; the ingester
+// is the parser. This function bridges the two.
+async function ingestDreamProse(proseText, sessionId) {
+  const session = STATE.modalSessions.get(sessionId);
+  if (!session) throw new Error('Unknown dream session: ' + sessionId);
+  if (!isLLMReady()) throw new Error('LLM not ready — cannot ingest dream prose');
+
+  const sentences = segmentSentences(proseText);
+  const target = { kind: 'modal', sessionId };
+  const synthSource = {
+    id: `dream:${sessionId}`,
+    name: 'dream',
+    publicationDate: null,
+    intakeTs: Date.now(),
+  };
+
+  // Salience seed: the entities the picker chose as foreground for this
+  // dream cycle, so the LLM has the right resolution context.
+  const seedSalience = (session.currentInjection?.entityIds || []).slice();
+  const salience = seedSalience.slice();
+  let candidatesAdded = 0;
+
+  for (let i = 0; i < sentences.length; i++) {
+    const clause = sentences[i];
+    if (!clause || clause.length < 6) continue;
+
+    const mentions = detectMentions(clause);
+
+    // Existing entities only — dream cannot mint.
+    const existingMentioned = mentions
+      .filter(m => m.matchedEntity)
+      .map(m => m.matchedEntity)
+      .filter((v, idx, a) => a.findIndex(x => x.id === v.id) === idx);
+
+    if (existingMentioned.length === 0) continue;
+
+    const salWindow = salience.slice(-5)
+      .filter(eid => !existingMentioned.find(m => m.id === eid))
+      .map(eid => STATE.entities.get(eid))
+      .filter(Boolean);
+
+    if (!isProseClause(clause)) continue;
+
+    let llmResult;
+    try {
+      llmResult = await processClauseWithEscalation(clause, existingMentioned, salWindow, mentions, synthSource);
+    } catch (e) {
+      console.warn('[dream] clause extraction failed:', e.message);
+      continue;
+    }
+
+    const before = session.grounded.length;
+    await foldEvents(llmResult.events || [], clause, synthSource, i, false, target);
+    candidatesAdded += session.grounded.length - before;
+
+    for (const e of existingMentioned) {
+      const idx = salience.indexOf(e.id);
+      if (idx !== -1) salience.splice(idx, 1);
+      salience.push(e.id);
+    }
+  }
+
+  return { sentenceCount: sentences.length, candidatesAdded };
 }
 
 // Compare a DEF's value against a candidate value for confirms-vs-conflicts
@@ -13343,563 +13549,26 @@ function renderSamples() {
   });
 }
 
+
 // ═══════════════════════════════════════════════════════════════════════
-// DREAMER · sustained reflection over assembled material
+// DREAMER · stochastic-collision loop (in progress)
 // ═══════════════════════════════════════════════════════════════════════
 //
-// Architecture (small):
-//   - Dreamer prompt is a single SYSTEM string that invites loose,
-//     associative reflection. The dreamer is allowed (in fact required)
-//     to assert without verifying. Hallucination is the cognitive
-//     function — it's how novel framings surface.
-//   - Each step: (a) build an injection from a graph slice, (b) thread
-//     it onto the tail of the prior step's prose, (c) call the LLM with
-//     temperature 0.92, (d) hand the prose to the Watcher.
-//   - The Watcher does the truth-protection: it scans the prose for
-//     mentions that resolve to existing entities, emits "grounded"
-//     interpretation-layer candidates (no SIG, no entity-mint), and
-//     emits "ungrounded" mentions for everything else as research
-//     leads. Nothing the dreamer says enters the main graph
-//     automatically — the user adjudicates manually in the panel.
-
-const DREAMER_SYSTEM_PROMPT = `You are dreaming, not analyzing. The material has loosened. Names drift toward each other; one figure's posture is borrowed by another. A street holds the weather of an old room. A document folds into a hand. Hold these images. Let them displace one another without explanation.
-
-Speak in the voice of attention itself, not of someone reaching a conclusion. Do not use: "I think," "I'm starting to see," "it seems," "the more I reflect," "interesting," "clearly," "intriguing." No questions to the reader. No summaries. No conclusions. No meta-commentary on the reflection itself.
-
-Concrete before abstract. The corner of a thing before the thing itself. A name before what it means. A gesture before what it argues. A weather, a room, a hand, a small specific object — let those carry the meaning.
-
-Sentences may end short. A sentence may begin in the middle of something. Let one image displace the next without a connective. Fragments are allowed.
-
-Three to five short sentences. No more. Stop before resolution. The thread continues elsewhere; let this fragment trail off.`;
-
-// ─── Slice selection ────────────────────────────────────────────────
-// Pick foreground entities by sampling from the entity store, weighted
-// by event-degree (how much has been said about them). This is the
-// "biased random walk" in its simplest form: we don't actually walk
-// the graph, we sample with bias and let the dream prose itself do
-// the walking.
-function _entityDegree(entityId) {
-  let n = 0;
-  for (const ev of STATE.G) {
-    const p = ev.payload || {};
-    if (p.entity === entityId || p.subject === entityId || p.from === entityId ||
-        p.value === entityId  || p.to === entityId) n++;
-  }
-  return n;
-}
-
-function _weightedSample(items, weightFn, k) {
-  const pool = items.slice();
-  const out = [];
-  while (out.length < k && pool.length) {
-    const weights = pool.map(weightFn);
-    const total = weights.reduce((a, b) => a + b, 0);
-    if (total <= 0) {
-      const i = Math.floor(Math.random() * pool.length);
-      out.push(pool.splice(i, 1)[0]);
-      continue;
-    }
-    let r = Math.random() * total;
-    let i = 0;
-    while (i < pool.length - 1 && (r -= weights[i]) > 0) i++;
-    out.push(pool.splice(i, 1)[0]);
-  }
-  return out;
-}
-
-// Find a small set of representative spans for an entity from G.
-function _spansForEntity(entityId, max = 2) {
-  const out = [];
-  for (const ev of STATE.G) {
-    if (out.length >= max) break;
-    const p = ev.payload || {};
-    const touchesEntity = p.entity === entityId || p.subject === entityId ||
-                          p.from === entityId || p.value === entityId || p.to === entityId;
-    if (!touchesEntity) continue;
-    if (!ev.spanText || ev.spanText.length < 20) continue;
-    out.push({ text: ev.spanText, sourceId: ev.sourceId, eventId: ev.id });
-  }
-  return out;
-}
-
-function _evaSentences(max = 3) {
-  // EVA records, plus EVA-op events from G. Render as observational
-  // sentences; never as event ids or technical formatting.
-  const evas = [];
-  for (const ev of STATE.G) {
-    if (ev.op !== 'EVA') continue;
-    const p = ev.payload || {};
-    const subj = STATE.entities.get(p.subject)?.canonical || p.subject || 'a figure in this account';
-    const pred = p.predicate || 'something';
-    const obj  = p.value && (STATE.entities.get(p.value)?.canonical || p.value);
-    if (obj) evas.push(`It has been noticed that ${subj} ${pred} ${obj}.`);
-    else     evas.push(`It has been noticed that ${subj} ${pred}.`);
-    if (evas.length >= max) break;
-  }
-  return evas;
-}
-
-function _sourceAttribution(sourceId) {
-  const src = STATE.sources.get(sourceId);
-  if (!src) return null;
-  const name = src.name || 'an earlier source';
-  if (src.publicationDate) return `from ${name} (${src.publicationDate})`;
-  return `from ${name}`;
-}
-
-function _truncateToCap(text, cap) {
-  if (text.length <= cap) return text;
-  const cut = text.slice(0, cap);
-  const lastPeriod = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '));
-  return (lastPeriod > cap * 0.6 ? cut.slice(0, lastPeriod + 1) : cut.replace(/\s+\S*$/, '')) + (text.length > cap ? '…' : '');
-}
-
-// Build a prose injection from a graph slice. Read as remembered
-// material, not as a database query result.
-function buildDreamInjection(cfg = STATE.dreamConfig) {
-  const allEntities = [...STATE.entities.values()].filter(e => e && e.canonical);
-  if (allEntities.length === 0) {
-    return { prose: '', entityIds: [], longDistanceEntityId: null, evaCount: 0 };
-  }
-  const fgCount = Math.max(cfg.foregroundMin,
-    Math.min(cfg.foregroundMax, Math.min(allEntities.length, cfg.foregroundMin + Math.floor(Math.random() * (cfg.foregroundMax - cfg.foregroundMin + 1)))));
-  const foreground = _weightedSample(allEntities, e => Math.max(1, _entityDegree(e.id)), fgCount);
-
-  const paragraphs = [];
-  for (const ent of foreground) {
-    const spans = _spansForEntity(ent.id, 1 + Math.floor(Math.random() * 2));
-    const lines = [];
-    const aliasNote = ent.aliases && ent.aliases.length > 0 ? ` (also called ${ent.aliases.slice(0, 2).join(', ')})` : '';
-    lines.push(`${ent.canonical}${aliasNote} appears in this material.`);
-    for (const sp of spans) {
-      const attr = _sourceAttribution(sp.sourceId);
-      const quote = _truncateToCap(sp.text, cfg.spanCharCap);
-      lines.push(attr ? `${attr}: "${quote}"` : `"${quote}"`);
-    }
-    paragraphs.push(lines.join(' '));
-  }
-
-  const evas = _evaSentences(cfg.evaMin + Math.floor(Math.random() * (cfg.evaMax - cfg.evaMin + 1)));
-  if (evas.length) paragraphs.push(evas.join(' '));
-
-  // Long-distance jump: pick a stray entity from the rest of the
-  // store and drop it into the injection without explanation.
-  let longDistanceEntityId = null;
-  if (Math.random() < cfg.longDistanceProb) {
-    const remaining = allEntities.filter(e => !foreground.includes(e));
-    if (remaining.length) {
-      const stray = remaining[Math.floor(Math.random() * remaining.length)];
-      const sp = _spansForEntity(stray.id, 1)[0];
-      if (sp) {
-        const quote = _truncateToCap(sp.text, cfg.spanCharCap);
-        paragraphs.push(`${stray.canonical}: "${quote}"`);
-        longDistanceEntityId = stray.id;
-      } else {
-        paragraphs.push(`${stray.canonical}.`);
-        longDistanceEntityId = stray.id;
-      }
-    }
-  }
-
-  return {
-    prose: paragraphs.join('\n\n'),
-    entityIds: foreground.map(e => e.id),
-    longDistanceEntityId,
-    evaCount: evas.length,
-  };
-}
-
-// Snap a tail to the most recent sentence boundary at or before the
-// target token count. Truncation is preserved when the prior step
-// hit the token cap mid-sentence — forcing closure shapes the dream
-// toward conclusion, which is what we don't want.
-function dreamTail(prose, targetTokens) {
-  if (!prose) return '';
-  const targetChars = targetTokens * 4; // ~4 chars/token
-  if (prose.length <= targetChars) return prose;
-  const start = prose.length - targetChars;
-  // Find the latest sentence boundary at or before the target start.
-  const window = prose.slice(0, start + Math.min(targetChars, 200));
-  const m = window.match(/[\.!?]\s+(?=[A-Z"])/g);
-  if (!m) return prose.slice(start);
-  // Find position of the last sentence boundary within the leading window.
-  let lastIdx = -1;
-  let searchFrom = 0;
-  for (const sep of m) {
-    const i = window.indexOf(sep, searchFrom);
-    if (i === -1) break;
-    lastIdx = i + sep.length;
-    searchFrom = i + sep.length;
-  }
-  if (lastIdx < 0) return prose.slice(start);
-  return prose.slice(lastIdx);
-}
-
-// ─── Watcher ─────────────────────────────────────────────────────────
-// Scans dream prose for mentions of canonical entity names + aliases.
-// When a mention resolves, it's a grounded modal candidate. When the
-// prose looks like an entity reference (proper-noun-ish capitalized
-// run) but doesn't resolve, it's an ungrounded mention.
+// Modal-mode plumbing is in place: foldEvents(target={kind:'modal',sessionId})
+// routes the per-clause extractor's output into the named modal session as
+// SIG candidates carrying proposedOp + proposedPayload, with no entity
+// minting. ingestDreamProse(prose, sessionId) drives the existing ingester
+// over arbitrary prose with that target.
 //
-// We do NOT mint entities, do NOT emit SIG, and do NOT touch STATE.G.
-// All output goes into the modal session; the user adjudicates.
-
-const _PROPER_NOUN_RE = /\b([A-Z][a-zA-Z'’\-]+(?:\s+(?:of|the|de|von|van|du|da)\s+[A-Z][a-zA-Z'’\-]+|\s+[A-Z][a-zA-Z'’\-]+){0,3})\b/g;
-const _DREAM_STOPWORDS = new Set([
-  'I', 'You', 'It', 'They', 'We', 'He', 'She', 'A', 'An', 'The', 'This', 'That', 'These', 'Those',
-  'And', 'But', 'Or', 'For', 'So', 'Yet', 'If', 'When', 'Where', 'While',
-  'In', 'On', 'At', 'To', 'From', 'By', 'With', 'About', 'Through', 'Across', 'Between',
-  'There', 'Here', 'Now', 'Then', 'Both', 'Either', 'Neither',
-  'God', 'Lord',
-]);
-
-function _sentenceSplit(prose) {
-  return prose.split(/(?<=[\.!?])\s+(?=[A-Z"])/).filter(s => s.trim().length > 0);
-}
-
-function _findEntityMentions(sentence) {
-  // Return list of { entityId, surface } found in this sentence.
-  const lower = sentence.toLowerCase();
-  const hits = [];
-  for (const ent of STATE.entities.values()) {
-    const candidates = [ent.canonical, ...(ent.aliases || [])].filter(Boolean);
-    for (const c of candidates) {
-      const cl = c.toLowerCase();
-      if (cl.length < 3) continue;
-      if (lower.includes(cl)) {
-        hits.push({ entityId: ent.id, surface: c });
-        break;
-      }
-    }
-  }
-  return hits;
-}
-
-function _findUngroundedMentions(sentence, knownSurfacesLower) {
-  const out = [];
-  let m;
-  _PROPER_NOUN_RE.lastIndex = 0;
-  while ((m = _PROPER_NOUN_RE.exec(sentence)) !== null) {
-    const surface = m[1];
-    if (_DREAM_STOPWORDS.has(surface)) continue;
-    if (surface.split(/\s+/).every(w => _DREAM_STOPWORDS.has(w))) continue;
-    if (knownSurfacesLower.has(surface.toLowerCase())) continue;
-    out.push(surface);
-  }
-  return out;
-}
-
-function watchDreamProse(session, step, prose) {
-  const sentences = _sentenceSplit(prose);
-  const knownSurfacesLower = new Set();
-  // Pre-collect every known canonical/alias surface for the unresolved-check.
-  for (const ent of STATE.entities.values()) {
-    if (ent.canonical) knownSurfacesLower.add(ent.canonical.toLowerCase());
-    for (const a of ent.aliases || []) if (a) knownSurfacesLower.add(a.toLowerCase());
-  }
-
-  for (const sentence of sentences) {
-    const mentions = _findEntityMentions(sentence);
-
-    if (mentions.length >= 2) {
-      // Two or more known entities co-occur in one sentence → modal CON
-      // candidate. The sentence itself is the grounding span.
-      const [a, b] = mentions;
-      session.grounded.push({
-        id: uid('mcon'),
-        kind: 'CON',
-        subject: a.entityId,
-        subjectLabel: STATE.entities.get(a.entityId)?.canonical || a.surface,
-        predicate: 'placed-alongside',
-        object: b.entityId,
-        objectLabel: STATE.entities.get(b.entityId)?.canonical || b.surface,
-        source: { step, span: sentence },
-        sessionId: session.id,
-        agent: 'dream-watcher:v1',
-        commitment: 'modal',
-        namespace: `modal:${session.id}`,
-        accepted: false,
-      });
-    } else if (mentions.length === 1) {
-      // One known entity → modal DEF/EVA candidate. Treat the sentence
-      // as a fresh interpretation of that entity for user review.
-      const m = mentions[0];
-      session.grounded.push({
-        id: uid('mdef'),
-        kind: 'DEF',
-        subject: m.entityId,
-        subjectLabel: STATE.entities.get(m.entityId)?.canonical || m.surface,
-        predicate: 'reflected-as',
-        object: sentence.length > 220 ? sentence.slice(0, 217) + '…' : sentence,
-        objectLabel: null,
-        source: { step, span: sentence },
-        sessionId: session.id,
-        agent: 'dream-watcher:v1',
-        commitment: 'modal',
-        namespace: `modal:${session.id}`,
-        accepted: false,
-      });
-    }
-
-    // Always also flag any ungrounded proper-noun mentions in this
-    // sentence — independent of grounded findings, since the dreamer
-    // routinely names patterns and figures from outside the corpus.
-    const unresolved = _findUngroundedMentions(sentence, knownSurfacesLower);
-    for (const surface of unresolved) {
-      const existing = session.ungrounded.find(u => u.mention.toLowerCase() === surface.toLowerCase());
-      if (existing) {
-        existing.recurrence++;
-        if (existing.exampleSpans.length < 3) existing.exampleSpans.push({ step, span: sentence });
-      } else {
-        session.ungrounded.push({
-          id: uid('mum'),
-          mention: surface,
-          recurrence: 1,
-          exampleSpans: [{ step, span: sentence }],
-          sessionId: session.id,
-          agent: 'dream-watcher:v1',
-          commitment: 'modal',
-          namespace: `modal:${session.id}`,
-          accepted: false,
-        });
-      }
-    }
-  }
-}
-
-// ─── Session runner ─────────────────────────────────────────────────
-// Run the dream loop. Returns the session object. The caller can pass
-// onStep to receive per-step prose for live UI updates, and onDone for
-// terminal stats. The runner can be aborted via the returned handle
-// stored on STATE.dreamRunner.
-
-function makeDreamSession() {
-  const id = uid('dream');
-  return {
-    id,
-    startedAt: Date.now(),
-    endedAt: null,
-    stoppingReason: null,
-    modelId: backendModelLabel(),
-    backend: STATE.llmBackend,
-    stepCount: 0,
-    journal: [],
-    grounded: [],
-    ungrounded: [],
-  };
-}
-
-async function runDreamSession({ onStep, onDone, onLineCommit, onStepBegin, maxSteps } = {}) {
-  if (STATE.entities.size === 0) {
-    throw new Error('No entities to dream over. Ingest a source first.');
-  }
-  const cfg = STATE.dreamConfig;
-  const session = makeDreamSession();
-  STATE.modalSessions.set(session.id, session);
-  STATE.activeDreamSessionId = session.id;
-
-  let aborted = false;
-  STATE.dreamRunner = { abort: () => { aborted = true; } };
-
-  const recentNew = [];   // rolling: count of new grounded candidates per step
-  const limit = Math.max(1, Math.min(maxSteps || cfg.maxSteps, 200));
-  let tail = '';
-
-  try {
-    for (let step = 1; step <= limit; step++) {
-      if (aborted) { session.stoppingReason = 'user-aborted'; break; }
-
-      const injection = buildDreamInjection(cfg);
-      if (!injection.prose) { session.stoppingReason = 'no-material'; break; }
-
-      const userMsg = step === 1
-        ? `The following has come into view:\n\n${injection.prose}`
-        : `What has been in reflection:\n\n[…] ${tail}\n\nThe following has come into view alongside it:\n\n${injection.prose}`;
-
-      const stepMeta = {
-        step,
-        injectionLongDistanceEntityId: injection.longDistanceEntityId,
-      };
-      if (typeof onStepBegin === 'function') {
-        try { onStepBegin(session, stepMeta); } catch {}
-      }
-
-      // Sentence-level commit. As streamed text arrives, slice out any
-      // newly-completed sentences and emit them via onLineCommit. The
-      // remainder stays buffered until the next chunk completes it.
-      let chunkBuf = '';
-      let chunkCount = 0;
-      const sentRe = /[^.!?\n]+(?:[.!?]+["')\]]*|\n+)/g;
-      const flushSentences = () => {
-        sentRe.lastIndex = 0;
-        let last = 0;
-        let m;
-        while ((m = sentRe.exec(chunkBuf)) !== null) {
-          const piece = m[0].trim();
-          if (piece) {
-            try { onLineCommit && onLineCommit(session, step, piece); } catch {}
-          }
-          last = sentRe.lastIndex;
-        }
-        if (last > 0) chunkBuf = chunkBuf.slice(last);
-      };
-      const onChunk = (delta) => {
-        chunkCount++;
-        chunkBuf += delta;
-        flushSentences();
-      };
-
-      let prose = '';
-      try {
-        prose = await callLLM(
-          DREAMER_SYSTEM_PROMPT,
-          userMsg,
-          cfg.maxTokens,
-          'dreamer',
-          { temperature: cfg.temperature, top_p: cfg.top_p, stop: null, onChunk }
-        );
-      } catch (e) {
-        session.stoppingReason = `llm-error: ${e.message}`;
-        break;
-      }
-      prose = (prose || '').trim();
-      if (!prose) { session.stoppingReason = 'empty-output'; break; }
-
-      // Commit any tail buffered after the last sentence-end.
-      const tailStr = chunkBuf.trim();
-      if (tailStr) {
-        try { onLineCommit && onLineCommit(session, step, tailStr); } catch {}
-        chunkBuf = '';
-      }
-
-      // Backend didn't stream (no onChunk fired). Replay the prose
-      // sentence-by-sentence with a small delay so the UI still animates.
-      if (chunkCount === 0 && typeof onLineCommit === 'function') {
-        const fakeBuf = prose;
-        sentRe.lastIndex = 0;
-        const pieces = [];
-        let m, last = 0;
-        while ((m = sentRe.exec(fakeBuf)) !== null) {
-          pieces.push(m[0].trim());
-          last = sentRe.lastIndex;
-        }
-        const trailing = fakeBuf.slice(last).trim();
-        if (trailing) pieces.push(trailing);
-        for (const p of pieces) {
-          if (aborted) break;
-          if (p) {
-            try { onLineCommit(session, step, p); } catch {}
-          }
-          await new Promise(r => setTimeout(r, 320));
-        }
-      }
-
-      const beforeCount = session.grounded.length;
-      watchDreamProse(session, step, prose);
-      const newCount = session.grounded.length - beforeCount;
-      recentNew.push(newCount);
-      if (recentNew.length > cfg.stoppingWindow) recentNew.shift();
-
-      session.journal.push({
-        step,
-        ts: Date.now(),
-        prose,
-        injectionEntityIds: injection.entityIds,
-        injectionLongDistanceEntityId: injection.longDistanceEntityId,
-        injectionEvaCount: injection.evaCount,
-      });
-      session.stepCount = step;
-      tail = dreamTail(prose, cfg.tailTokens);
-
-      if (typeof onStep === 'function') {
-        try { onStep(session, step, prose); } catch {}
-      }
-
-      // Low-yield stop: once past the warm-up window, if the trailing
-      // window of N steps produced fewer than (N - 2) new grounded
-      // candidates, we wind down. This is a soft signal, not a strict
-      // gate — the user can also stop at any time.
-      if (step >= cfg.stoppingMinSteps && recentNew.length === cfg.stoppingWindow) {
-        const recentTotal = recentNew.reduce((a, b) => a + b, 0);
-        if (recentTotal < cfg.stoppingWindow - 2) {
-          session.stoppingReason = 'low-yield';
-          break;
-        }
-      }
-
-      // Small breath so the UI can paint mid-loop.
-      if (cfg.stepDelayMs > 0) {
-        await new Promise(r => setTimeout(r, cfg.stepDelayMs));
-      }
-    }
-    if (!session.stoppingReason) session.stoppingReason = 'max-steps';
-  } finally {
-    session.endedAt = Date.now();
-    STATE.dreamRunner = null;
-    if (typeof onDone === 'function') {
-      try { onDone(session); } catch {}
-    }
-  }
-  return session;
-}
-
-// ─── User-side INS for dream observations ───────────────────────────
-// Promotes a single grounded modal candidate into the main graph.
-// Limited strictly to interpretation-layer ops: DEF and CON. We never
-// mint entities, never emit SIG, and never alter source-grounded
-// payloads. The new event records the modal session that produced it
-// so the provenance trail survives.
-function insDreamObservation(sessionId, candidateId) {
-  const session = STATE.modalSessions.get(sessionId);
-  if (!session) throw new Error('Unknown dream session');
-  const cand = session.grounded.find(c => c.id === candidateId);
-  if (!cand) throw new Error('Unknown candidate');
-  if (cand.accepted) return null;
-  if (cand.kind !== 'DEF' && cand.kind !== 'CON') {
-    throw new Error('Only DEF and CON dream candidates may be promoted');
-  }
-
-  const payload = cand.kind === 'CON'
-    ? { from: cand.subject, to: cand.object, toIsEntity: true, predicate: cand.predicate }
-    : { subject: cand.subject, predicate: cand.predicate, value: cand.object, valueIsEntity: false };
-
-  const ev = appendEvent({
-    op: cand.kind,
-    payload,
-    spanText: cand.source?.span || null,
-    authoredBy: 'reader-from-dream',
-  });
-  ev.dreamSessionId = sessionId;
-  ev.dreamStep = cand.source?.step ?? null;
-  ev.commitment = 'reader-promoted';
-  cand.accepted = true;
-  cand.acceptedEventId = ev.id;
-  return ev;
-}
-
-// ─── Dream view rendering ───────────────────────────────────────────
-function _activeDreamSession() {
-  if (STATE.activeDreamSessionId) {
-    const s = STATE.modalSessions.get(STATE.activeDreamSessionId);
-    if (s) return s;
-  }
-  // Fall back to most recent.
-  let latest = null;
-  for (const s of STATE.modalSessions.values()) {
-    if (!latest || (s.startedAt > latest.startedAt)) latest = s;
-  }
-  return latest;
-}
-
-function _dreamMetaText(session) {
-  if (!session) return 'no session';
-  const live = STATE.dreamRunner != null && STATE.activeDreamSessionId === session.id;
-  const parts = [];
-  parts.push(live ? `live · step ${session.stepCount}` : `${session.stoppingReason || 'idle'} · ${session.stepCount} steps`);
-  parts.push(`${session.grounded.length} observations`);
-  parts.push(`${session.ungrounded.length} unresolved`);
-  return parts.join(' · ');
-}
+// What's still to build:
+//   - Picker (cross-entity + within-entity, semantic-near & graph-distant)
+//   - Prose generator (small Haiku call, 100-200 words of reflection)
+//   - Cycle orchestrator (pick → generate → ingestDreamProse → filter → surface)
+//   - Novelty filter (proposed op not already in STATE.G; cosine pre-filter)
+//   - Truth filter (proposed op supported by source-attested events)
+//   - Promotion path (insDreamObservation reads proposedOp/proposedPayload)
+//   - Render (SIG cards + instrumentation footer)
+//   - Wiring (start button → run batch)
 
 // Make-or-find a step container in the journal. Each container holds
 // an inline body where individual sentence spans (.dream-line) are
@@ -13951,195 +13620,26 @@ function _dreamSplitSentences(prose) {
 }
 
 function renderDreamView() {
-  const session = _activeDreamSession();
   const journal = document.getElementById('dream-journal');
   const rail    = document.getElementById('dream-rail-body');
   const meta    = document.getElementById('dream-meta');
   const stopBtn = document.getElementById('dream-stop-btn');
   const startBtn = document.getElementById('dream-start-btn');
-
-  if (meta) meta.textContent = _dreamMetaText(session);
-  if (stopBtn) stopBtn.disabled = !STATE.dreamRunner;
-  if (startBtn) startBtn.disabled = STATE.dreamRunner != null || STATE.entities.size === 0;
-
-  if (!journal || !rail) return;
-
-  if (!session) {
-    journal.innerHTML = `<div class="empty-state">No reflection yet. Ingest a source, then begin.</div>`;
-    journal.dataset.sessionId = '';
-    rail.innerHTML = `<div class="empty-state" style="padding: 20px;">No observations yet.</div>`;
-    return;
+  if (meta) meta.textContent = 'collision loop · rebuilding';
+  if (stopBtn) stopBtn.disabled = true;
+  if (startBtn) startBtn.disabled = true;
+  if (journal) {
+    journal.innerHTML = `<div class="empty-state" style="padding: 40px 24px; font-family:'Newsreader',serif;color:var(--ink-soft);max-width: 540px;">
+      <p>The dream loop is being rewritten.</p>
+      <p style="margin-top: 0.8em;">Old architecture: linear paraphrase walk + regex co-occurrence extractor. Output was nearly all noise.</p>
+      <p style="margin-top: 0.8em;">New architecture: stochastic collisions over the existing graph + embeddings. Dream prose runs through the same ingester that reads source documents — but in modal mode, where the extracted ops land as SIG candidates the user can promote via INS, never directly into <code>STATE.G</code>. Novelty + truth filters between the modal commit and the surfaced card.</p>
+      <p style="margin-top: 0.8em;font-style: italic;">Modal-mode plumbing is in place. Picker, prose generator, cycle, filters, and surfacing UI to follow.</p>
+    </div>`;
   }
-
-  // Session changed (new dream started) — clear stale DOM.
-  if (journal.dataset.sessionId !== session.id) {
-    journal.innerHTML = '';
-    journal.dataset.sessionId = session.id;
+  if (rail) {
+    rail.innerHTML = `<div class="empty-state" style="padding: 20px;font-family:'Newsreader',serif;font-style:italic;color:var(--ink-soft);">No candidates yet.</div>`;
   }
-
-  // Empty state until the first sentence lands.
-  const hasAnyStepEl = journal.querySelector('.dream-step') != null;
-  if (session.journal.length === 0 && !hasAnyStepEl) {
-    if (!journal.querySelector('.empty-state')) {
-      journal.innerHTML = `<div class="empty-state">Reflection is starting…</div>`;
-    }
-  } else {
-    const empty = journal.querySelector('.empty-state');
-    if (empty) empty.remove();
-    // Reconstruct any committed steps that aren't already in the DOM
-    // (e.g. when the user switches tabs and comes back). Lines arrive
-    // without animation since they are not freshly streamed.
-    for (const j of session.journal) {
-      if (journal.querySelector(`[data-dream-step="${j.step}"]`)) continue;
-      const sentences = _dreamSplitSentences(j.prose);
-      for (const s of sentences) {
-        _dreamCommitLine(journal, j, s, { instant: true });
-      }
-    }
-    // While a session is live, settle the scroll at the bottom so the
-    // newest content sits in the focal band.
-    if (STATE.dreamRunner && STATE.activeDreamSessionId === session.id) {
-      journal.scrollTop = journal.scrollHeight;
-    }
-  }
-
-  // Right rail: grounded observations (with INS), then ungrounded mentions.
-  const groundedHtml = session.grounded.length === 0
-    ? `<div style="padding: 12px 14px; font-family:'Newsreader',serif;font-size:12px;color:var(--ink-soft);font-style:italic;">No grounded observations yet.</div>`
-    : session.grounded.map(c => {
-        const subjLabel = escapeHtml(c.subjectLabel || '');
-        const objLabel  = escapeHtml(c.objectLabel || c.object || '');
-        const pred      = escapeHtml(c.predicate);
-        const span      = escapeHtml(c.source?.span || '');
-        const accepted  = c.accepted;
-        return `
-          <div style="padding: 10px 14px; border-bottom: 1px solid var(--rule); ${accepted ? 'opacity: 0.5;' : ''}">
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:4px;">${c.kind} · step ${c.source?.step ?? '–'}</div>
-            <div style="font-family:'Newsreader',serif;font-size:12.5px;line-height:1.45;color:var(--ink);">
-              <strong>${subjLabel}</strong> <span style="color: var(--ink-soft);">${pred}</span>${c.kind === 'CON' ? ` <strong>${objLabel}</strong>` : ` <em>${objLabel}</em>`}
-            </div>
-            <div style="margin-top: 6px; font-family:'Newsreader',serif;font-size:11px;font-style:italic;color:var(--ink-soft);line-height:1.45;">"${span}"</div>
-            <div style="margin-top: 8px; display: flex; gap: 6px;">
-              ${accepted
-                ? `<span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-faint);letter-spacing:0.06em;">added to log</span>`
-                : `<button class="primary dream-ins-btn" data-cand-id="${c.id}" style="font-size: 10px; padding: 4px 10px;">INS to log</button><button class="secondary dream-dismiss-btn" data-cand-id="${c.id}" style="font-size: 10px; padding: 4px 10px;">Dismiss</button>`}
-            </div>
-          </div>
-        `;
-      }).join('');
-
-  const ungroundedHtml = session.ungrounded.length === 0
-    ? ''
-    : `
-      <div style="padding: 14px 14px 6px; border-top: 2px solid var(--rule); margin-top: 6px;">
-        <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:6px;">unresolved mentions</div>
-        <div style="font-family:'Newsreader',serif;font-size:11px;font-style:italic;color:var(--ink-soft);line-height:1.45;">Names the dream gestured at that the system doesn't recognize. Research leads, not graph proposals.</div>
-      </div>
-      ${session.ungrounded.map(u => `
-        <div style="padding: 8px 14px; border-bottom: 1px solid var(--rule);">
-          <div style="font-family:'Newsreader',serif;font-size:13px;color:var(--ink);"><strong>${escapeHtml(u.mention)}</strong> <span style="color: var(--ink-faint); font-size: 11px;">recurred ×${u.recurrence}</span></div>
-          <div style="margin-top: 4px; font-family:'Newsreader',serif;font-size:11px;font-style:italic;color:var(--ink-soft);line-height:1.45;">"${escapeHtml(u.exampleSpans[0]?.span || '')}"</div>
-        </div>
-      `).join('')}
-    `;
-
-  rail.innerHTML = groundedHtml + ungroundedHtml;
-
-  rail.querySelectorAll('.dream-ins-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      try {
-        insDreamObservation(session.id, btn.getAttribute('data-cand-id'));
-        renderDreamView();
-        renderHeaderStatus();
-      } catch (e) {
-        alert('Could not add: ' + e.message);
-      }
-    });
-  });
-  rail.querySelectorAll('.dream-dismiss-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-cand-id');
-      session.grounded = session.grounded.filter(c => c.id !== id);
-      renderDreamView();
-    });
-  });
 }
-
-// ─── Dream view wiring ──────────────────────────────────────────────
-(() => {
-  const startBtn = document.getElementById('dream-start-btn');
-  const stopBtn  = document.getElementById('dream-stop-btn');
-  const status   = document.getElementById('dream-status');
-  const stepsInput = document.getElementById('dream-max-steps');
-  const tempInput  = document.getElementById('dream-temperature');
-  if (!startBtn || !stopBtn) return;
-
-  startBtn.addEventListener('click', async () => {
-    if (STATE.dreamRunner) return;
-    if (STATE.entities.size === 0) {
-      alert('Ingest a source first — there is nothing to reflect on.');
-      return;
-    }
-    const maxSteps = Math.max(1, Math.min(parseInt(stepsInput.value, 10) || 50, 200));
-    const temp = parseFloat(tempInput.value);
-    if (Number.isFinite(temp) && temp > 0 && temp <= 2) STATE.dreamConfig.temperature = temp;
-    startBtn.disabled = true;
-    stopBtn.disabled  = false;
-    status.textContent = 'starting…';
-    try {
-      await runDreamSession({
-        maxSteps,
-        onStepBegin: (s, stepMeta) => {
-          const journal = document.getElementById('dream-journal');
-          if (!journal) return;
-          // Make sure the journal is in step-rendering mode (clear
-          // empty-state, sync session id) before lines start arriving.
-          // Run regardless of which view is active so mid-flight lines
-          // are not lost when the user is on another tab.
-          if (journal.dataset.sessionId !== s.id) {
-            journal.innerHTML = '';
-            journal.dataset.sessionId = s.id;
-          }
-          const empty = journal.querySelector('.empty-state');
-          if (empty) empty.remove();
-          _dreamEnsureStepEl(journal, stepMeta);
-        },
-        onLineCommit: (s, step, text) => {
-          const journal = document.getElementById('dream-journal');
-          if (!journal) return;
-          // Find the step's stored meta for the long-distance flag, if
-          // already in journal; otherwise build a minimal meta.
-          const j = s.journal.find(x => x.step === step);
-          const stepMeta = j || { step, injectionLongDistanceEntityId: null };
-          _dreamCommitLine(journal, stepMeta, text);
-        },
-        onStep: (s, step) => {
-          status.textContent = `step ${step} · ${s.grounded.length} observations`;
-          // Refresh meta + rail without rebuilding the journal DOM.
-          if (STATE.activeView === 'dream') renderDreamView();
-        },
-        onDone: (s) => {
-          status.textContent = `done · ${s.stoppingReason} · ${s.grounded.length} observations`;
-          if (STATE.activeView === 'dream') renderDreamView();
-        },
-      });
-    } catch (e) {
-      status.textContent = `error: ${e.message}`;
-      console.error('Dream session failed:', e);
-    } finally {
-      startBtn.disabled = STATE.entities.size === 0;
-      stopBtn.disabled  = true;
-      if (STATE.activeView === 'dream') renderDreamView();
-    }
-  });
-
-  stopBtn.addEventListener('click', () => {
-    if (STATE.dreamRunner && typeof STATE.dreamRunner.abort === 'function') {
-      STATE.dreamRunner.abort();
-      status.textContent = 'stopping…';
-    }
-  });
-})();
 
 async function boot() {
   const overlay = document.getElementById('init-overlay');
