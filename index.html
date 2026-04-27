@@ -369,6 +369,90 @@ button.secondary.danger:hover { background: var(--accent); color: var(--paper); 
   35%  { opacity: 0.45; filter: blur(2px);   letter-spacing: 0.04em; }
   100% { opacity: 1;    filter: blur(0);     letter-spacing: 0; }
 }
+.dream-rail-section { padding: 4px 0; }
+.dream-rail-section header {
+  padding: 8px 14px 4px;
+  display: flex; align-items: center; justify-content: space-between;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.dream-rail-section header label {
+  display: inline-flex; align-items: center; gap: 6px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-soft);
+}
+.dream-rail-section header label input { margin: 0; }
+.dream-card {
+  margin: 8px 12px;
+  padding: 10px 12px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  font-family: 'Newsreader', serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.dream-card.dream-card--speculative { background: var(--paper-soft); opacity: 0.85; }
+.dream-card.dream-card--accepted    { border-color: var(--ink-soft); background: var(--paper-deep); }
+.dream-card.dream-card--rejected    { opacity: 0.45; }
+.dream-card-head {
+  display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px;
+}
+.dream-op-badge {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 5px;
+  background: var(--ink); color: var(--paper);
+  border-radius: 1px;
+}
+.dream-claim { font-style: italic; color: var(--ink-soft); }
+.dream-span {
+  margin: 6px 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--ink-ghost);
+  font-size: 12px;
+  color: var(--ink-soft);
+  font-style: italic;
+}
+.dream-why {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--ink-faint);
+  margin: 4px 0;
+}
+.dream-why summary { cursor: pointer; user-select: none; }
+.dream-why-row { padding: 2px 0; }
+.dream-why-row.pass { color: var(--ink-soft); }
+.dream-why-row.fail { color: var(--ink-faint); }
+.dream-actions { display: flex; gap: 6px; margin-top: 6px; }
+.dream-actions button {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding: 4px 8px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--rule);
+  cursor: pointer;
+}
+.dream-actions button:hover { border-color: var(--ink-soft); }
+.dream-actions button:disabled { color: var(--ink-faint); cursor: default; }
+.dream-actions .dream-act-accept { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.dream-actions .dream-act-accept:disabled { background: var(--paper-deep); color: var(--ink-soft); border-color: var(--ink-soft); }
+.dream-rail-empty {
+  padding: 10px 14px;
+  font-family: 'Newsreader', serif;
+  font-style: italic;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
 
 /* ── QUERY PANE ──────────────────────────────────────────────────── */
 .query-composer {
@@ -2874,6 +2958,7 @@ const STATE = {
     proseTemperature: 0.85,      // looser than ingest, tighter than rambling
     truthMaxTokens: 200,         // PASS/FAIL + 1-line reason
     cycleDelayMs: 80,            // small breath between cycles
+    showSpeculation: false,      // render entailment-failed candidates muted
   },
 };
 
@@ -13619,6 +13704,193 @@ function _dreamSplitSentences(prose) {
   return out;
 }
 
+// ─── Dream surfacing: SIG cards, promotion, rejection ──────────────
+// Cards are rendered into #dream-rail-body in two stacked sections:
+//   primary    — novelty.pass && entailment.pass, always shown
+//   speculation — novelty.pass && !entailment.pass, behind a toggle
+// Promotion calls appendEvent with the candidate's stored proposedOp +
+// proposedPayload, plus the post-appendEvent bookkeeping foldEvents
+// does on the main path (addDef/strengthenDef/conflictDef for DEF;
+// STATE.edges.push for CON). Source attribution stays with the dream
+// session (audit trail); authoredBy flips to 'user' to mark assent.
+
+function _dreamEscape(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function _dreamRenderCard(c) {
+  const claim = _dreamEscape(_dreamRenderClaimLine(c.proposedOp, c.proposedPayload));
+  const span = _dreamEscape((c.spanText || '').trim());
+  const nov = c.novelty || { pass: false, reason: '—' };
+  const ent = c.entailment || { pass: false, reason: '—' };
+  const cls = ['dream-card'];
+  if (c.accepted) cls.push('dream-card--accepted');
+  else if (c.rejection) cls.push('dream-card--rejected');
+  else if (!ent.pass) cls.push('dream-card--speculative');
+  const acceptLabel = c.accepted ? 'INS ✓' : 'INS';
+  const rejectLabel = c.rejection ? 'rejected' : 'reject';
+  const acceptDisabled = c.accepted ? 'disabled' : '';
+  const rejectDisabled = (c.accepted || c.rejection) ? 'disabled' : '';
+  return `
+    <article class="${cls.join(' ')}" data-cand-id="${_dreamEscape(c.id)}">
+      <div class="dream-card-head">
+        <span class="dream-op-badge">${_dreamEscape(c.proposedOp)}</span>
+        <span class="dream-claim">${claim}</span>
+      </div>
+      <blockquote class="dream-span">"${span}"</blockquote>
+      <details class="dream-why">
+        <summary>why</summary>
+        <div class="dream-why-row ${nov.pass ? 'pass' : 'fail'}">novelty: ${nov.pass ? '✓' : '✕'} ${_dreamEscape(nov.reason)}</div>
+        <div class="dream-why-row ${ent.pass ? 'pass' : 'fail'}">entailment: ${ent.pass ? '✓' : '✕'} ${_dreamEscape(ent.reason)}</div>
+        ${c.rejection ? `<div class="dream-why-row fail">rejected: ${_dreamEscape(c.rejection)}</div>` : ''}
+      </details>
+      <div class="dream-actions">
+        <button class="dream-act-accept" data-action="accept" ${acceptDisabled}>${acceptLabel}</button>
+        <button data-action="reject" ${rejectDisabled}>${rejectLabel}</button>
+      </div>
+    </article>
+  `;
+}
+
+function _dreamRenderRail() {
+  const rail = document.getElementById('dream-rail-body');
+  if (!rail) return;
+  const session = STATE.activeDreamSessionId
+    ? STATE.modalSessions.get(STATE.activeDreamSessionId)
+    : (() => {
+        // No active session — pull the most recently ended session
+        // so completed runs stay visible until a new one starts.
+        let best = null;
+        for (const s of STATE.modalSessions.values()) {
+          const t = s.endedAt || s.startedAt;
+          if (!best || t > (best.endedAt || best.startedAt)) best = s;
+        }
+        return best;
+      })();
+  if (!session) {
+    rail.innerHTML = `<div class="dream-rail-empty">No candidates yet.</div>`;
+    return;
+  }
+  const cands = session.grounded || [];
+  const primary = cands.filter(c => c.novelty?.pass && c.entailment?.pass);
+  const speculative = cands.filter(c => c.novelty?.pass && c.entailment && !c.entailment.pass);
+  const showSpec = !!STATE.dreamConfig.showSpeculation;
+
+  const primaryHtml = primary.length
+    ? primary.map(_dreamRenderCard).join('')
+    : `<div class="dream-rail-empty">No surfaced candidates yet.</div>`;
+  const specBodyHtml = speculative.length
+    ? speculative.map(_dreamRenderCard).join('')
+    : `<div class="dream-rail-empty">Nothing in speculation.</div>`;
+
+  rail.innerHTML = `
+    <div class="dream-rail-section">
+      <header><span>Surfaced (${primary.length})</span></header>
+      <div class="dream-rail-cards">${primaryHtml}</div>
+    </div>
+    <div class="dream-rail-section">
+      <header>
+        <label>
+          <input type="checkbox" id="dream-show-speculation" ${showSpec ? 'checked' : ''}>
+          Show speculation (${speculative.length})
+        </label>
+      </header>
+      <div class="dream-rail-cards" ${showSpec ? '' : 'hidden'}>${specBodyHtml}</div>
+    </div>
+  `;
+
+  const toggle = rail.querySelector('#dream-show-speculation');
+  if (toggle) {
+    toggle.addEventListener('change', (e) => {
+      STATE.dreamConfig.showSpeculation = !!e.target.checked;
+      _dreamRenderRail();
+    });
+  }
+  rail.querySelectorAll('button[data-action]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const article = btn.closest('article[data-cand-id]');
+      if (!article) return;
+      const candId = article.dataset.candId;
+      const cand = (session.grounded || []).find(c => c.id === candId);
+      if (!cand) return;
+      const action = btn.dataset.action;
+      if (action === 'accept') _dreamPromoteCandidate(cand);
+      else if (action === 'reject') _dreamRejectCandidate(cand);
+    });
+  });
+}
+
+function _dreamPromoteCandidate(candidate) {
+  if (!candidate || candidate.accepted) return;
+  if (candidate.rejection) return;
+  const op = candidate.proposedOp;
+  const p = candidate.proposedPayload;
+  const baseCoords = {
+    sourceId: candidate.sourceId,
+    intakeTs: Date.now(),
+    narrativePos: { sourceId: candidate.sourceId, sentenceIdx: candidate.sentenceIdx },
+    spanText: candidate.spanText,
+    authoredBy: 'user',
+  };
+  let ev = null;
+  try {
+    if (op === 'DEF') {
+      ev = appendEvent({ ...baseCoords, op: 'DEF', payload: p });
+      const grounding = {
+        sentenceIdx: candidate.sentenceIdx,
+        spanText: candidate.spanText,
+        sourceEventId: ev.id,
+        value: p.value,
+      };
+      const existingDefs = getDefsForSlot(p.subject, p.predicate).filter(d => d.status === 'T');
+      let matched = false;
+      for (const existing of existingDefs) {
+        if (defValuesMatch(existing, p.value, p.valueIsEntity)) {
+          strengthenDef(existing, grounding, ev.id);
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        addDef(p.subject, p.predicate, p.value, p.valueIsEntity, [grounding], 'user');
+        if (existingDefs.length > 0) {
+          for (const existing of existingDefs) {
+            conflictDef(existing, grounding, ev.id, 'user-promoted dream observation differs from prior DEF');
+          }
+        }
+      }
+    } else if (op === 'CON') {
+      ev = appendEvent({ ...baseCoords, op: 'CON', payload: p });
+      STATE.edges.push({
+        from: p.from, to: p.to, toIsEntity: p.toIsEntity, relation: p.relation,
+        sourceEvent: ev.id, sentenceIdx: candidate.sentenceIdx,
+      });
+    } else {
+      ev = appendEvent({ ...baseCoords, op, payload: p });
+    }
+  } catch (e) {
+    console.error('[dream] promote failed:', e);
+    candidate.rejection = `promote error: ${e.message}`;
+    _dreamRenderRail();
+    return;
+  }
+  candidate.accepted = true;
+  candidate.acceptedEventId = ev ? ev.id : null;
+  _dreamRenderRail();
+}
+
+function _dreamRejectCandidate(candidate) {
+  if (!candidate || candidate.accepted || candidate.rejection) return;
+  const reason = window.prompt('Reject reason (optional):', '');
+  // null = user cancelled; treat as no-op. Empty string = accepted as
+  // "rejected without explanation".
+  if (reason === null) return;
+  candidate.rejection = reason || 'no reason given';
+  _dreamRenderRail();
+}
+
 // ─── Dream picker ───────────────────────────────────────────────────
 // Selects which entities the next dream cycle reflects on. The dream
 // is a stochastic loop; the picker is what makes it stochastic. It
@@ -14102,7 +14374,7 @@ async function _dreamCycle(session) {
   const surfaced = newCandidates.filter(c => c.novelty?.pass && c.entailment?.pass).length;
   const speculative = newCandidates.filter(c => c.novelty?.pass && !c.entailment?.pass).length;
 
-  // Phase 7 hook: SIG card renderer will surface them here.
+  _dreamRenderRail();
 
   session.stepCount = stepNum;
   session.journal.push({
@@ -14212,9 +14484,7 @@ function renderDreamView() {
     </div>`;
     journal.dataset.dreamInitialized = '1';
   }
-  if (rail) {
-    rail.innerHTML = `<div class="empty-state" style="padding: 20px;font-family:'Newsreader',serif;font-style:italic;color:var(--ink-soft);">No candidates yet.</div>`;
-  }
+  _dreamRenderRail();
   if (startBtn && !startBtn.dataset.dreamWired) {
     startBtn.addEventListener('click', _dreamHandleStart);
     startBtn.dataset.dreamWired = '1';
