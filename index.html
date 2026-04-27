@@ -369,6 +369,90 @@ button.secondary.danger:hover { background: var(--accent); color: var(--paper); 
   35%  { opacity: 0.45; filter: blur(2px);   letter-spacing: 0.04em; }
   100% { opacity: 1;    filter: blur(0);     letter-spacing: 0; }
 }
+.dream-rail-section { padding: 4px 0; }
+.dream-rail-section header {
+  padding: 8px 14px 4px;
+  display: flex; align-items: center; justify-content: space-between;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.dream-rail-section header label {
+  display: inline-flex; align-items: center; gap: 6px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-soft);
+}
+.dream-rail-section header label input { margin: 0; }
+.dream-card {
+  margin: 8px 12px;
+  padding: 10px 12px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  font-family: 'Newsreader', serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.dream-card.dream-card--speculative { background: var(--paper-soft); opacity: 0.85; }
+.dream-card.dream-card--accepted    { border-color: var(--ink-soft); background: var(--paper-deep); }
+.dream-card.dream-card--rejected    { opacity: 0.45; }
+.dream-card-head {
+  display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px;
+}
+.dream-op-badge {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 5px;
+  background: var(--ink); color: var(--paper);
+  border-radius: 1px;
+}
+.dream-claim { font-style: italic; color: var(--ink-soft); }
+.dream-span {
+  margin: 6px 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--ink-ghost);
+  font-size: 12px;
+  color: var(--ink-soft);
+  font-style: italic;
+}
+.dream-why {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--ink-faint);
+  margin: 4px 0;
+}
+.dream-why summary { cursor: pointer; user-select: none; }
+.dream-why-row { padding: 2px 0; }
+.dream-why-row.pass { color: var(--ink-soft); }
+.dream-why-row.fail { color: var(--ink-faint); }
+.dream-actions { display: flex; gap: 6px; margin-top: 6px; }
+.dream-actions button {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding: 4px 8px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--rule);
+  cursor: pointer;
+}
+.dream-actions button:hover { border-color: var(--ink-soft); }
+.dream-actions button:disabled { color: var(--ink-faint); cursor: default; }
+.dream-actions .dream-act-accept { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.dream-actions .dream-act-accept:disabled { background: var(--paper-deep); color: var(--ink-soft); border-color: var(--ink-soft); }
+.dream-rail-empty {
+  padding: 10px 14px;
+  font-family: 'Newsreader', serif;
+  font-style: italic;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
 
 /* ── QUERY PANE ──────────────────────────────────────────────────── */
 .query-composer {
@@ -2868,6 +2952,7 @@ const STATE = {
     proseTemperature: 0.85,      // looser than ingest, tighter than rambling
     truthMaxTokens: 200,         // PASS/FAIL + 1-line reason
     cycleDelayMs: 80,            // small breath between cycles
+    showSpeculation: false,      // render entailment-failed candidates muted
   },
 };
 
@@ -13521,13 +13606,28 @@ function _dreamEnsureStepEl(journal, stepMeta) {
   el.dataset.dreamStep = String(stepMeta.step);
   const hdr = document.createElement('div');
   hdr.className = 'dream-step-header';
-  hdr.textContent = `step ${stepMeta.step}` + (stepMeta.injectionLongDistanceEntityId ? ' · stray fragment present' : '');
+  let label = `step ${stepMeta.step}`;
+  if (stepMeta.injectionLabel) label += ` · ${stepMeta.injectionLabel}`;
+  else if (stepMeta.injectionLongDistanceEntityId) label += ' · stray fragment present';
+  hdr.textContent = label;
   const body = document.createElement('div');
   body.className = 'dream-step-body';
   el.appendChild(hdr);
   el.appendChild(body);
   journal.appendChild(el);
   return el;
+}
+
+function _dreamAppendNote(text) {
+  const journal = document.getElementById('dream-journal');
+  if (!journal || !text) return;
+  const note = document.createElement('div');
+  note.className = 'dream-step-header';
+  note.style.marginTop = '12px';
+  note.style.fontStyle = 'italic';
+  note.textContent = text;
+  journal.appendChild(note);
+  journal.scrollTop = journal.scrollHeight;
 }
 
 function _dreamCommitLine(journal, stepMeta, text, opts) {
@@ -13559,25 +13659,826 @@ function _dreamSplitSentences(prose) {
   return out;
 }
 
+// ─── Dream surfacing: SIG cards, promotion, rejection ──────────────
+// Cards are rendered into #dream-rail-body in two stacked sections:
+//   primary    — novelty.pass && entailment.pass, always shown
+//   speculation — novelty.pass && !entailment.pass, behind a toggle
+// Promotion calls appendEvent with the candidate's stored proposedOp +
+// proposedPayload, plus the post-appendEvent bookkeeping foldEvents
+// does on the main path (addDef/strengthenDef/conflictDef for DEF;
+// STATE.edges.push for CON). Source attribution stays with the dream
+// session (audit trail); authoredBy flips to 'user' to mark assent.
+
+function _dreamEscape(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function _dreamRenderCard(c) {
+  const claim = _dreamEscape(_dreamRenderClaimLine(c.proposedOp, c.proposedPayload));
+  const span = _dreamEscape((c.spanText || '').trim());
+  const nov = c.novelty || { pass: false, reason: '—' };
+  const ent = c.entailment || { pass: false, reason: '—' };
+  const cls = ['dream-card'];
+  if (c.accepted) cls.push('dream-card--accepted');
+  else if (c.rejection) cls.push('dream-card--rejected');
+  else if (!ent.pass) cls.push('dream-card--speculative');
+  const acceptLabel = c.accepted ? 'INS ✓' : 'INS';
+  const rejectLabel = c.rejection ? 'rejected' : 'reject';
+  const acceptDisabled = c.accepted ? 'disabled' : '';
+  const rejectDisabled = (c.accepted || c.rejection) ? 'disabled' : '';
+  return `
+    <article class="${cls.join(' ')}" data-cand-id="${_dreamEscape(c.id)}">
+      <div class="dream-card-head">
+        <span class="dream-op-badge">${_dreamEscape(c.proposedOp)}</span>
+        <span class="dream-claim">${claim}</span>
+      </div>
+      <blockquote class="dream-span">"${span}"</blockquote>
+      <details class="dream-why">
+        <summary>why</summary>
+        <div class="dream-why-row ${nov.pass ? 'pass' : 'fail'}">novelty: ${nov.pass ? '✓' : '✕'} ${_dreamEscape(nov.reason)}</div>
+        <div class="dream-why-row ${ent.pass ? 'pass' : 'fail'}">entailment: ${ent.pass ? '✓' : '✕'} ${_dreamEscape(ent.reason)}</div>
+        ${c.rejection ? `<div class="dream-why-row fail">rejected: ${_dreamEscape(c.rejection)}</div>` : ''}
+      </details>
+      <div class="dream-actions">
+        <button class="dream-act-accept" data-action="accept" ${acceptDisabled}>${acceptLabel}</button>
+        <button data-action="reject" ${rejectDisabled}>${rejectLabel}</button>
+      </div>
+    </article>
+  `;
+}
+
+function _dreamRenderRail() {
+  const rail = document.getElementById('dream-rail-body');
+  if (!rail) return;
+  const session = STATE.activeDreamSessionId
+    ? STATE.modalSessions.get(STATE.activeDreamSessionId)
+    : (() => {
+        // No active session — pull the most recently ended session
+        // so completed runs stay visible until a new one starts.
+        let best = null;
+        for (const s of STATE.modalSessions.values()) {
+          const t = s.endedAt || s.startedAt;
+          if (!best || t > (best.endedAt || best.startedAt)) best = s;
+        }
+        return best;
+      })();
+  if (!session) {
+    rail.innerHTML = `<div class="dream-rail-empty">No candidates yet.</div>`;
+    return;
+  }
+  const cands = session.grounded || [];
+  const primary = cands.filter(c => c.novelty?.pass && c.entailment?.pass);
+  const speculative = cands.filter(c => c.novelty?.pass && c.entailment && !c.entailment.pass);
+  const showSpec = !!STATE.dreamConfig.showSpeculation;
+
+  const primaryHtml = primary.length
+    ? primary.map(_dreamRenderCard).join('')
+    : `<div class="dream-rail-empty">No surfaced candidates yet.</div>`;
+  const specBodyHtml = speculative.length
+    ? speculative.map(_dreamRenderCard).join('')
+    : `<div class="dream-rail-empty">Nothing in speculation.</div>`;
+
+  rail.innerHTML = `
+    <div class="dream-rail-section">
+      <header><span>Surfaced (${primary.length})</span></header>
+      <div class="dream-rail-cards">${primaryHtml}</div>
+    </div>
+    <div class="dream-rail-section">
+      <header>
+        <label>
+          <input type="checkbox" id="dream-show-speculation" ${showSpec ? 'checked' : ''}>
+          Show speculation (${speculative.length})
+        </label>
+      </header>
+      <div class="dream-rail-cards" ${showSpec ? '' : 'hidden'}>${specBodyHtml}</div>
+    </div>
+  `;
+
+  const toggle = rail.querySelector('#dream-show-speculation');
+  if (toggle) {
+    toggle.addEventListener('change', (e) => {
+      STATE.dreamConfig.showSpeculation = !!e.target.checked;
+      _dreamRenderRail();
+    });
+  }
+  rail.querySelectorAll('button[data-action]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const article = btn.closest('article[data-cand-id]');
+      if (!article) return;
+      const candId = article.dataset.candId;
+      const cand = (session.grounded || []).find(c => c.id === candId);
+      if (!cand) return;
+      const action = btn.dataset.action;
+      if (action === 'accept') _dreamPromoteCandidate(cand);
+      else if (action === 'reject') _dreamRejectCandidate(cand);
+    });
+  });
+}
+
+function _dreamPromoteCandidate(candidate) {
+  if (!candidate || candidate.accepted) return;
+  if (candidate.rejection) return;
+  const op = candidate.proposedOp;
+  const p = candidate.proposedPayload;
+  const baseCoords = {
+    sourceId: candidate.sourceId,
+    intakeTs: Date.now(),
+    narrativePos: { sourceId: candidate.sourceId, sentenceIdx: candidate.sentenceIdx },
+    spanText: candidate.spanText,
+    authoredBy: 'user',
+  };
+  let ev = null;
+  try {
+    if (op === 'DEF') {
+      ev = appendEvent({ ...baseCoords, op: 'DEF', payload: p });
+      const grounding = {
+        sentenceIdx: candidate.sentenceIdx,
+        spanText: candidate.spanText,
+        sourceEventId: ev.id,
+        value: p.value,
+      };
+      const existingDefs = getDefsForSlot(p.subject, p.predicate).filter(d => d.status === 'T');
+      let matched = false;
+      for (const existing of existingDefs) {
+        if (defValuesMatch(existing, p.value, p.valueIsEntity)) {
+          strengthenDef(existing, grounding, ev.id);
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        addDef(p.subject, p.predicate, p.value, p.valueIsEntity, [grounding], 'user');
+        if (existingDefs.length > 0) {
+          for (const existing of existingDefs) {
+            conflictDef(existing, grounding, ev.id, 'user-promoted dream observation differs from prior DEF');
+          }
+        }
+      }
+    } else if (op === 'CON') {
+      ev = appendEvent({ ...baseCoords, op: 'CON', payload: p });
+      STATE.edges.push({
+        from: p.from, to: p.to, toIsEntity: p.toIsEntity, relation: p.relation,
+        sourceEvent: ev.id, sentenceIdx: candidate.sentenceIdx,
+      });
+    } else {
+      ev = appendEvent({ ...baseCoords, op, payload: p });
+    }
+  } catch (e) {
+    console.error('[dream] promote failed:', e);
+    candidate.rejection = `promote error: ${e.message}`;
+    _dreamRenderRail();
+    return;
+  }
+  candidate.accepted = true;
+  candidate.acceptedEventId = ev ? ev.id : null;
+  _dreamRenderRail();
+}
+
+function _dreamRejectCandidate(candidate) {
+  if (!candidate || candidate.accepted || candidate.rejection) return;
+  const reason = window.prompt('Reject reason (optional):', '');
+  // null = user cancelled; treat as no-op. Empty string = accepted as
+  // "rejected without explanation".
+  if (reason === null) return;
+  candidate.rejection = reason || 'no reason given';
+  _dreamRenderRail();
+}
+
+// ─── Dream picker ───────────────────────────────────────────────────
+// Selects which entities the next dream cycle reflects on. The dream
+// is a stochastic loop; the picker is what makes it stochastic. It
+// ranks active entities by graph activity (occurrence × recency) and
+// samples a small foreground from the top quartile, with optional
+// long-distance splicing to push the dream away from local minima.
+
+function _dreamRankEntities() {
+  const counts = new Map();
+  const lastSeen = new Map();
+  for (const ev of STATE.G) {
+    if (!isEventActive(ev)) continue;
+    const ids = [];
+    const p = ev.payload || {};
+    if (p.entity) ids.push(p.entity);
+    if (p.subject) ids.push(p.subject);
+    if (p.from) ids.push(p.from);
+    if (p.valueIsEntity && p.value) ids.push(p.value);
+    if (p.toIsEntity && p.to) ids.push(p.to);
+    const ts = ev.intakeTs || ev.timestamp || 0;
+    for (const id of ids) {
+      counts.set(id, (counts.get(id) || 0) + 1);
+      const prev = lastSeen.get(id) || 0;
+      if (ts > prev) lastSeen.set(id, ts);
+    }
+  }
+  const now = Date.now();
+  const out = [];
+  for (const [id, ent] of STATE.entities) {
+    const c = counts.get(id) || 0;
+    if (c === 0) continue;
+    if (!isEntityActive(id)) continue;
+    const ageDays = (now - (lastSeen.get(id) || now)) / 86400000;
+    const recency = 1 / (1 + ageDays);  // halves over a day
+    out.push({ id, ent, count: c, score: c * recency });
+  }
+  out.sort((a, b) => b.score - a.score);
+  return out;
+}
+
+function _dreamPickLongDistance(foregroundIds, ranked) {
+  ensureEntityCentroids();
+  const centroids = ENTITY_CENTROID_CACHE.byId;
+  const fgVecs = foregroundIds.map(id => centroids.get(id)).filter(Boolean);
+  if (fgVecs.length > 0) {
+    const dim = fgVecs[0].length;
+    const avg = new Float32Array(dim);
+    for (const v of fgVecs) for (let i = 0; i < dim; i++) avg[i] += v[i];
+    let n = 0;
+    for (let i = 0; i < dim; i++) n += avg[i] * avg[i];
+    n = Math.sqrt(n) || 1;
+    for (let i = 0; i < dim; i++) avg[i] /= n;
+    const scored = [];
+    for (const r of ranked) {
+      if (foregroundIds.includes(r.id)) continue;
+      const c = centroids.get(r.id);
+      if (!c) continue;
+      let dot = 0;
+      for (let i = 0; i < dim; i++) dot += avg[i] * c[i];
+      scored.push({ ...r, cos: dot });
+    }
+    if (scored.length > 0) {
+      scored.sort((a, b) => a.cos - b.cos);
+      // Bottom 20% — most semantically distant from the foreground
+      const pool = scored.slice(0, Math.max(1, Math.ceil(scored.length * 0.2)));
+      return pool[Math.floor(Math.random() * pool.length)];
+    }
+  }
+  // Fallback: random outside foreground
+  const others = ranked.filter(r => !foregroundIds.includes(r.id));
+  if (others.length === 0) return null;
+  return others[Math.floor(Math.random() * others.length)];
+}
+
+function _dreamPickInjection(session) {
+  const ranked = _dreamRankEntities();
+  if (ranked.length < 2) return null;
+  const cfg = STATE.dreamConfig;
+  // Foreground sampled from the top quartile (or top 4, whichever is bigger).
+  const top = ranked.slice(0, Math.max(4, Math.ceil(ranked.length * 0.25)));
+  const lo = cfg.foregroundMin, hi = cfg.foregroundMax;
+  const wantN = lo + Math.floor(Math.random() * (hi - lo + 1));
+  const foreground = [];
+  const seen = new Set();
+  while (foreground.length < wantN && foreground.length < top.length) {
+    const idx = Math.floor(Math.random() * top.length);
+    if (seen.has(idx)) continue;
+    seen.add(idx);
+    foreground.push(top[idx]);
+  }
+  if (foreground.length === 0) return null;
+  const fgIds = foreground.map(f => f.id);
+  let longDistance = null;
+  if (Math.random() < cfg.longDistanceProb && ranked.length > top.length) {
+    longDistance = _dreamPickLongDistance(fgIds, ranked);
+  }
+  const entityIds = longDistance ? [...fgIds, longDistance.id] : fgIds;
+  const summary = (() => {
+    const fgNames = foreground.map(f => f.ent.canonical).join(', ');
+    return longDistance ? `${fgNames} ↮ ${longDistance.ent.canonical}` : fgNames;
+  })();
+  return {
+    entityIds,
+    foreground: fgIds,
+    longDistance: longDistance ? longDistance.id : null,
+    summary,
+  };
+}
+
+// ─── Dream prose generator ──────────────────────────────────────────
+// One LLM call per cycle, 100-200 words. Streams sentence-by-sentence
+// into the journal where supported (Anthropic); other backends commit
+// the whole prose at once after the call returns.
+
+const DREAM_PROSE_SYSTEM = `You are reflecting on a knowledge graph as in a dream — small, drifting, associative, but still grounded.
+
+Write 100-200 words of plain English prose. Sentences. Not a list, not bullets, not JSON, not markdown.
+
+You are given a few entities the system has been tracking and a sketch of what is already known about each. Reflect on what they have in common, where they touch, where one implies the other. Speculate softly: a dream-claim should be the kind of thing that is *almost* already present in what's known, just not yet said. Do not invent unrelated facts.
+
+Each sentence should mention at least one entity by its canonical name (not pronouns). Prefer concrete claims to abstractions. Stop when you have said something — no closing remarks, no "in summary".`;
+
+function _dreamBuildProseUserMsg(injection) {
+  const cfg = STATE.dreamConfig;
+  const lines = [];
+  for (const id of injection.entityIds) {
+    const ent = STATE.entities.get(id);
+    if (!ent) continue;
+    const defs = getAllDefsForSubject(id).slice(0, 4);
+    const sketch = defs.map(d => {
+      const v = d.valueIsEntity
+        ? (STATE.entities.get(d.value)?.canonical || d.value)
+        : String(d.value).slice(0, 60);
+      return `${d.predicate} → ${v}`;
+    });
+    const tag = id === injection.longDistance ? ' (stray fragment)' : '';
+    lines.push(`- ${ent.canonical}${tag}${sketch.length ? ': ' + sketch.join('; ') : ''}`);
+  }
+  const head = 'Entities the system has been tracking:\n';
+  const tail = '\n\nReflect.';
+  // Cap body roughly proportional to spanCharCap × token budget.
+  const cap = Math.max(400, cfg.spanCharCap * 6);
+  let body = lines.join('\n');
+  if (body.length > cap) body = body.slice(0, cap) + '…';
+  return head + body + tail;
+}
+
+async function _dreamGenerateProse(session, injection) {
+  const cfg = STATE.dreamConfig;
+  const journal = document.getElementById('dream-journal');
+  const stepMeta = {
+    step: session.stepCount + 1,
+    injectionLongDistanceEntityId: injection.longDistance,
+    injectionLabel: injection.summary,
+  };
+  if (journal) {
+    // Drop the empty-state once the first cycle starts producing prose.
+    const empty = journal.querySelector('.empty-state');
+    if (empty) empty.remove();
+    _dreamEnsureStepEl(journal, stepMeta);
+  }
+  const userMsg = _dreamBuildProseUserMsg(injection);
+
+  const supportsStream = STATE.llmBackend === 'anthropic';
+  if (supportsStream && journal) {
+    let buffer = '';
+    let cursor = 0;
+    const flushSentences = () => {
+      while (cursor < buffer.length) {
+        const tail = buffer.slice(cursor);
+        const m = tail.match(/[.!?]+["')\]]*\s+/);
+        if (!m) break;
+        const endIdx = cursor + m.index + m[0].length;
+        const sent = buffer.slice(cursor, endIdx).trim();
+        cursor = endIdx;
+        if (sent) _dreamCommitLine(journal, stepMeta, sent);
+      }
+    };
+    const onChunk = (delta) => {
+      buffer += delta;
+      flushSentences();
+    };
+    const result = await callLLM(
+      DREAM_PROSE_SYSTEM, userMsg,
+      cfg.proseMaxTokens, 'dream-prose',
+      { temperature: cfg.proseTemperature, onChunk }
+    );
+    flushSentences();
+    if (cursor < buffer.length) {
+      const trail = buffer.slice(cursor).trim();
+      if (trail) _dreamCommitLine(journal, stepMeta, trail);
+    }
+    return (result || buffer).trim();
+  }
+
+  const text = await callLLM(
+    DREAM_PROSE_SYSTEM, userMsg,
+    cfg.proseMaxTokens, 'dream-prose',
+    { temperature: cfg.proseTemperature }
+  );
+  const trimmed = (text || '').trim();
+  if (journal && trimmed) {
+    for (const sent of _dreamSplitSentences(trimmed)) {
+      _dreamCommitLine(journal, stepMeta, sent);
+    }
+  }
+  return trimmed;
+}
+
+// ─── Dream session lifecycle ────────────────────────────────────────
+// A "dream session" is the namespace inside which modal-mode ingestion
+// runs. Sessions never write to STATE.G directly; they accumulate SIG
+// candidates that the user can promote. Lifecycle functions below own
+// the only legitimate path to mutate STATE.modalSessions /
+// STATE.activeDreamSessionId / STATE.dreamRunner.
+
+function startDreamSession(opts) {
+  opts = opts || {};
+  const id = `dream:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
+  const session = {
+    id,
+    startedAt: Date.now(),
+    endedAt: null,
+    stoppingReason: null,
+    modelId: opts.modelId || STATE.llmBackend,
+    stepCount: 0,
+    journal: [],
+    grounded: [],
+    ungrounded: [],
+    currentInjection: null,
+  };
+  STATE.modalSessions.set(id, session);
+  STATE.activeDreamSessionId = id;
+  return id;
+}
+
+function endDreamSession(sessionId, reason) {
+  const session = STATE.modalSessions.get(sessionId);
+  if (!session) return;
+  if (!session.endedAt) {
+    session.endedAt = Date.now();
+    session.stoppingReason = reason || 'unspecified';
+  }
+  if (STATE.activeDreamSessionId === sessionId) {
+    STATE.activeDreamSessionId = null;
+  }
+  if (STATE.dreamRunner && STATE.dreamRunner.sessionId === sessionId) {
+    STATE.dreamRunner = null;
+  }
+}
+
+// Cancellable sleep for the cycle loop. resolves immediately if the
+// runner's signal has already aborted, otherwise on timeout or abort.
+function dreamSleep(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal && signal.aborted) return resolve();
+    let timer = null;
+    const onAbort = () => {
+      if (timer !== null) clearTimeout(timer);
+      resolve();
+    };
+    timer = setTimeout(() => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function makeDreamRunner(sessionId) {
+  const controller = new AbortController();
+  const runner = {
+    sessionId,
+    signal: controller.signal,
+    get aborted() { return controller.signal.aborted; },
+    stoppingReason: null,
+    abort(reason) {
+      if (controller.signal.aborted) return;
+      runner.stoppingReason = reason || 'user-stop';
+      controller.abort();
+    },
+  };
+  return runner;
+}
+
+function abortDreamRun(reason) {
+  if (STATE.dreamRunner) STATE.dreamRunner.abort(reason || 'user-stop');
+}
+
+function _dreamUpdateStatus(text) {
+  const el = document.getElementById('dream-status');
+  if (el) el.textContent = text || '';
+}
+
+function _dreamUpdateButtons() {
+  const startBtn = document.getElementById('dream-start-btn');
+  const stopBtn  = document.getElementById('dream-stop-btn');
+  const running  = !!(STATE.dreamRunner && !STATE.dreamRunner.aborted);
+  if (startBtn) startBtn.disabled = running;
+  if (stopBtn)  stopBtn.disabled  = !running;
+}
+
+// ─── Dream filters: novelty + truth ─────────────────────────────────
+// Two gates a candidate must pass before it surfaces as a primary SIG
+// card.
+//
+//   novelty: the proposed op is not already expressed in STATE.G (or
+//   any equivalent form — same slot, same value, etc.). Lexical-first;
+//   could grow to cosine-on-relation embeddings later.
+//
+//   entailment: the proposed op is supported by existing source-
+//   attested events under reasonable inference. Asks the LLM PASS or
+//   FAIL given an evidence pack of related claims.
+//
+// Both gates tag the candidate in place; nothing is dropped, so the
+// UI can render filtered-out candidates in a muted speculation rail.
+
+function _dreamRenderClaimLine(op, payload) {
+  if (op === 'DEF') {
+    const sub = STATE.entities.get(payload.subject)?.canonical || payload.subject;
+    const val = payload.valueIsEntity
+      ? (STATE.entities.get(payload.value)?.canonical || payload.value)
+      : payload.value;
+    return `${sub}.${payload.predicate} = ${val}`;
+  }
+  if (op === 'CON') {
+    const fr = STATE.entities.get(payload.from)?.canonical || payload.from;
+    const to = payload.toIsEntity
+      ? (STATE.entities.get(payload.to)?.canonical || payload.to)
+      : payload.to;
+    return `${fr} —${payload.relation}→ ${to}`;
+  }
+  return `${op} ${JSON.stringify(payload).slice(0, 100)}`;
+}
+
+function _dreamCheckNovelty(candidate) {
+  const op = candidate.proposedOp;
+  const p = candidate.proposedPayload;
+
+  if (op === 'DEF') {
+    const existing = getDefsForSlot(p.subject, p.predicate).filter(d => d.status === 'T');
+    for (const ex of existing) {
+      if (defValuesMatch(ex, p.value, p.valueIsEntity)) {
+        return { pass: false, reason: `slot ${p.subject}.${p.predicate} already has equivalent DEF` };
+      }
+    }
+    return { pass: true, reason: existing.length ? 'distinct value at populated slot' : 'empty slot' };
+  }
+
+  if (op === 'CON') {
+    for (const ev of STATE.G) {
+      if (!isEventActive(ev)) continue;
+      if (ev.op !== 'CON') continue;
+      const ep = ev.payload || {};
+      if (ep.from !== p.from) continue;
+      if (ep.relation !== p.relation) continue;
+      if (p.toIsEntity && ep.toIsEntity && ep.to === p.to) {
+        return { pass: false, reason: 'CON already in graph' };
+      }
+      if (!p.toIsEntity && !ep.toIsEntity) {
+        const a = String(ep.to).toLowerCase().trim();
+        const b = String(p.to).toLowerCase().trim();
+        if (a === b) return { pass: false, reason: 'CON already in graph' };
+      }
+    }
+    return { pass: true, reason: 'no equivalent CON in graph' };
+  }
+
+  // EVA/REC: not deduped at this layer.
+  return { pass: true, reason: `${op} not subject to novelty dedup` };
+}
+
+function _dreamGatherEvidence(candidate, maxLines = 30) {
+  const ids = new Set();
+  if (candidate.subjectId) ids.add(candidate.subjectId);
+  if (candidate.objectId) ids.add(candidate.objectId);
+  if (ids.size === 0) return [];
+  const out = [];
+  for (const ev of STATE.G) {
+    if (!isEventActive(ev)) continue;
+    const p = ev.payload || {};
+    let touches = false;
+    if (ev.op === 'DEF') {
+      if (ids.has(p.subject)) touches = true;
+      else if (p.valueIsEntity && ids.has(p.value)) touches = true;
+    } else if (ev.op === 'CON') {
+      if (ids.has(p.from)) touches = true;
+      else if (p.toIsEntity && ids.has(p.to)) touches = true;
+    }
+    if (!touches) continue;
+    const line = _dreamRenderClaimLine(ev.op, p);
+    if (line) out.push(line);
+    if (out.length >= maxLines) break;
+  }
+  return out;
+}
+
+const DREAM_TRUTH_SYSTEM = `You judge whether a proposed claim is supported by existing evidence.
+
+Output exactly two lines:
+1. PASS or FAIL
+2. one short sentence explaining your judgment.
+
+PASS — the proposed claim follows from, or is strongly suggested by, the evidence. The evidence does not have to state it word-for-word; reasonable inference is acceptable.
+
+FAIL — the proposed claim has no support in the evidence, contradicts it, or is a leap.
+
+No preamble, no markdown, no extra lines.`;
+
+async function _dreamCheckEntailment(candidate) {
+  const evidence = _dreamGatherEvidence(candidate);
+  const claim = _dreamRenderClaimLine(candidate.proposedOp, candidate.proposedPayload);
+  const userMsg = `Existing source-attested claims:\n${
+    evidence.length ? evidence.map(l => `- ${l}`).join('\n') : '(none in graph)'
+  }\n\nProposed claim:\n- ${claim}\n\nDream prose that produced this:\n"${(candidate.spanText || '').slice(0, 240)}"`;
+  let raw = '';
+  try {
+    raw = await callLLM(
+      DREAM_TRUTH_SYSTEM, userMsg,
+      STATE.dreamConfig.truthMaxTokens, 'dream-truth',
+      { temperature: 0.2 }
+    );
+  } catch (e) {
+    return { pass: false, reason: `judge error: ${e.message}` };
+  }
+  const text = String(raw || '').trim();
+  const firstLine = text.split('\n')[0].trim().toUpperCase();
+  const pass = firstLine.startsWith('PASS');
+  const reasonLine = text.split('\n').slice(1).join(' ').trim();
+  return { pass, reason: reasonLine || (pass ? 'supported' : 'not supported'), evidenceCount: evidence.length };
+}
+
+async function _dreamApplyFilters(candidates) {
+  for (const c of candidates) {
+    c.novelty = _dreamCheckNovelty(c);
+  }
+  // Truth gate runs only on novel candidates — cheap dedup before
+  // expensive LLM calls.
+  for (const c of candidates) {
+    if (c.novelty && c.novelty.pass) {
+      c.entailment = await _dreamCheckEntailment(c);
+    } else {
+      c.entailment = { pass: false, reason: 'skipped (not novel)' };
+    }
+  }
+  return candidates;
+}
+
+// ─── Dream cycle orchestrator ───────────────────────────────────────
+// One cycle = pick → generate prose → ingest into modal session →
+// (filter, surface — Phases 5+6+7). The orchestrator runs batchSize
+// cycles unless the runner is aborted or several cycles in a row
+// produce nothing surfaceable.
+
+async function _dreamCycle(session) {
+  if (!session) return { skipped: 'no-session' };
+  const injection = _dreamPickInjection(session);
+  if (!injection) return { skipped: 'no-injection' };
+  session.currentInjection = injection;
+  const stepNum = session.stepCount + 1;
+  const cfg = STATE.dreamConfig;
+  _dreamUpdateStatus(`step ${stepNum}/${cfg.batchSize} · ${injection.summary} · generating`);
+
+  let prose = '';
+  try {
+    prose = await _dreamGenerateProse(session, injection);
+  } catch (e) {
+    console.warn('[dream] prose failed:', e.message);
+    return { skipped: 'prose-error', error: e.message };
+  }
+  if (!prose) return { skipped: 'empty-prose', injection };
+
+  const before = session.grounded.length;
+  let ingestResult = { sentenceCount: 0, candidatesAdded: 0 };
+  try {
+    ingestResult = await ingestDreamProse(prose, session.id);
+  } catch (e) {
+    console.warn('[dream] ingest failed:', e.message);
+  }
+  const newCandidates = session.grounded.slice(before);
+  if (newCandidates.length > 0) {
+    _dreamUpdateStatus(`step ${stepNum}/${cfg.batchSize} · ${injection.summary} · judging ${newCandidates.length}`);
+  }
+
+  await _dreamApplyFilters(newCandidates);
+  const surfaced = newCandidates.filter(c => c.novelty?.pass && c.entailment?.pass).length;
+  const speculative = newCandidates.filter(c => c.novelty?.pass && !c.entailment?.pass).length;
+
+  _dreamRenderRail();
+  _dreamUpdateStatus(
+    `step ${stepNum}/${cfg.batchSize} · ${injection.summary} · ` +
+    `${surfaced} surfaced` + (speculative ? `, ${speculative} speculative` : '')
+  );
+
+  session.stepCount = stepNum;
+  session.journal.push({
+    step: stepNum,
+    ts: Date.now(),
+    prose,
+    injectionSummary: injection.summary,
+    injection: {
+      entityIds: injection.entityIds.slice(),
+      foreground: injection.foreground.slice(),
+      longDistance: injection.longDistance,
+    },
+    sentenceCount: ingestResult.sentenceCount,
+    candidatesProduced: newCandidates.length,
+    surfaced,
+    speculative,
+  });
+
+  return { stepNum, injection, prose, candidatesProduced: newCandidates.length, surfaced };
+}
+
+async function runDreamBatch(sessionId) {
+  const session = STATE.modalSessions.get(sessionId);
+  if (!session) return;
+  const cfg = STATE.dreamConfig;
+  const runner = STATE.dreamRunner;
+  if (!runner || runner.sessionId !== sessionId) return;
+
+  const maxConsecutiveEmpty = 3;
+  let consecutiveEmpty = 0;
+  let stopReason = 'batch-complete';
+
+  for (let i = 0; i < cfg.batchSize; i++) {
+    if (runner.aborted) { stopReason = runner.stoppingReason || 'user-stop'; break; }
+
+    let result;
+    try {
+      result = await _dreamCycle(session);
+    } catch (e) {
+      console.error('[dream] cycle threw:', e);
+      result = { skipped: 'exception', error: e.message };
+    }
+
+    if (runner.aborted) { stopReason = runner.stoppingReason || 'user-stop'; break; }
+
+    const productive = result && !result.skipped && (result.surfaced > 0);
+    consecutiveEmpty = productive ? 0 : consecutiveEmpty + 1;
+    if (consecutiveEmpty >= maxConsecutiveEmpty) {
+      stopReason = `${maxConsecutiveEmpty}-empty-cycles`;
+      break;
+    }
+
+    if (i < cfg.batchSize - 1 && !runner.aborted) {
+      await dreamSleep(cfg.cycleDelayMs, runner.signal);
+    }
+  }
+
+  // Roll up batch totals from the journal entries this run produced.
+  const totalSurfaced = (session.journal || []).reduce((a, j) => a + (j.surfaced || 0), 0);
+  const totalSpec     = (session.journal || []).reduce((a, j) => a + (j.speculative || 0), 0);
+  endDreamSession(sessionId, stopReason);
+  _dreamRenderRail();
+  _dreamUpdateButtons();
+  _dreamUpdateStatus(
+    `session ${sessionId.slice(6)} · ${stopReason} · ` +
+    `${session.stepCount} step(s) · ${totalSurfaced} surfaced` +
+    (totalSpec ? `, ${totalSpec} speculative` : '')
+  );
+  _dreamAppendNote(
+    `— end of session: ${stopReason}. ` +
+    `${session.stepCount} step(s), ${totalSurfaced} surfaced` +
+    (totalSpec ? `, ${totalSpec} speculative.` : '.')
+  );
+}
+
+async function _dreamHandleStart() {
+  if (STATE.dreamRunner && !STATE.dreamRunner.aborted) return;
+  if (!isLLMReady()) {
+    _dreamUpdateStatus('LLM not ready — configure a backend first');
+    return;
+  }
+  if (STATE.entities.size === 0) {
+    _dreamUpdateStatus('no entities to dream on — ingest a source first');
+    return;
+  }
+  const sessionId = startDreamSession({});
+  const session = STATE.modalSessions.get(sessionId);
+  STATE.dreamRunner = makeDreamRunner(sessionId);
+  _dreamUpdateButtons();
+  _dreamUpdateStatus(`session ${sessionId.slice(6)} · starting`);
+  _dreamAppendNote(
+    `— session ${sessionId.slice(6)} · ${session.modelId} · up to ${STATE.dreamConfig.batchSize} cycles`
+  );
+  try {
+    await runDreamBatch(sessionId);
+  } catch (e) {
+    console.error('[dream] batch threw:', e);
+    endDreamSession(sessionId, 'error');
+    _dreamUpdateButtons();
+    _dreamUpdateStatus(`session ${sessionId.slice(6)} · error: ${e.message}`);
+  }
+}
+
+function _dreamHandleStop() {
+  const sessionId = STATE.dreamRunner && STATE.dreamRunner.sessionId;
+  abortDreamRun('user-stop');
+  if (sessionId) endDreamSession(sessionId, 'user-stop');
+  _dreamUpdateButtons();
+  _dreamUpdateStatus(sessionId ? `session ${sessionId.slice(6)} · stopped` : '');
+}
+
 function renderDreamView() {
   const journal = document.getElementById('dream-journal');
   const rail    = document.getElementById('dream-rail-body');
-  const meta    = document.getElementById('dream-meta');
-  const stopBtn = document.getElementById('dream-stop-btn');
   const startBtn = document.getElementById('dream-start-btn');
-  if (meta) meta.textContent = 'collision loop · rebuilding';
-  if (stopBtn) stopBtn.disabled = true;
-  if (startBtn) startBtn.disabled = true;
-  if (journal) {
+  const stopBtn  = document.getElementById('dream-stop-btn');
+  // Journal is append-only and must survive mid-cycle re-renders triggered
+  // by notifyDataChanged() elsewhere in the app. Initialize once.
+  if (journal && !journal.dataset.dreamInitialized) {
     journal.innerHTML = `<div class="empty-state" style="padding: 40px 24px; font-family:'Newsreader',serif;color:var(--ink-soft);max-width: 540px;">
-      <p>The dream loop is being rewritten.</p>
-      <p style="margin-top: 0.8em;">Old architecture: linear paraphrase walk + regex co-occurrence extractor. Output was nearly all noise.</p>
-      <p style="margin-top: 0.8em;">New architecture: stochastic collisions over the existing graph + embeddings. Dream prose runs through the same ingester that reads source documents — but in modal mode, where the extracted ops land as SIG candidates the user can promote via INS, never directly into <code>STATE.G</code>. Novelty + truth filters between the modal commit and the surfaced card.</p>
-      <p style="margin-top: 0.8em;font-style: italic;">Modal-mode plumbing is in place. Picker, prose generator, cycle, filters, and surfacing UI to follow.</p>
+      <p>The dream loop reads the graph as a nearly-said thing.</p>
+      <p style="margin-top: 0.8em;">Each cycle picks a few entities, asks the model for a short reflective passage, and runs the same ingester that reads source documents over the result — but in modal mode, where extracted ops land as SIG candidates you can promote via INS, never directly into <code>STATE.G</code>. Novelty and truth filters sit between the modal commit and the surfaced card.</p>
+      <p style="margin-top: 0.8em;font-style: italic;">Press Begin reflection to start a session.</p>
     </div>`;
+    journal.dataset.dreamInitialized = '1';
   }
-  if (rail) {
-    rail.innerHTML = `<div class="empty-state" style="padding: 20px;font-family:'Newsreader',serif;font-style:italic;color:var(--ink-soft);">No candidates yet.</div>`;
+  _dreamRenderRail();
+  if (startBtn && !startBtn.dataset.dreamWired) {
+    startBtn.addEventListener('click', _dreamHandleStart);
+    startBtn.dataset.dreamWired = '1';
+  }
+  if (stopBtn && !stopBtn.dataset.dreamWired) {
+    stopBtn.addEventListener('click', _dreamHandleStop);
+    stopBtn.dataset.dreamWired = '1';
+  }
+  _dreamUpdateButtons();
+  if (STATE.activeDreamSessionId) {
+    _dreamUpdateStatus(`session ${STATE.activeDreamSessionId.slice(6)} · active`);
+  } else {
+    _dreamUpdateStatus('');
   }
 }
 
