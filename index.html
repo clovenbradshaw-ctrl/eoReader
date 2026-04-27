@@ -13666,13 +13666,28 @@ function _dreamEnsureStepEl(journal, stepMeta) {
   el.dataset.dreamStep = String(stepMeta.step);
   const hdr = document.createElement('div');
   hdr.className = 'dream-step-header';
-  hdr.textContent = `step ${stepMeta.step}` + (stepMeta.injectionLongDistanceEntityId ? ' · stray fragment present' : '');
+  let label = `step ${stepMeta.step}`;
+  if (stepMeta.injectionLabel) label += ` · ${stepMeta.injectionLabel}`;
+  else if (stepMeta.injectionLongDistanceEntityId) label += ' · stray fragment present';
+  hdr.textContent = label;
   const body = document.createElement('div');
   body.className = 'dream-step-body';
   el.appendChild(hdr);
   el.appendChild(body);
   journal.appendChild(el);
   return el;
+}
+
+function _dreamAppendNote(text) {
+  const journal = document.getElementById('dream-journal');
+  if (!journal || !text) return;
+  const note = document.createElement('div');
+  note.className = 'dream-step-header';
+  note.style.marginTop = '12px';
+  note.style.fontStyle = 'italic';
+  note.textContent = text;
+  journal.appendChild(note);
+  journal.scrollTop = journal.scrollHeight;
 }
 
 function _dreamCommitLine(journal, stepMeta, text, opts) {
@@ -14044,6 +14059,7 @@ async function _dreamGenerateProse(session, injection) {
   const stepMeta = {
     step: session.stepCount + 1,
     injectionLongDistanceEntityId: injection.longDistance,
+    injectionLabel: injection.summary,
   };
   if (journal) {
     // Drop the empty-state once the first cycle starts producing prose.
@@ -14350,7 +14366,8 @@ async function _dreamCycle(session) {
   if (!injection) return { skipped: 'no-injection' };
   session.currentInjection = injection;
   const stepNum = session.stepCount + 1;
-  _dreamUpdateStatus(`step ${stepNum} · ${injection.summary}`);
+  const cfg = STATE.dreamConfig;
+  _dreamUpdateStatus(`step ${stepNum}/${cfg.batchSize} · ${injection.summary} · generating`);
 
   let prose = '';
   try {
@@ -14369,12 +14386,19 @@ async function _dreamCycle(session) {
     console.warn('[dream] ingest failed:', e.message);
   }
   const newCandidates = session.grounded.slice(before);
+  if (newCandidates.length > 0) {
+    _dreamUpdateStatus(`step ${stepNum}/${cfg.batchSize} · ${injection.summary} · judging ${newCandidates.length}`);
+  }
 
   await _dreamApplyFilters(newCandidates);
   const surfaced = newCandidates.filter(c => c.novelty?.pass && c.entailment?.pass).length;
   const speculative = newCandidates.filter(c => c.novelty?.pass && !c.entailment?.pass).length;
 
   _dreamRenderRail();
+  _dreamUpdateStatus(
+    `step ${stepNum}/${cfg.batchSize} · ${injection.summary} · ` +
+    `${surfaced} surfaced` + (speculative ? `, ${speculative} speculative` : '')
+  );
 
   session.stepCount = stepNum;
   session.journal.push({
@@ -14432,9 +14456,22 @@ async function runDreamBatch(sessionId) {
     }
   }
 
+  // Roll up batch totals from the journal entries this run produced.
+  const totalSurfaced = (session.journal || []).reduce((a, j) => a + (j.surfaced || 0), 0);
+  const totalSpec     = (session.journal || []).reduce((a, j) => a + (j.speculative || 0), 0);
   endDreamSession(sessionId, stopReason);
+  _dreamRenderRail();
   _dreamUpdateButtons();
-  _dreamUpdateStatus(`session ${sessionId.slice(6)} · ${stopReason} · ${session.stepCount} step(s)`);
+  _dreamUpdateStatus(
+    `session ${sessionId.slice(6)} · ${stopReason} · ` +
+    `${session.stepCount} step(s) · ${totalSurfaced} surfaced` +
+    (totalSpec ? `, ${totalSpec} speculative` : '')
+  );
+  _dreamAppendNote(
+    `— end of session: ${stopReason}. ` +
+    `${session.stepCount} step(s), ${totalSurfaced} surfaced` +
+    (totalSpec ? `, ${totalSpec} speculative.` : '.')
+  );
 }
 
 async function _dreamHandleStart() {
@@ -14448,9 +14485,13 @@ async function _dreamHandleStart() {
     return;
   }
   const sessionId = startDreamSession({});
+  const session = STATE.modalSessions.get(sessionId);
   STATE.dreamRunner = makeDreamRunner(sessionId);
   _dreamUpdateButtons();
   _dreamUpdateStatus(`session ${sessionId.slice(6)} · starting`);
+  _dreamAppendNote(
+    `— session ${sessionId.slice(6)} · ${session.modelId} · up to ${STATE.dreamConfig.batchSize} cycles`
+  );
   try {
     await runDreamBatch(sessionId);
   } catch (e) {
