@@ -2915,6 +2915,31 @@ const STATE = {
   // Reading cursor — which sentence ingest is currently working on
   currentlyProcessing: null,  // {sourceId, sentenceIdx, escalationDepth}
 
+  // ─── LAYERED READING CONTEXT (v25 spec) ──────────────────────────
+  // Per-sentence classification gets four context layers: hypothesis
+  // (frame), running summary (gist), textbase ring (recent events),
+  // prior sentence (verbatim). Each layer carries distinct epistemic
+  // status — none reaches above its station.
+  runningSummary: '',                     // narrative gist, regenerated at boundaries
+  textbaseRing: [],                       // last N classified events (full event objects)
+  textbaseRingMax: 5,                     // ring size cap
+  priorSentenceText: '',                  // verbatim previous sentence
+  hypothesisHistory: [],                  // [{hypothesis, embedding, activeFromSentenceIdx, activeToSentenceIdx, reason}]
+  hypothesisBaselineCosine: null,         // cosine at last refresh, for threshold compare
+  hypothesisEmbedding: null,              // cached Int8Array; recompute only on hypothesis refresh
+  lastSummaryUpdateAt: 0,                 // global sentence idx of last summary regeneration
+  lastSummaryEventIdx: 0,                 // STATE.G length at last summary regeneration
+  lastDivergenceCheckEventIdx: 0,         // STATE.G length at last 5-event divergence check
+  globalSentencesProcessed: 0,            // counter incremented every sentence (across sources, for triggers)
+  lastClassifiedSentenceText: '',         // tracks last sentence text we used for cosine vs prior
+  lastSentenceEmbedding: null,            // Int8Array — sentence-embedding of the prior sentence
+  // Tunables
+  hypothesisDivergenceDelta: 0.15,        // cosine drop from baseline that triggers REC
+  hypothesisFirstPromotionAt: 30,         // sentence idx at which to fire unconditional first-promotion REC
+  divergenceCheckEveryN: 5,               // re-check divergence every N classified events
+  summaryFallbackEveryN: 8,               // regenerate summary every N sentences absent other triggers
+  summaryDiscontinuityCosine: 0.4,        // sentence cosine to prior below this triggers regenerate
+
   // Grammar-polish layer toggles. editsEnabled gates whether the
   // polish LLM call runs at all; editsRenderMode picks the global
   // default view ('raw' | 'polished' | 'diff'). Each turn can also
@@ -3605,10 +3630,54 @@ Use exact uppercase tokens. Pick exactly one value per question.`;
 
 // Build the user message for one event — proposition + clause + light
 // entity context (canonical names, aliases) so the LLM can disambiguate.
-function buildPhasepostUserMsg(ev) {
+//
+// When a layered-context snapshot is available (passed via opts.layered
+// or read from STATE during inline ingest classification), the prompt
+// surfaces four separately-addressable layers:
+//   HYPOTHESIS         — frame (possibility)
+//   RUNNING SUMMARY    — read (gist)
+//   RECENT EVENTS      — what landed (textbase ring, EO notation)
+//   PRIOR SENTENCE     — what was said (verbatim)
+// Each layer carries distinct epistemic status; never merged.
+function buildPhasepostUserMsg(ev, opts) {
   const text = propositionTextForEvent(ev);
   const p = ev.payload || {};
-  const lines = [`Proposition: ${text}`];
+  const lines = [];
+
+  // Layered context — only surfaced when at least one layer is non-empty.
+  // Layers come from opts.layered (preferred — captured at ingest) or
+  // current STATE (inline, when called from the per-sentence loop).
+  const layered = (opts && opts.layered)
+    || ev.layeredContext
+    || null;
+  if (layered) {
+    if (layered.hypothesisLine) {
+      lines.push(`HYPOTHESIS: ${layered.hypothesisLine}`);
+      lines.push('');
+    }
+    if (layered.runningSummary && layered.runningSummary.trim()) {
+      lines.push('RUNNING SUMMARY (where we are):');
+      lines.push(layered.runningSummary.trim());
+      lines.push('');
+    }
+    if (layered.textbase && layered.textbase.trim()) {
+      lines.push('RECENT EVENTS (what just happened):');
+      // Indent the ring under the header for readability
+      lines.push('  ' + layered.textbase.trim());
+      lines.push('');
+    }
+    if (layered.priorSentence && layered.priorSentence.trim()) {
+      lines.push(`PRIOR SENTENCE: "${layered.priorSentence.trim()}"`);
+      lines.push('');
+    }
+    if (layered.currentSentence && layered.currentSentence.trim()) {
+      lines.push(`CURRENT SENTENCE: "${layered.currentSentence.trim()}"`);
+      lines.push('');
+    }
+  }
+
+  // Existing classification payload (proposition + clause + entity hints).
+  lines.push(`Proposition: ${text}`);
   const clause = ev.spanText || '';
   if (clause && clause.trim() !== text.trim() && clause.length < 600) {
     lines.push(`Clause: ${clause.trim()}`);
@@ -3633,12 +3702,27 @@ function buildPhasepostUserMsg(ev) {
   return lines.join('\n');
 }
 
-async function classifyEventViaLLM(ev) {
+// Capture the current four-layer context for an event being classified
+// inline during per-sentence ingest. Stored on the event so any later
+// re-classification reproduces the same conditioning, and so the prompt
+// log preserves what the model actually saw.
+function captureLayeredContextForEvent(source, sentenceText) {
+  const h = source && source.hypothesis ? source.hypothesis : null;
+  return {
+    hypothesisLine: h ? formatHypothesisForClause(h) : null,
+    runningSummary: STATE.runningSummary || '',
+    textbase: renderTextbaseRing(),
+    priorSentence: STATE.priorSentenceText || '',
+    currentSentence: sentenceText || '',
+  };
+}
+
+async function classifyEventViaLLM(ev, opts) {
   if (!ev || ev.llmCell) return ev?.llmCell || null;
   if (!isLLMReady()) throw new Error('No LLM backend ready');
   const text = propositionTextForEvent(ev);
   if (!text || text.length < 2) return null;
-  const userMsg = buildPhasepostUserMsg(ev);
+  const userMsg = buildPhasepostUserMsg(ev, opts);
   const raw = await callLLM(PHASEPOST_CLASSIFY_SYSTEM, userMsg, 200, 'phasepost');
   const parsed = extractJSON(raw);
   if (!parsed || typeof parsed !== 'object') {
@@ -4599,6 +4683,44 @@ function mintEntity(canonical, aliases = [], kind = null, opts = {}) {
   // Trust the LLM's separation when it told us they're distinct.
   const bypassMatcher = !!opts.bypassMatcher;
 
+  // Span-grounding context (optional). When supplied, alias additions and
+  // the INS event get tied to the source sentence where the determination
+  // was made. This is what makes the "epithet evolution" auditable —
+  // "he" → "the doctor" → "Dr. Watson" each carries the span where the
+  // matcher decided the new surface refers to this same entity.
+  const sourceId = opts.sourceId ?? null;
+  const narrativePos = opts.narrativePos ?? (sourceId != null && opts.sentenceIdx != null
+    ? { sourceId, sentenceIdx: opts.sentenceIdx } : null);
+  const spanText = opts.spanText ?? null;
+  const authoredBy = opts.authoredBy ?? 'matcher';
+
+  // Helper: emit a span-grounded has-alias DEF whenever an existing
+  // entity gains a new surface form. This is the audit record the user
+  // can scrub: "this surface was decided to refer to this entity here."
+  // The DEF gets the same matcher provenance the resolution did.
+  const emitAliasDef = (entId, alias) => {
+    if (!alias || !entId) return;
+    if (!narrativePos && !sourceId) return;  // no anchor → don't fabricate one
+    const ev = appendEvent({
+      op: 'DEF',
+      payload: { subject: entId, predicate: 'has-alias', value: alias, valueIsEntity: false },
+      sourceId,
+      narrativePos,
+      spanText,
+      authoredBy,
+      intakeTs: Date.now(),
+    });
+    // Mirror into STATE.defs with grounding so the auditable chain shows
+    // up in the inspect view alongside other DEFs for the entity.
+    const grounding = {
+      sentenceIdx: narrativePos?.sentenceIdx ?? null,
+      spanText: spanText ?? null,
+      sourceEventId: ev.id,
+      value: alias,
+    };
+    addDef(entId, 'has-alias', alias, false, [grounding], authoredBy);
+  };
+
   // Exact-alias dedup is always safe — we never want two entities with
   // identical alias strings. This catches re-runs and the "Mr. Bennet" /
   // "Mr. Bennet" case where premint of the same principal twice should
@@ -4616,6 +4738,8 @@ function mintEntity(canonical, aliases = [], kind = null, opts = {}) {
     for (const alias of [canonical, ...aliases]) {
       if (alias && !existingByExact.aliases.some(a => a.toLowerCase() === alias.toLowerCase())) {
         existingByExact.aliases.push(alias);
+        // Span-anchored evolution: this surface was decided here.
+        emitAliasDef(existingByExact.id, alias);
       }
     }
     return existingByExact;
@@ -4630,6 +4754,10 @@ function mintEntity(canonical, aliases = [], kind = null, opts = {}) {
         for (const a of [canonical, ...aliases]) {
           if (a && !matched.aliases.some(x => x.toLowerCase() === a.toLowerCase())) {
             matched.aliases.push(a);
+            // Coref-resolution evolution: "he" / "the doctor" / "Dr. Watson"
+            // each get an audit DEF tying the new surface to the existing
+            // entity at the span where the matcher made the call.
+            emitAliasDef(matched.id, a);
           }
         }
         return matched;
@@ -4637,7 +4765,8 @@ function mintEntity(canonical, aliases = [], kind = null, opts = {}) {
     }
   }
 
-  // Genuinely new entity
+  // Genuinely new entity — INS event carries the span where this entity
+  // was first detected, so the graph never has a name without a source.
   const id = uid('ent');
   const ent = {
     id,
@@ -4645,9 +4774,19 @@ function mintEntity(canonical, aliases = [], kind = null, opts = {}) {
     aliases: [...new Set([canonical, ...aliases])],
     kind,
     mintedAt: Date.now(),
+    mintedAtSentence: narrativePos?.sentenceIdx ?? null,
+    mintedAtSourceId: sourceId,
   };
   STATE.entities.set(id, ent);
-  appendEvent({ op: 'INS', payload: { entity: id, canonical, aliases }, intakeTs: Date.now() });
+  appendEvent({
+    op: 'INS',
+    payload: { entity: id, canonical, aliases, firstSurface: opts.firstSurface || canonical },
+    sourceId,
+    narrativePos,
+    spanText,
+    authoredBy,
+    intakeTs: Date.now(),
+  });
   return ent;
 }
 
@@ -5740,9 +5879,95 @@ Rules for flags:
 
 summary: terse, accurate. "Investigation of cartel gold mining on a Colombian military base." NOT "A complex examination of military, criminal, and economic interactions."`;
 
-async function hypothesizeDocument(text) {
+// Anti-speculation initial hypothesis prompt (v25 layered-context spec).
+// Used at ingest start. Produces ONLY {kind, register, discourse, period,
+// summary, source_metadata}. NO principals, NO pronoun-chain expectation,
+// NO role-description expectation. The first grounded hypothesis comes
+// from accumulated graph evidence at the first-promotion REC (~sentence 30).
+const HYPOTHESIS_MINIMAL_SYSTEM = `You characterize a document at ingest start, working from ONLY title/structure/first-paragraph genre cues.
+
+ABSOLUTE RULES:
+- Output ONLY genre/structure cues. NO speculation about principals, characters, named entities, roles, or content.
+- Do NOT list any principals, even ones that appear in the sample. Principals are derived later from graph evidence, not guessed at.
+- Do NOT set expects_pronoun_chains or expects_role_descriptions — those require evidence we don't have yet.
+- Keep summary to one bare-genre sentence ("a 19th-century English novel," "a contemporary news article"), not a content summary.
+
+Output JSON only — no preamble, no markdown fences:
+{
+  "kind": "news_article|opinion|essay|fiction|dialogue|transcript|academic|legal|memoir|letter|other",
+  "register": "contemporary_informal|contemporary_formal|historical_formal|period_dialogue|vernacular|technical|other",
+  "discourse": "reportage|argument|narrative|dialogue|exposition|mixed",
+  "period": "<date or era of reference if obvious from genre cues, or 'unknown'>",
+  "summary": "<one bare-genre sentence; no content claims>",
+  "authorship": [
+    {"name": "<author / reporter / publisher if obvious from byline/header>", "role": "<author|reporter|photographer|editor|publisher|other>"}
+  ]
+}`;
+
+async function hypothesizeDocument(text, opts = {}) {
   if (!isLLMReady()) return null;
-  const SAMPLE_CHARS = 8000;  // ~1500 words, fits in one cached system + small user
+  // MINIMAL MODE (default under v25 layered-context spec). The initial
+  // hypothesis only declares genre/register cues from the title and a
+  // small sample of opening text — kind, register, source_metadata. It
+  // explicitly DOES NOT speculate principals, pronoun chains, role
+  // descriptions, or anything else about content. The classifier
+  // operates with this thin frame for the first ~30 events; the first
+  // grounded hypothesis comes from accumulated graph evidence at the
+  // first-promotion REC.
+  if (opts.minimal !== false) {
+    const SAMPLE_CHARS = 1200;
+    const sample = text.length > SAMPLE_CHARS ? text.slice(0, SAMPLE_CHARS) : text;
+    const meta = opts.sourceMetadata || {};
+    const userMsg = [
+      `Source metadata:`,
+      `  title: ${meta.title || meta.name || '(unknown)'}`,
+      meta.name && meta.name !== meta.title ? `  filename: ${meta.name}` : null,
+      meta.publicationDate ? `  publication: ${new Date(meta.publicationDate).toISOString().slice(0, 10)}` : null,
+      '',
+      `Opening sample (first ${sample.length} chars):`,
+      '',
+      sample,
+      '',
+      `Output the MINIMAL hypothesis JSON ONLY. Use ONLY genre/structure/first-paragraph cues. Do NOT speculate principals, pronoun chains, role descriptions, or any content claims.`,
+    ].filter(x => x !== null).join('\n');
+    STATE.llmCallsThisIngest++;
+    let raw;
+    try {
+      raw = await callLLM(HYPOTHESIS_MINIMAL_SYSTEM, userMsg, 200, 'hypothesis-minimal');
+    } catch (e) {
+      console.warn('[anchorage] minimal hypothesis call failed:', e);
+      return null;
+    }
+    const parsed = extractJSON(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      console.warn('Minimal hypothesis output unparseable:', (raw || '').slice(0, 200));
+      return null;
+    }
+    parsed.kind = String(parsed.kind || 'other');
+    parsed.register = String(parsed.register || 'other');
+    parsed.discourse = String(parsed.discourse || 'mixed');
+    parsed.period = String(parsed.period || 'unknown');
+    parsed.summary = String(parsed.summary || '').slice(0, 240);
+    parsed.principals = [];                  // minimal mode: empty
+    parsed.authorship = Array.isArray(parsed.authorship) ? parsed.authorship.filter(a => a && a.name).map(a => ({
+      name: String(a.name).trim(), role: String(a.role || 'other').trim(),
+    })) : [];
+    parsed.expects_pronoun_chains = false;   // minimal mode: no speculation
+    parsed.expects_role_descriptions = false;
+    parsed.source_metadata = {
+      title: meta.title || meta.name || null,
+      name: meta.name || null,
+      publicationDate: meta.publicationDate || null,
+    };
+    parsed.minimal = true;
+    parsed.timestamp = Date.now();
+    parsed.sampleChars = sample.length;
+    parsed.totalChars = text.length;
+    return parsed;
+  }
+  // FULL MODE — legacy path retained for backwards compat (used by older
+  // callers that explicitly opt out of minimal). Same prompt as before.
+  const SAMPLE_CHARS = 8000;
   const sample = text.length > SAMPLE_CHARS ? text.slice(0, SAMPLE_CHARS) : text;
   const userMsg = `Sample (first ${sample.length} chars of document):\n\n${sample}\n\nOutput the hypothesis JSON.`;
   STATE.llmCallsThisIngest++;
@@ -5824,14 +6049,492 @@ function formatHypothesisForClause(h) {
   return line;
 }
 
+// ─── LAYERED CONTEXT HELPERS (v25 spec) ───────────────────────────────
+// Four context layers pass into per-sentence classification, kept
+// separately addressable: HYPOTHESIS (frame), RUNNING SUMMARY (gist),
+// TEXTBASE (recent events, mechanical), PRIOR SENTENCE (verbatim).
+
+// Render an event into compact EO notation: OP(subj, predicate, value).
+// Mirrors propositionTextForEvent in terms of resolution but keeps the
+// operator label so the textbase ring shows what landed.
+function eoNotationForEvent(ev) {
+  if (!ev) return '';
+  const p = ev.payload || {};
+  const canonOf = id => STATE.entities.get(id)?.canonical || id || '';
+  const op = ev.op || '?';
+  if (op === 'DEF') {
+    const subj = canonOf(p.subject);
+    const val = p.valueIsEntity ? canonOf(p.value) : (p.value || '');
+    const pred = p.predicate || '';
+    return `${op}(${subj}, ${pred}, ${val})`.replace(/\s+/g, ' ').trim();
+  }
+  if (op === 'CON') {
+    const from = canonOf(p.from);
+    const to = p.toIsEntity ? canonOf(p.to) : (p.to || '');
+    const rel = p.relation || '';
+    return `${op}(${from}, ${rel}, ${to})`.replace(/\s+/g, ' ').trim();
+  }
+  if (op === 'SIG') {
+    const surf = p.surface || (p.entity ? canonOf(p.entity) : '');
+    return `${op}(${surf})`;
+  }
+  if (op === 'INS') {
+    const c = p.canonical || (p.entity ? canonOf(p.entity) : '');
+    return `${op}(${c})`;
+  }
+  if (op === 'NUL') {
+    const kind = p.kind || '';
+    const surf = p.surface || '';
+    return `${op}(${[kind, surf].filter(Boolean).join(': ')})`;
+  }
+  if (op === 'SEG') {
+    return `${op}(${p.kind || p.boundary || 'discontinuity'})`;
+  }
+  // Generic fallback: include op + a short slice of spanText
+  const span = (ev.spanText || '').slice(0, 60);
+  return span ? `${op}(${span})` : op;
+}
+
+// Append an event to the textbase ring and drop the oldest if the
+// ring is over capacity. Mechanical state — never paraphrases. No
+// LLM call regenerates this.
+function appendToTextbaseRing(ev) {
+  if (!ev) return;
+  STATE.textbaseRing.push(ev);
+  const cap = STATE.textbaseRingMax || 5;
+  while (STATE.textbaseRing.length > cap) STATE.textbaseRing.shift();
+}
+
+// Render the textbase ring as a compact list of EO-notation events.
+function renderTextbaseRing() {
+  const ring = STATE.textbaseRing || [];
+  if (ring.length === 0) return '(no recent events)';
+  return ring.map(eoNotationForEvent).filter(Boolean).join('\n  ');
+}
+
+// Reset layered context state at the start of a new ingest. Document-
+// scoped: each source begins with empty textbase + no summary so the
+// frame doesn't bleed across documents.
+function resetLayeredContextForIngest() {
+  STATE.runningSummary = '';
+  STATE.textbaseRing = [];
+  STATE.priorSentenceText = '';
+  STATE.lastSummaryUpdateAt = 0;
+  STATE.lastSummaryEventIdx = STATE.G.length;
+  STATE.lastDivergenceCheckEventIdx = STATE.G.length;
+  STATE.lastSentenceEmbedding = null;
+  STATE.lastClassifiedSentenceText = '';
+  // Don't reset hypothesisHistory — that survives across ingests so the
+  // user can scrub the full evolution; it's already keyed by sourceId
+  // when entries are pushed.
+}
+
+// Serialize a hypothesis to a compact text form for embedding. Used to
+// produce STATE.hypothesisEmbedding so we can compare it to the centroid
+// of recent event embeddings (divergence monitor).
+function serializeHypothesisForEmbed(h) {
+  if (!h) return '';
+  const parts = [];
+  if (h.kind) parts.push(h.kind);
+  if (h.register) parts.push(h.register);
+  if (h.discourse) parts.push(h.discourse);
+  if (h.period && h.period !== 'unknown') parts.push(h.period);
+  if (h.summary) parts.push(h.summary);
+  if (Array.isArray(h.principals)) {
+    for (const p of h.principals.slice(0, 12)) {
+      if (p && p.name) parts.push(p.name);
+    }
+  }
+  return parts.join(' · ');
+}
+
+// Centroid of the last N event embeddings. Used to compare against the
+// hypothesis embedding for divergence detection. Reads from the
+// EMBEDDING_STORE in-memory packed Int8Arrays.
+function recentEventCentroid(n = 30) {
+  const out = [];
+  for (let i = STATE.G.length - 1; i >= 0 && out.length < n; i--) {
+    const ev = STATE.G[i];
+    const v = EMBEDDING_STORE.byEventId.get(ev.id);
+    if (v) out.push(v);
+  }
+  if (out.length === 0) return null;
+  return centroidOfInt8(out);
+}
+
+// ─── RUNNING SUMMARY REGENERATION ─────────────────────────────────────
+// Smooth, event-boundary-triggered. Three triggers fire regeneration:
+//   (1) the just-classified event has operator SEG (structural break),
+//   (2) sentences-since-last-update >= summaryFallbackEveryN (default 8),
+//   (3) sentence-embedding cosine to prior sentence < summaryDiscontinuityCosine.
+// The regeneration is a small LLM call. Anti-invention: every claim must
+// be supported by events between lastSummaryEventIdx and now.
+
+const SUMMARY_REGEN_SYSTEM = `You write a short reading summary that describes ONLY what's established by a list of events drawn from a document.
+
+ABSOLUTE RULES:
+- Use ONLY information present in the events and sentences provided. Do NOT invent details, names, or backstory.
+- If the prior summary contained details that are NOT supported by the events below, drop them.
+- Maximum 4 sentences. Tighter is better. The summary is gist, not transcript.
+- Describe where we are in the read — situation, who's present, what just shifted — not analysis.
+- Output ONLY the summary text. No preamble, no markdown, no quotes.`;
+
+async function regenerateRunningSummary(source, sentenceIdx, reason) {
+  if (!isLLMReady()) return null;
+  // Collect events that landed since the last regeneration
+  const startIdx = STATE.lastSummaryEventIdx || 0;
+  const newEvents = STATE.G.slice(startIdx);
+  // Render those events in EO notation, capped to keep the prompt small
+  const eoLines = newEvents.slice(-40).map(eoNotationForEvent).filter(Boolean);
+  // Sentences since prior summary, verbatim
+  const lastSentIdx = STATE.lastSummaryUpdateAt || 0;
+  const sentenceLines = (source.sentences || [])
+    .filter(s => s.idx > lastSentIdx && s.idx <= sentenceIdx)
+    .slice(-12)
+    .map(s => `#${s.idx} ${s.text}`);
+  if (sentenceLines.length === 0 && eoLines.length === 0) return null;
+
+  const userMsg = [
+    `Prior summary: ${STATE.runningSummary || '(none yet)'}`,
+    '',
+    `New events since prior summary (in EO notation):`,
+    eoLines.length ? '  ' + eoLines.join('\n  ') : '  (no new propositional events)',
+    '',
+    `Sentences since prior summary (verbatim):`,
+    sentenceLines.length ? sentenceLines.join('\n') : '(none)',
+    '',
+    `Write a 2-4 sentence summary of where we now are. Describe ONLY what's established by the events above. DO NOT invent details. If the prior summary contained details no longer supported, drop them.`,
+  ].join('\n');
+
+  STATE.llmCallsThisIngest++;
+  let raw;
+  try {
+    raw = await callLLM(SUMMARY_REGEN_SYSTEM, userMsg, 220, 'running-summary');
+  } catch (e) {
+    console.warn('[anchorage] summary regen failed:', e);
+    return null;
+  }
+  let summary = String(raw || '').trim();
+  // Strip surrounding quotes/code fences if the model added them
+  summary = summary.replace(/^```[a-z]*\n?|```$/gi, '').trim();
+  summary = summary.replace(/^["']|["']$/g, '').trim();
+  if (!summary) return null;
+  // Truncate to four sentences max — anti-transcript discipline.
+  const sentSplit = summary.match(/[^.!?]+[.!?]+(\s|$)/g);
+  if (sentSplit && sentSplit.length > 4) {
+    summary = sentSplit.slice(0, 4).join('').trim();
+  }
+
+  STATE.runningSummary = summary;
+  STATE.lastSummaryUpdateAt = sentenceIdx;
+  STATE.lastSummaryEventIdx = STATE.G.length;
+  // Stash on the sentence record so scrubbing the source view can show
+  // what the read looked like at this moment.
+  if (source && Array.isArray(source.sentences)) {
+    const srec = source.sentences.find(s => s.idx === sentenceIdx);
+    if (srec) {
+      srec.summaryAtSentence = summary;
+      srec.summaryReason = reason || 'unspecified';
+    }
+  }
+  return summary;
+}
+
+// Decide whether to regenerate the summary based on the three triggers.
+// Reads STATE for the sentence-cosine signal (computed by the caller and
+// stored on STATE.lastSentenceEmbedding before this fires).
+async function maybeRegenerateRunningSummary(source, sentenceIdx, sentenceText, sentenceEmbedding, sentenceEventIds) {
+  if (!isLLMReady()) return false;
+  const triggers = [];
+  // Trigger 1: any event from this sentence is a SEG (structural break).
+  for (const eid of (sentenceEventIds || [])) {
+    const ev = STATE.G.find(e => e.id === eid);
+    if (ev && (ev.op === 'SEG' || ev.llmCell?.startsWith('SEG('))) {
+      triggers.push('SEG');
+      break;
+    }
+  }
+  // Trigger 2: long stable stretch fallback.
+  const sinceLast = sentenceIdx - (STATE.lastSummaryUpdateAt || 0);
+  if (sinceLast >= (STATE.summaryFallbackEveryN || 8)) {
+    triggers.push('fallback');
+  }
+  // Trigger 3: semantic discontinuity vs prior sentence.
+  if (sentenceEmbedding && STATE.lastSentenceEmbedding) {
+    const cos = cosineInt8(sentenceEmbedding, STATE.lastSentenceEmbedding);
+    if (cos < (STATE.summaryDiscontinuityCosine || 0.4)) {
+      triggers.push(`discontinuity(${cos.toFixed(2)})`);
+    }
+  }
+  if (triggers.length === 0) return false;
+  const reason = triggers.join('+');
+  await regenerateRunningSummary(source, sentenceIdx, reason);
+  return true;
+}
+
+// ─── HYPOTHESIS REFRESH (REC at document scope) ───────────────────────
+// Discrete, logged supersession of the active hypothesis. Old hypotheses
+// are not deleted — REC supersedes; it does not erase. The grounded
+// hypothesis is grounded in source-attested graph events; reader content
+// (if any) is supplementary, never foundational.
+
+const HYPOTHESIS_REFRESH_SYSTEM = `You produce a refreshed reading hypothesis grounded in graph evidence the system has actually read so far.
+
+A hypothesis is a frame for prediction, not a description of the past. It conditions the per-clause classifier; it MUST NOT contain claims that bleed back into the graph as attested events.
+
+GROUNDING RULES:
+- Every claim must be supportable by graph evidence cited (top entities, operator distribution, dominant cells, summary).
+- Reader-authored content is supplementary, never foundational.
+- Be inclusive of real referents (recurring, central) and exclusive of noise (single-mention, documentary apparatus).
+- Site assignments are soft priors, not claims. Use the entity's role-profile dominant face when given.
+
+Output JSON ONLY — no preamble, no markdown fences:
+{
+  "kind": "news_article|opinion|essay|fiction|dialogue|transcript|academic|legal|memoir|letter|other",
+  "register": "contemporary_informal|contemporary_formal|historical_formal|period_dialogue|vernacular|technical|other",
+  "discourse": "reportage|argument|narrative|dialogue|exposition|mixed",
+  "period": "<date or era of reference, or 'unknown'>",
+  "principals": [
+    {
+      "name": "<canonical name from graph evidence>",
+      "aliases": ["<surface forms>"],
+      "site": "Void|Entity|Kind|Field|Link|Network|Atmosphere|Lens|Paradigm",
+      "evidence": "<what graph counts/cells support this principal>"
+    }
+  ],
+  "expects_pronoun_chains": true|false,
+  "expects_role_descriptions": true|false,
+  "summary": "<one sentence>",
+  "evidence_note": "<which graph evidence anchors the kind/register/discourse choice>"
+}`;
+
+async function refreshHypothesis(source, sentenceIdx, reason, currentCosine, baselineCosine) {
+  if (!isLLMReady() || !source) return null;
+  // Build the graph-state user message
+  const sourceEvents = STATE.G.filter(ev => ev.sourceId === source.id);
+  // Top entities by event count
+  const entityCount = new Map();
+  for (const ev of sourceEvents) {
+    const p = ev.payload || {};
+    const ids = [p.subject, p.from, p.entity, (p.valueIsEntity ? p.value : null), (p.toIsEntity ? p.to : null)].filter(Boolean);
+    for (const id of ids) entityCount.set(id, (entityCount.get(id) || 0) + 1);
+  }
+  const topEntities = [...entityCount.entries()]
+    .filter(([id]) => STATE.entities.has(id))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 12)
+    .map(([id, n]) => {
+      const ent = STATE.entities.get(id);
+      // Attach role-profile top cells if we have a snapshot
+      let profileLine = '';
+      try {
+        if (typeof roleProfileAtCursor === 'function') {
+          const profile = roleProfileAtCursor(id);
+          if (profile && (profile.subjectAct || profile.subjectSite)) {
+            const a = (profile.subjectAct || [])[0];
+            const s = (profile.subjectSite || [])[0];
+            const r = (profile.subjectResolution || [])[0];
+            const parts = [];
+            if (a) parts.push(`${a.name}:${Math.round(a.p*100)}%`);
+            if (s) parts.push(`${s.name}:${Math.round(s.p*100)}%`);
+            if (r) parts.push(`${r.name}:${Math.round(r.p*100)}%`);
+            if (parts.length) profileLine = ` [${parts.join(' · ')}]`;
+          }
+        }
+      } catch (e) { /* ignore profile errors — non-fatal */ }
+      const aliases = (ent.aliases || []).filter(a => a !== ent.canonical).slice(0, 3);
+      const aliasStr = aliases.length ? ` (also: ${aliases.join(', ')})` : '';
+      return `  - ${ent.canonical}${aliasStr}: ${n} events${profileLine}`;
+    });
+  // Operator distribution
+  const opCount = new Map();
+  for (const ev of sourceEvents) opCount.set(ev.op, (opCount.get(ev.op) || 0) + 1);
+  const opLine = [...opCount.entries()].sort((a, b) => b[1] - a[1])
+    .map(([op, n]) => `${op}: ${n}`).join(', ');
+  // Dominant cells
+  const cellCount = new Map();
+  for (const ev of sourceEvents) {
+    const c = ev.llmCell || (ev.empiricalCells?.[0]?.cell);
+    if (c) cellCount.set(c, (cellCount.get(c) || 0) + 1);
+  }
+  const topCells = [...cellCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6)
+    .map(([c, n]) => `${c}: ${n}`).join(', ');
+
+  const meta = source.fileMetadata || {};
+  const sourceMetaLine = [
+    source.name && `title: "${source.name}"`,
+    meta.name && meta.name !== source.name && `filename: "${meta.name}"`,
+    source.publicationDate && `publication: ${new Date(source.publicationDate).toISOString().slice(0, 10)}`,
+  ].filter(Boolean).join(' · ');
+
+  const currentJSON = JSON.stringify(source.hypothesis || {}, null, 2);
+  const userMsg = [
+    `Current hypothesis: ${currentJSON}`,
+    '',
+    `Source metadata: ${sourceMetaLine || '(none)'}`,
+    '',
+    `Graph state (what we've actually read; sentence ${sentenceIdx + 1}):`,
+    `- Top entities by event count:`,
+    topEntities.length ? topEntities.join('\n') : '  (none yet)',
+    `- Operator distribution: ${opLine || '(none)'}`,
+    `- Dominant cells in classified events: ${topCells || '(none yet)'}`,
+    `- Last running summary: ${STATE.runningSummary || '(none yet)'}`,
+    '',
+    `Refresh reason: ${reason}${currentCosine != null ? ` (cosine ${currentCosine.toFixed(3)} vs baseline ${baselineCosine != null ? baselineCosine.toFixed(3) : 'n/a'})` : ''}`,
+    '',
+    `Generate a refreshed hypothesis grounded in the evidence above. Output JSON only.`,
+  ].join('\n');
+
+  STATE.llmCallsThisIngest++;
+  let raw;
+  try {
+    raw = await callLLM(HYPOTHESIS_REFRESH_SYSTEM, userMsg, 900, 'hypothesis-refresh');
+  } catch (e) {
+    console.warn('[anchorage] hypothesis refresh LLM failed:', e);
+    return null;
+  }
+  const parsed = extractJSON(raw);
+  if (!parsed || typeof parsed !== 'object') {
+    console.warn('[anchorage] hypothesis refresh unparseable:', (raw || '').slice(0, 200));
+    return null;
+  }
+  // Reuse the same normalization shape as the initial hypothesis
+  parsed.kind = String(parsed.kind || source.hypothesis?.kind || 'other');
+  parsed.register = String(parsed.register || source.hypothesis?.register || 'other');
+  parsed.discourse = String(parsed.discourse || 'mixed');
+  parsed.period = String(parsed.period || 'unknown');
+  parsed.summary = String(parsed.summary || '');
+  parsed.expects_pronoun_chains = !!parsed.expects_pronoun_chains;
+  parsed.expects_role_descriptions = !!parsed.expects_role_descriptions;
+  const VALID_SITES = new Set(['Void','Entity','Kind','Field','Link','Network','Atmosphere','Lens','Paradigm']);
+  if (!Array.isArray(parsed.principals)) parsed.principals = [];
+  parsed.principals = parsed.principals.filter(p => p && p.name).map(p => {
+    let site = String(p.site || '').trim();
+    if (site) {
+      const cap = site.charAt(0).toUpperCase() + site.slice(1).toLowerCase();
+      site = VALID_SITES.has(cap) ? cap : 'Entity';
+    } else {
+      site = 'Entity';
+    }
+    return {
+      name: String(p.name).trim(),
+      aliases: Array.isArray(p.aliases) ? p.aliases.map(s => String(s).trim()).filter(Boolean) : [],
+      site,
+      evidence: p.evidence ? String(p.evidence).slice(0, 240) : null,
+    };
+  });
+  if (!Array.isArray(parsed.authorship)) parsed.authorship = source.hypothesis?.authorship || [];
+  parsed.timestamp = Date.now();
+  parsed.refreshReason = reason;
+  parsed.refreshAtSentence = sentenceIdx;
+
+  // Push the old hypothesis to history (REC supersedes; it does not erase).
+  const old = source.hypothesis || null;
+  if (old) {
+    // Find the previous activeFrom for this source
+    let activeFrom = 0;
+    for (let i = STATE.hypothesisHistory.length - 1; i >= 0; i--) {
+      if (STATE.hypothesisHistory[i].sourceId === source.id) {
+        activeFrom = STATE.hypothesisHistory[i].activeToSentenceIdx + 1;
+        break;
+      }
+    }
+    STATE.hypothesisHistory.push({
+      hypothesis: old,
+      sourceId: source.id,
+      activeFromSentenceIdx: activeFrom,
+      activeToSentenceIdx: sentenceIdx,
+      reason: reason,
+      cosineAtTrigger: currentCosine,
+      baseline: baselineCosine,
+      ts: Date.now(),
+    });
+  }
+  source.hypothesis = parsed;
+
+  // Recompute hypothesis embedding + reset baseline
+  const text = serializeHypothesisForEmbed(parsed);
+  let f = null;
+  try { f = await embedText(text); } catch (e) { /* ok */ }
+  STATE.hypothesisEmbedding = f ? quantizeFloat32(f) : null;
+  if (STATE.hypothesisEmbedding) {
+    const c = recentEventCentroid(30);
+    STATE.hypothesisBaselineCosine = c ? cosineInt8(STATE.hypothesisEmbedding, c) : null;
+  } else {
+    STATE.hypothesisBaselineCosine = null;
+  }
+
+  // Append a REC event with full provenance. The REC is the auditable
+  // record — never silent, always logged.
+  appendEvent({
+    op: 'REC',
+    payload: {
+      kind: 'hypothesis',
+      from: old || null,
+      to: parsed,
+      reason,
+      cosineAtTrigger: currentCosine,
+      baseline: baselineCosine,
+    },
+    sourceId: source.id,
+    narrativePos: { sourceId: source.id, sentenceIdx },
+    authoredBy: 'system',
+    spanText: parsed.summary || null,
+    intakeTs: Date.now(),
+  });
+
+  return parsed;
+}
+
+// Embedding-divergence monitor — fires every divergenceCheckEveryN events.
+// Returns a reason string when refresh should fire, or null.
+function checkHypothesisDivergence(source) {
+  if (!source || !source.hypothesis) return null;
+  const since = STATE.G.length - (STATE.lastDivergenceCheckEventIdx || 0);
+  if (since < (STATE.divergenceCheckEveryN || 5)) return null;
+  STATE.lastDivergenceCheckEventIdx = STATE.G.length;
+
+  const c = recentEventCentroid(30);
+  if (!c) return null;
+  if (!STATE.hypothesisEmbedding) {
+    // Embed lazily on first check
+    return { needsBaseline: true };
+  }
+  const cur = cosineInt8(STATE.hypothesisEmbedding, c);
+  if (STATE.hypothesisBaselineCosine == null) {
+    STATE.hypothesisBaselineCosine = cur;
+    return null;
+  }
+  const delta = (STATE.hypothesisDivergenceDelta != null) ? STATE.hypothesisDivergenceDelta : 0.15;
+  if (cur < STATE.hypothesisBaselineCosine - delta) {
+    return { reason: 'divergence', currentCosine: cur, baseline: STATE.hypothesisBaselineCosine };
+  }
+  return { reason: null, currentCosine: cur, baseline: STATE.hypothesisBaselineCosine };
+}
+
+// Lazily embed the current hypothesis if it isn't cached yet — used by
+// the divergence monitor on its first run.
+async function ensureHypothesisEmbedding(source) {
+  if (STATE.hypothesisEmbedding) return STATE.hypothesisEmbedding;
+  if (!source || !source.hypothesis) return null;
+  const text = serializeHypothesisForEmbed(source.hypothesis);
+  let f = null;
+  try { f = await embedText(text); } catch (e) { /* ok */ }
+  if (!f) return null;
+  STATE.hypothesisEmbedding = quantizeFloat32(f);
+  return STATE.hypothesisEmbedding;
+}
+
 // Pre-mint principals from the hypothesis BEFORE per-clause extraction
 // begins. This means when sentence 3 says "his wife," she already exists
 // as an entity the matcher can bind to (and won't get re-minted as
 // "His Wife"). The principal's declared site travels onto the minted
 // entity so downstream code can read it without going back through
 // hypothesis state.
-function preMintHypothesisPrincipals(h, sourceId) {
+function preMintHypothesisPrincipals(h, sourceId, opts = {}) {
   if (!h || !Array.isArray(h.principals)) return [];
+  const sentenceIdx = opts.sentenceIdx ?? 0;
+  const spanText = opts.spanText ?? (h.summary || null);
   const minted = [];
   for (const p of h.principals) {
     const aliases = [p.name, ...(p.aliases || [])].filter(Boolean);
@@ -5840,7 +6543,16 @@ function preMintHypothesisPrincipals(h, sourceId) {
     // shared surname tokens (e.g. "Mr. Bennet" + "Elizabeth Bennet" both
     // sharing "bennet"). The matcher is for ad-hoc later mints when we're
     // unsure; the hypothesis IS sure.
-    const ent = mintEntity(p.name, aliases, null, { bypassMatcher: true });
+    // Span-anchor: the INS event for a hypothesis-asserted principal cites
+    // the sentence where the hypothesis was formed (or refreshed). Without
+    // that anchor the principal would float without any source attribution.
+    const ent = mintEntity(p.name, aliases, null, {
+      bypassMatcher: true,
+      sourceId,
+      narrativePos: sourceId ? { sourceId, sentenceIdx } : null,
+      spanText,
+      authoredBy: opts.authoredBy || 'hypothesis',
+    });
     if (ent && p.site) {
       // The hypothesis's site guess is conditioning, not a claim. Stored
       // separately from any computed site (which folds over evidence).
@@ -7282,37 +7994,43 @@ async function ingestSource(text, opts = {}) {
 
   const progressEl = document.getElementById('ingest-progress');
 
-  // ── Document hypothesis (one LLM call, before per-clause extraction) ──
-  // Gives the per-clause extractor a populated principal list and register
-  // guess as conditioning context. Fixes most NER drift on chunked uploads
-  // (Austen-style role-described characters, dialogue interjection mints).
+  // Reset the layered-context state for this ingest. Document-scoped:
+  // textbase ring, prior sentence, and running summary all start empty.
+  // hypothesisHistory is preserved across ingests (keyed by sourceId).
+  resetLayeredContextForIngest();
+
+  // ── Document hypothesis (minimal at ingest start, v25 layered-context spec) ──
+  // The initial hypothesis declares ONLY genre cues (kind, register, source
+  // metadata). No principals, no speculation — the classifier operates with
+  // a thin frame for the first ~30 events. The first grounded hypothesis
+  // arrives via REC (refreshHypothesis) at the first-promotion sentence,
+  // grounded in accumulated graph evidence rather than guess.
   if (isLLMReady() && !opts.rawMode) {
-    if (progressEl) progressEl.innerHTML = `forming document hypothesis…`;
+    if (progressEl) progressEl.innerHTML = `forming minimal hypothesis (genre cues only)…`;
     try {
-      const hyp = await hypothesizeDocument(processedText);
+      const hyp = await hypothesizeDocument(processedText, {
+        minimal: true,
+        sourceMetadata: {
+          title: source.name,
+          name: (source.fileMetadata && source.fileMetadata.name) || null,
+          publicationDate: source.publicationDate,
+        },
+      });
       if (hyp) {
         source.hypothesis = hyp;
-        // Pre-mint principal entities so the matcher can resolve "his wife"
-        // and "Mrs. Bennet" to the same entity from sentence 1, rather than
-        // discovering them mid-extraction (or failing to discover the
-        // unnamed-described ones at all).
-        const preminted = preMintHypothesisPrincipals(hyp, source.id);
-        // Encode the hypothesis claims as DEFs in G — has-principal,
-        // has-site. This is what makes them subject to EVA/REC machinery
-        // alongside everything else the system extracts.
-        emitHypothesisDEFs(hyp, source, preminted);
-        // Seed salience with preminted principals so the per-clause
-        // extractor sees them in the salience window from sentence 1.
-        for (const ent of preminted) {
-          if (!salience.includes(ent.id)) salience.push(ent.id);
-        }
+        // Cache the hypothesis embedding eagerly so the divergence monitor
+        // has a baseline as soon as event embeddings start arriving.
+        try {
+          const f = await embedText(serializeHypothesisForEmbed(hyp));
+          if (f) STATE.hypothesisEmbedding = quantizeFloat32(f);
+        } catch (e) { /* embedder may not be ready yet — divergence monitor lazily catches up */ }
+        // NOTE: minimal hypothesis has NO principals — so we deliberately
+        // skip preMintHypothesisPrincipals and emitHypothesisDEFs. The
+        // grounded hypothesis (with principals) is produced later by REC.
         if (progressEl) {
-          progressEl.innerHTML = `hypothesis: ${escapeHtml(hyp.summary || hyp.kind)} · ${preminted.length} principals preminted · beginning extraction…`;
+          progressEl.innerHTML = `hypothesis (minimal): ${escapeHtml(hyp.summary || hyp.kind)} · beginning extraction (grounded refresh at sentence ${(STATE.hypothesisFirstPromotionAt || 30) + 1})…`;
         }
-        console.log('[anchorage] document hypothesis:', hyp);
-        // Surface the hypothesis card in the Sources view immediately —
-        // so the user sees the principals, register, and summary before
-        // the per-clause loop starts.
+        console.log('[anchorage] minimal document hypothesis:', hyp);
         renderActiveViewNow();
       } else if (progressEl) {
         progressEl.innerHTML = `hypothesis call returned no result; proceeding without it…`;
@@ -7373,7 +8091,15 @@ async function ingestSource(text, opts = {}) {
       // Aliases include both the cleaned canonical and the original surface
       // (so later mentions in either form resolve via Tier-1 exact match).
       const aliases = canonical === original ? [canonical] : [canonical, original];
-      const ent = mintEntity(canonical, aliases);
+      // Span-anchor the INS / alias-evolution: every name in the graph
+      // cites the particular sentence where the determination was made.
+      const ent = mintEntity(canonical, aliases, null, {
+        sourceId: source.id,
+        narrativePos: { sourceId: source.id, sentenceIdx: i },
+        spanText: clause,
+        firstSurface: original,
+        authoredBy: 'matcher',
+      });
       provisional.push(ent);
     }
 
@@ -7419,11 +8145,17 @@ async function ingestSource(text, opts = {}) {
     // sentence-embedded, which feeds the per-entity gestalt (the centroid
     // that determines computed Site).
     if (!opts.rawMode && isLLMReady() && STATE.autoLLMClassify !== false) {
+      // Capture the four-layer context once per sentence — the same
+      // conditioning gets applied to every event the sentence produced.
+      const layered = captureLayeredContextForEvent(source, clause);
       for (const eid of sentenceEventIds) {
         const ev = STATE.G.find(e => e.id === eid);
         if (!ev || !isEventAmbiguous(ev) || ev.llmCell || ev.llmClassifyError) continue;
+        // Persist the snapshot on the event so re-classification (and the
+        // prompt-log audit trail) reproduces the original conditioning.
+        ev.layeredContext = layered;
         try {
-          await classifyEventViaLLM(ev);
+          await classifyEventViaLLM(ev, { layered });
         } catch (err) {
           ev.llmClassifyError = err.message;
         }
@@ -7436,6 +8168,110 @@ async function ingestSource(text, opts = {}) {
         const ev = STATE.G.find(e => e.id === eid);
         if (!ev) continue;
         await embedEventIfNeeded(ev);
+      }
+    }
+
+    // ── LAYERED CONTEXT UPDATE (v25 spec) ──
+    // After this sentence's events are classified, advance the four
+    // context layers. Each layer carries a distinct epistemic register
+    // — none reaches above its station.
+    {
+      // Textbase ring: append actually-classified events from THIS sentence.
+      // Mechanical state — no LLM call regenerates it.
+      for (const eid of sentenceEventIds) {
+        const ev = STATE.G.find(e => e.id === eid);
+        if (!ev) continue;
+        if (!isEventAmbiguous(ev)) continue;  // SIG/INS aren't propositional
+        appendToTextbaseRing(ev);
+      }
+
+      // Sentence-embedding for the discontinuity trigger. Compute cosine
+      // to prior BEFORE we overwrite the prior — so the trigger fires on
+      // the present transition, not the previous one.
+      let curSentenceEmbedding = null;
+      if (EMBEDDER.status === 'ready') {
+        try {
+          const f = await embedText(clause);
+          if (f) curSentenceEmbedding = quantizeFloat32(f);
+        } catch (e) { /* embedder might not be ready yet */ }
+      }
+
+      // Decide whether to regenerate the running summary. Three triggers:
+      // (1) SEG event in this sentence, (2) sentences-since-last >= 8,
+      // (3) sentence cosine to prior < 0.4.
+      try {
+        const regenerated = await maybeRegenerateRunningSummary(
+          source, i, clause, curSentenceEmbedding, sentenceEventIds
+        );
+        if (regenerated && progressEl) {
+          progressEl.innerHTML = `summary refreshed at sentence ${i + 1}: ${escapeHtml((STATE.runningSummary || '').slice(0, 120))}…`;
+        }
+      } catch (e) {
+        console.warn('[anchorage] summary regen failed:', e);
+      }
+
+      // Advance prior-sentence layer (verbatim; never paraphrased).
+      STATE.priorSentenceText = clause;
+      STATE.lastSentenceEmbedding = curSentenceEmbedding;
+      STATE.lastClassifiedSentenceText = clause;
+      STATE.globalSentencesProcessed = (STATE.globalSentencesProcessed || 0) + 1;
+
+      // ── HYPOTHESIS REC TRIGGERS ──
+      // First-promotion: at sentence (default) 30, unconditionally
+      // refresh from minimal → grounded. After first promotion, the
+      // refresh path runs only when divergence crosses the threshold.
+      const firstPromoteAt = STATE.hypothesisFirstPromotionAt ?? 30;
+      const isMinimalNow = source.hypothesis && source.hypothesis.minimal;
+      if (isMinimalNow && i >= firstPromoteAt) {
+        try {
+          await ensureHypothesisEmbedding(source);
+          const c = recentEventCentroid(30);
+          const cosAtTrigger = (STATE.hypothesisEmbedding && c) ? cosineInt8(STATE.hypothesisEmbedding, c) : null;
+          const refreshed = await refreshHypothesis(
+            source, i, 'first-promotion',
+            cosAtTrigger,
+            STATE.hypothesisBaselineCosine
+          );
+          if (refreshed) {
+            // Now that we have grounded principals, premint them so the
+            // matcher can resolve descriptors against entity records that
+            // already exist. This carries span anchoring (the sentence
+            // where the refresh fired) for full audit.
+            const preminted = preMintHypothesisPrincipals(refreshed, source.id, {
+              sentenceIdx: i,
+              spanText: refreshed.summary || null,
+              authoredBy: 'hypothesis-refresh',
+            });
+            for (const ent of preminted) {
+              if (!salience.includes(ent.id)) salience.push(ent.id);
+            }
+            if (progressEl) {
+              progressEl.innerHTML = `hypothesis promoted at sentence ${i + 1}: ${escapeHtml(refreshed.summary || refreshed.kind)} · ${preminted.length} principals grounded`;
+            }
+            renderActiveViewNow();
+          }
+        } catch (e) {
+          console.warn('[anchorage] first-promotion refresh failed:', e);
+        }
+      } else if (source.hypothesis && !source.hypothesis.minimal) {
+        // Divergence monitor — fires every N classified events. When the
+        // cosine drop crosses the threshold, refresh discretely with full
+        // REC provenance (logged, not silent).
+        const div = checkHypothesisDivergence(source);
+        if (div && div.needsBaseline) {
+          try { await ensureHypothesisEmbedding(source); } catch {}
+        } else if (div && div.reason === 'divergence') {
+          try {
+            const refreshed = await refreshHypothesis(
+              source, i, 'divergence', div.currentCosine, div.baseline
+            );
+            if (refreshed && progressEl) {
+              progressEl.innerHTML = `hypothesis refreshed (divergence Δ=${(div.baseline - div.currentCosine).toFixed(3)}): ${escapeHtml(refreshed.summary || refreshed.kind)}`;
+            }
+          } catch (e) {
+            console.warn('[anchorage] divergence refresh failed:', e);
+          }
+        }
       }
     }
 
@@ -10652,6 +11488,76 @@ function renderSourcesView() {
         </div>`;
       }
 
+      // ── HYPOTHESIS TIMELINE STRIP (v25 spec) ──
+      // Horizontal bar showing hypothesis epochs as colored segments.
+      // REC moments marked with vertical ticks. Click a segment to view
+      // that hypothesis's full text.
+      {
+        const allEpochs = [];
+        const totalSentences = Math.max(1, src.sentences.length);
+        // Reconstruct epochs for THIS source from history + current.
+        const histForSrc = (STATE.hypothesisHistory || []).filter(h => h.sourceId === src.id);
+        for (const h of histForSrc) {
+          allEpochs.push({
+            from: h.activeFromSentenceIdx,
+            to: h.activeToSentenceIdx,
+            hypothesis: h.hypothesis,
+            reason: h.reason,
+            historic: true,
+          });
+        }
+        // Active epoch — from end of last historic, or 0, to current cursor.
+        const lastHistoricTo = histForSrc.length > 0 ? histForSrc[histForSrc.length - 1].activeToSentenceIdx : -1;
+        if (src.hypothesis) {
+          allEpochs.push({
+            from: lastHistoricTo + 1,
+            to: (proc && proc.sourceId === src.id) ? proc.sentenceIdx : (totalSentences - 1),
+            hypothesis: src.hypothesis,
+            reason: 'current',
+            historic: false,
+          });
+        }
+        if (allEpochs.length > 0) {
+          const palette = ['#7a6c4f', '#5a7a90', '#90585a', '#6a8060', '#806a90', '#a07050'];
+          const stripSegs = allEpochs.map((ep, idx) => {
+            const span = Math.max(1, ep.to - ep.from + 1);
+            const widthPct = (span / totalSentences) * 100;
+            const color = palette[idx % palette.length];
+            const isMin = ep.hypothesis && ep.hypothesis.minimal;
+            const label = ep.hypothesis ? (ep.hypothesis.summary || ep.hypothesis.kind || '?') : '?';
+            const tip = `epoch ${idx + 1}${isMin ? ' (minimal)' : ''} · sentences ${ep.from + 1}–${ep.to + 1} · ${ep.reason} · ${label}`;
+            const opacity = ep.historic ? 0.65 : 0.95;
+            const stripe = isMin ? `background-image: repeating-linear-gradient(45deg, ${color}, ${color} 4px, ${color}cc 4px, ${color}cc 8px);` : `background: ${color};`;
+            return `<div class="hyp-strip-seg" data-epoch="${idx}" title="${escapeHtml(tip)}" style="width:${widthPct}%;${stripe};opacity:${opacity};"></div>`;
+          }).join('');
+          // REC tick marks at refresh sentence positions
+          const recTicks = histForSrc.map(h => {
+            const left = ((h.activeToSentenceIdx + 0.5) / totalSentences) * 100;
+            const reasonLabel = h.reason === 'first-promotion' ? '★' : h.reason === 'divergence' ? '◆' : '·';
+            const tip = `REC at sentence ${h.activeToSentenceIdx + 1} · ${h.reason}`;
+            return `<div class="hyp-strip-rec" title="${escapeHtml(tip)}" style="left:${left}%;">${reasonLabel}</div>`;
+          }).join('');
+          html += `<div style="margin-bottom:14px;">
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:4px;">hypothesis timeline · epochs across the read</div>
+            <div class="hyp-strip" data-source-id="${escapeHtml(src.id)}" style="position:relative;display:flex;height:14px;border:1px solid var(--rule);background:var(--paper);border-radius:2px;overflow:visible;">
+              ${stripSegs}
+              ${recTicks}
+            </div>
+            <div id="hyp-epoch-detail" style="margin-top:6px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);"></div>
+          </div>
+          <style>
+            .hyp-strip-seg { cursor: pointer; transition: opacity .15s; border-right: 1px solid rgba(255,255,255,0.2); }
+            .hyp-strip-seg:hover { opacity: 1 !important; }
+            .hyp-strip-rec { position: absolute; top: -6px; transform: translateX(-50%); font-size: 11px; line-height: 1; color: var(--cursor, #c8472a); pointer-events: auto; cursor: help; }
+          </style>`;
+          // Stash epochs JSON on the timeline so the click handler can read it.
+          // Note the escaped close — a literal close-tag inside this template
+          // would prematurely terminate the OUTER script block in the HTML
+          // parser, regardless of being inside a JS string.
+          html += `<script type="application/json" id="hyp-epochs-data">${JSON.stringify(allEpochs)}<\/script>`;
+        }
+      }
+
       html += `<div class="label" style="margin-bottom: 8px;">${proc ? 'Reading ' + escapeHtml(src.name) + '…' : 'Sentences in ' + escapeHtml(src.name)}</div>`;
       // Show all sentences from segmentation, including ones not yet processed
       // For active source during ingest, segmentSentences would be deterministic
@@ -10668,7 +11574,23 @@ function renderSourcesView() {
         const isPastCursor = proc && sent.idx < proc.sentenceIdx;
         if (isPastCursor) cls.push('past');
         if (sent.chromeSuspect) cls.push('chrome-suspect');
-        html += `<div class="${cls.join(' ')}" data-sentence-idx="${sent.idx}">
+        // Per-sentence summary header (v25 layered-context spec).
+        // Collapsed by default — appears as a small caret that expands
+        // to show "summary-at-this-moment" when a regeneration landed
+        // here. This is the scrubbing affordance the spec describes.
+        let summaryHeader = '';
+        if (sent.summaryAtSentence) {
+          const reasonLabel = sent.summaryReason ? ` <span style="color:var(--ink-faint);">(${escapeHtml(sent.summaryReason)})</span>` : '';
+          summaryHeader = `<details class="sentence-summary-header" style="margin: 4px 0 2px 0;">
+            <summary style="font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; letter-spacing: 0.05em; color: var(--ink-soft); cursor: pointer;">
+              summary-at-sentence-${sent.idx + 1}${reasonLabel}
+            </summary>
+            <div style="font-family: 'Newsreader', serif; font-style: italic; font-size: 12px; color: var(--ink); padding: 4px 0 4px 14px; border-left: 2px solid var(--rule); margin-top: 4px;">
+              ${escapeHtml(sent.summaryAtSentence)}
+            </div>
+          </details>`;
+        }
+        html += `${summaryHeader}<div class="${cls.join(' ')}" data-sentence-idx="${sent.idx}">
           <span class="idx">#${sent.idx}</span>${escapeHtml(sent.text)}
           ${sent.chromeSuspect ? '<span class="chrome-marker" title="flagged as page chrome — events from this sentence carry chromeSuspect=true">chrome</span>' : ''}
           ${eventsHere.length > 0 ? `<span class="events-count">${eventsHere.length} event${eventsHere.length === 1 ? '' : 's'}</span>` : ''}
@@ -10730,6 +11652,31 @@ function renderSourcesView() {
       const row = el.querySelector(`.sentence-row.processing`);
       if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }, 0);
+  }
+
+  // Wire hypothesis-strip click → show that epoch's full hypothesis text
+  // beneath the strip. The data was stashed as a JSON script tag.
+  const epochDataEl = el.querySelector('#hyp-epochs-data');
+  const detailEl = el.querySelector('#hyp-epoch-detail');
+  if (epochDataEl && detailEl) {
+    let epochs = [];
+    try { epochs = JSON.parse(epochDataEl.textContent || '[]'); } catch {}
+    el.querySelectorAll('.hyp-strip-seg').forEach(seg => {
+      seg.addEventListener('click', () => {
+        const idx = parseInt(seg.getAttribute('data-epoch'), 10);
+        const ep = epochs[idx];
+        if (!ep) return;
+        const h = ep.hypothesis || {};
+        const principalsTxt = (h.principals || []).map(p => p.name).join(', ');
+        detailEl.innerHTML = `
+          <div style="background:var(--paper-soft);border:1px solid var(--rule);padding:10px 12px;line-height:1.55;">
+            <div style="margin-bottom:4px;"><strong>epoch ${idx + 1}</strong> · sentences ${ep.from + 1}–${ep.to + 1} · ${escapeHtml(ep.reason || '')}${h.minimal ? ' · <em>minimal</em>' : ''}</div>
+            <div style="font-family:'Newsreader',serif;font-size:13px;font-style:italic;margin-bottom:6px;">${escapeHtml(h.summary || '(no summary)')}</div>
+            <div style="font-size:10px;">${escapeHtml(h.kind || '?')} · ${escapeHtml(h.register || '?')} · ${escapeHtml(h.discourse || '?')}${h.period && h.period !== 'unknown' ? ' · ' + escapeHtml(h.period) : ''}</div>
+            ${principalsTxt ? `<div style="font-size:10px;margin-top:4px;">principals: ${escapeHtml(principalsTxt)}</div>` : ''}
+          </div>`;
+      });
+    });
   }
 }
 
@@ -11026,6 +11973,61 @@ function renderInspectView() {
 
   // EO 27-cell distribution
   html += renderEo27Distribution();
+
+  // ── Hypothesis evolution (v25 layered-context spec) ──
+  // Surfaces the cosine to centroid, baseline, divergence delta, and
+  // historical hypothesis epochs so the user can audit how the system's
+  // frame for the document drifted across the read.
+  html += `<div class="inspect-section"><h3>Hypothesis evolution</h3>`;
+  {
+    let curCos = null;
+    if (STATE.hypothesisEmbedding) {
+      const c = recentEventCentroid(30);
+      if (c) curCos = cosineInt8(STATE.hypothesisEmbedding, c);
+    }
+    const baseline = STATE.hypothesisBaselineCosine;
+    const delta = (curCos != null && baseline != null) ? (baseline - curCos) : null;
+    const cosFmt = v => v == null ? '—' : v.toFixed(3);
+    const deltaColor = delta != null && delta > (STATE.hypothesisDivergenceDelta || 0.15) ? 'color: var(--gap, #b07a3a); font-weight: 500;' : '';
+    html += `<table class="inspect-table"><tbody>
+      <tr><td style="width:32%;">current hypothesis cosine to graph centroid</td><td style="font-family:'IBM Plex Mono',monospace;">${cosFmt(curCos)}</td></tr>
+      <tr><td>baseline (at last refresh)</td><td style="font-family:'IBM Plex Mono',monospace;">${cosFmt(baseline)}</td></tr>
+      <tr><td>divergence delta (baseline − current)</td><td style="font-family:'IBM Plex Mono',monospace;${deltaColor}">${delta != null ? delta.toFixed(3) : '—'} <span style="color:var(--ink-faint);">/ threshold ${(STATE.hypothesisDivergenceDelta || 0.15).toFixed(2)}</span></td></tr>
+      <tr><td>first-promotion at sentence</td><td style="font-family:'IBM Plex Mono',monospace;">${(STATE.hypothesisFirstPromotionAt || 30) + 1}</td></tr>
+      <tr><td>divergence check every N events</td><td style="font-family:'IBM Plex Mono',monospace;">${STATE.divergenceCheckEveryN || 5}</td></tr>
+    </tbody></table>`;
+
+    if ((STATE.hypothesisHistory || []).length > 0) {
+      html += `<div style="margin-top:10px;">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:6px;">historical hypotheses (REC supersedes; nothing erased)</div>
+        <table class="inspect-table"><thead><tr><th>source</th><th>active span</th><th>reason</th><th>cosine→baseline</th><th>summary</th></tr></thead><tbody>`;
+      for (const h of STATE.hypothesisHistory) {
+        const srcName = STATE.sources.get(h.sourceId)?.name || h.sourceId;
+        const cosLine = h.cosineAtTrigger != null && h.baseline != null
+          ? `${h.cosineAtTrigger.toFixed(3)} → ${h.baseline.toFixed(3)}`
+          : '—';
+        const summary = h.hypothesis?.summary || h.hypothesis?.kind || '?';
+        html += `<tr>
+          <td>${escapeHtml(srcName)}</td>
+          <td style="font-family:'IBM Plex Mono',monospace;">${h.activeFromSentenceIdx + 1}–${h.activeToSentenceIdx + 1}</td>
+          <td style="font-family:'IBM Plex Mono',monospace;">${escapeHtml(h.reason || '?')}</td>
+          <td style="font-family:'IBM Plex Mono',monospace;">${cosLine}</td>
+          <td><span style="font-style:italic;">${escapeHtml(summary)}</span></td>
+        </tr>`;
+      }
+      html += `</tbody></table></div>`;
+    } else {
+      html += `<div style="margin-top:8px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-faint);">no historical hypotheses yet — first-promotion REC fires at sentence ${(STATE.hypothesisFirstPromotionAt || 30) + 1}.</div>`;
+    }
+
+    if (STATE.runningSummary) {
+      html += `<div style="margin-top:10px;">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:4px;">current running summary (last regenerated at sentence ${(STATE.lastSummaryUpdateAt || 0) + 1})</div>
+        <div style="font-family:'Newsreader',serif;font-style:italic;font-size:13px;background:var(--paper-soft);padding:10px 12px;border:1px solid var(--rule);">${escapeHtml(STATE.runningSummary)}</div>
+      </div>`;
+    }
+  }
+  html += `</div>`;
 
   // Sources
   html += `<div class="inspect-section"><h3>Sources</h3>`;
@@ -12972,7 +13974,7 @@ document.getElementById('export-btn').addEventListener('click', () => {
   });
 
   const data = {
-    formatVersion: 'v25.6-roleprofile',
+    formatVersion: 'v25.7-layered-context',
     sources: [...STATE.sources.values()],
     entities: entitiesForExport,
     G: eventsForExport,
@@ -12980,6 +13982,29 @@ document.getElementById('export-btn').addEventListener('click', () => {
     evas: STATE.evas,
     recs: STATE.recs,
     predicates: [...STATE.predicates.entries()].map(([k, v]) => ({ predicate: k, count: v.count, subjects: [...v.subjects] })),
+    // ── Layered-context export (v25 spec) ──
+    // Hypothesis history is the auditable evolution of the system's
+    // frame for each document; runningSummaryAtEnd is the final read-
+    // gist; the per-sentence summaryAtSentence fields already live on
+    // sources[].sentences[] so scrubbing the source view in a fresh
+    // session reproduces the original moment-by-moment view.
+    hypothesisHistory: STATE.hypothesisHistory || [],
+    finalHypothesis: (() => {
+      const out = {};
+      for (const [id, src] of STATE.sources) {
+        if (src.hypothesis) out[id] = src.hypothesis;
+      }
+      return out;
+    })(),
+    runningSummaryAtEnd: STATE.runningSummary || '',
+    layeredContextTunables: {
+      hypothesisDivergenceDelta: STATE.hypothesisDivergenceDelta,
+      hypothesisFirstPromotionAt: STATE.hypothesisFirstPromotionAt,
+      divergenceCheckEveryN: STATE.divergenceCheckEveryN,
+      summaryFallbackEveryN: STATE.summaryFallbackEveryN,
+      summaryDiscontinuityCosine: STATE.summaryDiscontinuityCosine,
+      textbaseRingMax: STATE.textbaseRingMax,
+    },
     embeddingStore: {
       // Ship metadata about embedded events so a re-importer knows what
       // was embedded without shipping the vectors themselves. Recovery:
