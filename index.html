@@ -8736,19 +8736,88 @@ function renderPredicateClause(subjCanonical, subjLink, pred, rs) {
 }
 
 // Templated answer for an overview (corpus summary) intent.
+// Answers "what is this about?" by naming the source(s) and the central
+// subject, then surfacing the heaviest cited claims about the lead subject
+// (and a fact apiece for the next two supporting subjects). Each fact runs
+// through renderPredicateClause, so it carries a real [n] citation linked
+// to a source sentence — same pipeline as portrait/probe answers. Aggregate
+// counts are omitted on purpose; the evidence panel already shows them.
 function templateOverview(result) {
   if (!result || result.kind !== 'corpus-summary') return '<p class="templated">No corpus loaded.</p>';
   if (result.n_entities === 0) {
     return `<p class="templated">The corpus is empty. Ingest a source to begin.</p>`;
   }
-  const sources = result.sources.map(s => escapeHtml(s.name)).join(', ');
-  const subjs = result.topSubjects.slice(0, 3).map(s => entityLink(s.id)).join(', ');
-  const preds = result.topPredicates.slice(0, 5).map(p => escapeHtml(p.predicate)).join(', ');
-  const parts = [];
-  parts.push(`The corpus draws on ${result.sources.length} source${result.sources.length === 1 ? '' : 's'} (${sources}), tracking ${result.n_entities} entit${result.n_entities === 1 ? 'y' : 'ies'} across ${result.n_predicates} predicate${result.n_predicates === 1 ? '' : 's'}.`);
-  if (subjs) parts.push(`Top subjects by mass: ${subjs}.`);
-  if (preds) parts.push(`Common predicates: ${preds}.`);
-  return `<p class="templated">${parts.join(' ')}</p>`;
+  const sources = result.sources || [];
+  const topSubjs = result.topSubjects || [];
+
+  if (!topSubjs.length) {
+    const sourceList = sources.map(s => escapeHtml(s.name)).join(', ');
+    return `<p class="templated">The corpus has ${sources.length} source${sources.length === 1 ? '' : 's'} (${sourceList}) but no subjects have been extracted yet.</p>`;
+  }
+
+  // Render up to maxPreds cited predicate clauses for one subject, heaviest first.
+  const characterize = (subj, maxPreds) => {
+    const subjLink = entityLink(subj.id);
+    const allDefs = getAllDefsForSubject(subj.id).map(filterDefToActive).filter(Boolean);
+    if (!allDefs.length) return [];
+    const byPred = new Map();
+    for (const d of allDefs) {
+      const row = {
+        def_id: d.id,
+        subject: subj.canonical,
+        subject_id: subj.id,
+        predicate: d.predicate,
+        value: d.value,
+        weight: (d.grounding && d.grounding.length) || 1,
+      };
+      if (!byPred.has(d.predicate)) byPred.set(d.predicate, []);
+      byPred.get(d.predicate).push(row);
+    }
+    const order = [...byPred.entries()]
+      .sort((a, b) => Math.max(...b[1].map(r => r.weight)) - Math.max(...a[1].map(r => r.weight)))
+      .slice(0, maxPreds);
+    return order.map(([pred, rs]) => renderPredicateClause(subj.canonical, subjLink, pred, rs));
+  };
+
+  const sentences = [];
+  const lead = topSubjs[0];
+  const leadLink = entityLink(lead.id);
+
+  // Lead sentence — identify subject matter via source(s) and lead subject.
+  // When the sole source is named after the lead subject, frame it as a dossier
+  // rather than the awkward "X centers on X".
+  if (sources.length === 1) {
+    const srcName = sources[0].name;
+    const sn = srcName.toLowerCase();
+    const ln = lead.canonical.toLowerCase();
+    const sourceIsAboutLead = sn === ln || sn.startsWith(ln + ' ') || sn.startsWith(ln + ',') || sn.startsWith(ln + '(') || sn.startsWith(ln + ':');
+    if (sourceIsAboutLead) {
+      sentences.push(`${escapeHtml(srcName)} is a dossier on ${leadLink}.`);
+    } else {
+      sentences.push(`${escapeHtml(srcName)} centers on ${leadLink}.`);
+    }
+  } else {
+    const sourceList = sources.map(s => escapeHtml(s.name)).join(', ');
+    sentences.push(`Across ${sources.length} sources (${sourceList}), the record centers on ${leadLink}.`);
+  }
+
+  // Characterize the lead subject — heaviest 3 predicate clauses, each cited.
+  sentences.push(...characterize(lead, 3));
+
+  // Supporting subjects — name up to two more and give each one cited fact.
+  const supporting = topSubjs.slice(1, 3);
+  if (supporting.length) {
+    const links = supporting.map(s => entityLink(s.id));
+    const tail = links.length === 1
+      ? links[0]
+      : links.slice(0, -1).join(', ') + ' and ' + links[links.length - 1];
+    sentences.push(`${tail} also figure${links.length === 1 ? 's' : ''} in the record.`);
+    for (const s of supporting) {
+      sentences.push(...characterize(s, 1));
+    }
+  }
+
+  return `<p class="templated">${sentences.join(' ')}</p>`;
 }
 
 // Top-level dispatcher — picks template by intent.
