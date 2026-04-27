@@ -2810,8 +2810,10 @@ function formatPredicateForDisplay(predicate) {
 }
 
 // Format a single salience entry for the per-clause prompt. Carries the
-// canonical name, last-seen sentence index, and gender hint when known.
-// Example: "Mrs. Bennet@s0 [f]". Used by llmProcessClause's salience line.
+// canonical name, last-seen sentence index, and gender hint. Default
+// gender is p (they/them, wildcard); m/f/n appear only when the
+// hypothesis committed to a narrower gender from textual evidence.
+// Example: "Mrs. Bennet@s0 [f]" or "Mary@pre [p]".
 function formatSalienceEntry(ent) {
   if (!ent) return '';
   let s = ent.canonical;
@@ -2821,7 +2823,10 @@ function formatSalienceEntry(ent) {
     // -1 means "preminted from hypothesis, not yet seen in text"
     s += '@pre';
   }
-  if (ent.gender && ent.gender !== 'unknown') s += ` [${ent.gender}]`;
+  // Always show gender — [p] (the default) is the explicit wildcard signal
+  // to the LLM that no narrower gender was committed from text evidence.
+  const g = ent.gender || 'p';
+  s += ` [${g}]`;
   return s;
 }
 
@@ -5352,7 +5357,7 @@ UNRESOLVED vs NEEDS — these are different fields:
 
 Use needs when: pronouns lack antecedent in salience (or use unresolved — both trigger coref escalation), definite descriptions ("the deal") might match an existing entity, claims with "again"/"still" suggest prior context, coref confirmation needed.
 
-PRONOUN BINDING: salience entries are formatted "Name@sN [g]" — sentence index of last mention and gender hint (m/f/n/p). Bind a pronoun to the most recent gender-compatible candidate. "Her" in sentence 1, with salience "Mr. Bennet@s0 [m]; Mrs. Bennet@s0 [f]; Mary@pre [f]; Lydia@pre [f]" → bind to Mrs. Bennet (most recent female actually seen in the text), NOT to Mary or Lydia (which are preminted but not yet introduced). "@pre" means preminted from the document hypothesis but never appeared in any prior sentence.
+PRONOUN BINDING: salience entries are formatted "Name@sN [g]" — sentence index of last mention and gender hint (m/f/n/p). Gender [p] means "they/them — gender not committed by the document yet"; treat it as compatible with any pronoun (the principal could turn out to be male, female, neuter, or plural). Only [m] excludes "she"/"it"/"they"-as-plural, only [f] excludes "he"/"it", only [n] excludes "he"/"she". Bind a pronoun to the most recent compatible candidate, preferring entities seen in the text (not "@pre" entries) when possible. "Her" in sentence 1, with salience "Mr. Bennet@s0 [m]; Mrs. Bennet@s0 [f]; Mary@pre [p]; Lydia@pre [p]" → bind to Mrs. Bennet (most recent f, actually seen in the text), NOT Mary/Lydia (preminted, [p] is compatible but they haven't been introduced yet). "@pre" means preminted from the document hypothesis but never appeared in any prior sentence.
 
 Example: clause "He withdrew from it in 2018" with no entity in salience →
 unresolved: ["he", "it"], needs: ["edges:Mr. Trump", "edges:Obama"]
@@ -5641,12 +5646,15 @@ function fulfillNeed(need, ctx = {}) {
     const candidates = [];
     for (const ent of STATE.entities.values()) {
       if (!isEntityActive(ent.id)) continue;
-      if (cat && ent.gender && ent.gender !== 'unknown') {
-        if (cat === 'm' && ent.gender !== 'm') continue;
-        if (cat === 'f' && ent.gender !== 'f') continue;
-        if (cat === 'p' && ent.gender !== 'p') continue;
-        // 'n' (it/its) is intentionally permissive
-      }
+      // Filter by gender only when both the pronoun and the entity carry a
+      // *committed* gender (m/f/n). Entities default to p (they/them), which
+      // is the wildcard — they could turn out to be any gender, so they
+      // remain candidates for "he"/"she"/"it" pronouns. Pronoun cat 'p'
+      // (they/them) is also wildcard since "they" can refer to anyone.
+      const entGender = ent.gender;
+      const entCommitted = entGender === 'm' || entGender === 'f' || entGender === 'n';
+      const pronCommitted = cat === 'm' || cat === 'f' || cat === 'n';
+      if (entCommitted && pronCommitted && entGender !== cat) continue;
       candidates.push(ent);
     }
     // Sort by recency (most recent first), preferring entities seen in text
@@ -5662,7 +5670,7 @@ function fulfillNeed(need, ctx = {}) {
       const seen = typeof ent.lastSeenSentence === 'number'
         ? (ent.lastSeenSentence === -1 ? 'preminted, not yet seen in text' : `last seen at s${ent.lastSeenSentence}`)
         : 'never seen';
-      const g = ent.gender && ent.gender !== 'unknown' ? `[${ent.gender}] ` : '';
+      const g = `[${ent.gender || 'p'}] `;
       lines.push(`  ${g}${ent.canonical} — ${seen}${aliasNote}`);
     }
     if (candidates.length === 0) lines.push('  (no gender-compatible candidates)');
@@ -5840,7 +5848,7 @@ You are given a sample of the document — typically the first 1500 words. Outpu
       "name": "<canonical name as it appears in text, or best descriptor if unnamed>",
       "aliases": ["<other surface forms>"],
       "site": "Void|Entity|Kind|Field|Link|Network|Atmosphere|Lens|Paradigm",
-      "gender": "m|f|n|p|unknown"
+      "gender": "m|f|n|p"
     }
   ],
   "authorship": [
@@ -5855,7 +5863,7 @@ Rules for principals:
 - Aim for 3-15. Recurring across multiple events.
 - For unnamed-but-describable principals (Austen's "his lady" before Mrs. Bennet is named, news article's "the senior official" before Smith is named), give the descriptor as name. The aliases array is where you record other surface forms — including the descriptor itself if name later resolves to a proper name.
 - Aliases: include short forms, titled forms, alternative spellings the same referent uses. Don't merge distinct referents (a place "Colombia" is not an alias for a place "Colombian military base" even though one contains the other).
-- Gender: m (he/him), f (she/her), n (it/its), p (they/them as plural), or unknown. This is what tells the per-clause coref resolver which principal a pronoun is allowed to bind to. Always set it for human characters; set "n" for objects and abstractions; "unknown" only when truly indeterminate.
+- Gender: m (he/him), f (she/her), n (it/its), or p (they/them). The default is p — assume they/them unless the text gives clear contextual evidence to narrow it (a "Mr."/"Mrs." honorific, gendered pronouns used by other characters, named relationships like "his wife"/"her husband", an explicit description). Only commit to m, f, or n when the text actually warrants it; otherwise leave as p. The per-clause coref resolver treats p as a wildcard, so principals tagged p will still match "he"/"she"/"it"/"they" in the text — choosing p is the safe-by-default option, not a guess. For inanimate or abstract principals (places, contracts, conditions, paradigms), use n.
 
 Rules for authorship:
 - Anyone WRITING ABOUT the events rather than participating in them. Empty array is fine for fiction or any document without explicit authorship apparatus.
@@ -5890,7 +5898,7 @@ async function hypothesizeDocument(text) {
   // we receive is either a mistake or an older format; default to Entity.
   const VALID_SITES = new Set(['Void','Entity','Kind','Field','Link','Network','Atmosphere','Lens','Paradigm']);
   if (!Array.isArray(parsed.principals)) parsed.principals = [];
-  const VALID_GENDERS = new Set(['m','f','n','p','unknown']);
+  const VALID_GENDERS = new Set(['m','f','n','p']);
   parsed.principals = parsed.principals.filter(p => p && p.name).map(p => {
     let site = String(p.site || '').trim();
     // Tolerate older outputs that may use lowercase or singular variants
@@ -5900,9 +5908,14 @@ async function hypothesizeDocument(text) {
     } else {
       site = 'Entity';
     }
-    // Gender hint for coref. Old hypotheses won't carry it; default unknown.
+    // Gender hint for coref. Default is p (they/them) — the only safe default
+    // that doesn't bake an assumption into untagged principals. The coref
+    // filter treats p as a wildcard, so this default doesn't restrict
+    // matching; m/f/n only apply when the LLM has actual textual evidence.
+    // Older "unknown" outputs are coerced to p with the same effect.
     let gender = String(p.gender || '').toLowerCase().trim();
-    if (!VALID_GENDERS.has(gender)) gender = 'unknown';
+    if (gender === 'unknown') gender = 'p';
+    if (!VALID_GENDERS.has(gender)) gender = 'p';
     return {
       name: String(p.name).trim(),
       aliases: Array.isArray(p.aliases) ? p.aliases.map(s => String(s).trim()).filter(Boolean) : [],
@@ -5979,7 +5992,10 @@ function preMintHypothesisPrincipals(h, sourceId) {
     }
     // Gender propagates from hypothesis to entity so the per-clause coref
     // formatter can show pronoun-compatibility hints in the salience line.
-    if (ent && p.gender && p.gender !== 'unknown') {
+    // p (they/them) is the safe default and remains meaningful — it's
+    // wildcard for the coref filter, but tells the LLM no narrower gender
+    // was committed.
+    if (ent && p.gender) {
       ent.gender = p.gender;
     }
     minted.push(ent);
