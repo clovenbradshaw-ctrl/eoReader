@@ -13619,6 +13619,214 @@ function _dreamSplitSentences(prose) {
   return out;
 }
 
+// ─── Dream picker ───────────────────────────────────────────────────
+// Selects which entities the next dream cycle reflects on. The dream
+// is a stochastic loop; the picker is what makes it stochastic. It
+// ranks active entities by graph activity (occurrence × recency) and
+// samples a small foreground from the top quartile, with optional
+// long-distance splicing to push the dream away from local minima.
+
+function _dreamRankEntities() {
+  const counts = new Map();
+  const lastSeen = new Map();
+  for (const ev of STATE.G) {
+    if (!isEventActive(ev)) continue;
+    const ids = [];
+    const p = ev.payload || {};
+    if (p.entity) ids.push(p.entity);
+    if (p.subject) ids.push(p.subject);
+    if (p.from) ids.push(p.from);
+    if (p.valueIsEntity && p.value) ids.push(p.value);
+    if (p.toIsEntity && p.to) ids.push(p.to);
+    const ts = ev.intakeTs || ev.timestamp || 0;
+    for (const id of ids) {
+      counts.set(id, (counts.get(id) || 0) + 1);
+      const prev = lastSeen.get(id) || 0;
+      if (ts > prev) lastSeen.set(id, ts);
+    }
+  }
+  const now = Date.now();
+  const out = [];
+  for (const [id, ent] of STATE.entities) {
+    const c = counts.get(id) || 0;
+    if (c === 0) continue;
+    if (!isEntityActive(id)) continue;
+    const ageDays = (now - (lastSeen.get(id) || now)) / 86400000;
+    const recency = 1 / (1 + ageDays);  // halves over a day
+    out.push({ id, ent, count: c, score: c * recency });
+  }
+  out.sort((a, b) => b.score - a.score);
+  return out;
+}
+
+function _dreamPickLongDistance(foregroundIds, ranked) {
+  ensureEntityCentroids();
+  const centroids = ENTITY_CENTROID_CACHE.byId;
+  const fgVecs = foregroundIds.map(id => centroids.get(id)).filter(Boolean);
+  if (fgVecs.length > 0) {
+    const dim = fgVecs[0].length;
+    const avg = new Float32Array(dim);
+    for (const v of fgVecs) for (let i = 0; i < dim; i++) avg[i] += v[i];
+    let n = 0;
+    for (let i = 0; i < dim; i++) n += avg[i] * avg[i];
+    n = Math.sqrt(n) || 1;
+    for (let i = 0; i < dim; i++) avg[i] /= n;
+    const scored = [];
+    for (const r of ranked) {
+      if (foregroundIds.includes(r.id)) continue;
+      const c = centroids.get(r.id);
+      if (!c) continue;
+      let dot = 0;
+      for (let i = 0; i < dim; i++) dot += avg[i] * c[i];
+      scored.push({ ...r, cos: dot });
+    }
+    if (scored.length > 0) {
+      scored.sort((a, b) => a.cos - b.cos);
+      // Bottom 20% — most semantically distant from the foreground
+      const pool = scored.slice(0, Math.max(1, Math.ceil(scored.length * 0.2)));
+      return pool[Math.floor(Math.random() * pool.length)];
+    }
+  }
+  // Fallback: random outside foreground
+  const others = ranked.filter(r => !foregroundIds.includes(r.id));
+  if (others.length === 0) return null;
+  return others[Math.floor(Math.random() * others.length)];
+}
+
+function _dreamPickInjection(session) {
+  const ranked = _dreamRankEntities();
+  if (ranked.length < 2) return null;
+  const cfg = STATE.dreamConfig;
+  // Foreground sampled from the top quartile (or top 4, whichever is bigger).
+  const top = ranked.slice(0, Math.max(4, Math.ceil(ranked.length * 0.25)));
+  const lo = cfg.foregroundMin, hi = cfg.foregroundMax;
+  const wantN = lo + Math.floor(Math.random() * (hi - lo + 1));
+  const foreground = [];
+  const seen = new Set();
+  while (foreground.length < wantN && foreground.length < top.length) {
+    const idx = Math.floor(Math.random() * top.length);
+    if (seen.has(idx)) continue;
+    seen.add(idx);
+    foreground.push(top[idx]);
+  }
+  if (foreground.length === 0) return null;
+  const fgIds = foreground.map(f => f.id);
+  let longDistance = null;
+  if (Math.random() < cfg.longDistanceProb && ranked.length > top.length) {
+    longDistance = _dreamPickLongDistance(fgIds, ranked);
+  }
+  const entityIds = longDistance ? [...fgIds, longDistance.id] : fgIds;
+  const summary = (() => {
+    const fgNames = foreground.map(f => f.ent.canonical).join(', ');
+    return longDistance ? `${fgNames} ↮ ${longDistance.ent.canonical}` : fgNames;
+  })();
+  return {
+    entityIds,
+    foreground: fgIds,
+    longDistance: longDistance ? longDistance.id : null,
+    summary,
+  };
+}
+
+// ─── Dream prose generator ──────────────────────────────────────────
+// One LLM call per cycle, 100-200 words. Streams sentence-by-sentence
+// into the journal where supported (Anthropic); other backends commit
+// the whole prose at once after the call returns.
+
+const DREAM_PROSE_SYSTEM = `You are reflecting on a knowledge graph as in a dream — small, drifting, associative, but still grounded.
+
+Write 100-200 words of plain English prose. Sentences. Not a list, not bullets, not JSON, not markdown.
+
+You are given a few entities the system has been tracking and a sketch of what is already known about each. Reflect on what they have in common, where they touch, where one implies the other. Speculate softly: a dream-claim should be the kind of thing that is *almost* already present in what's known, just not yet said. Do not invent unrelated facts.
+
+Each sentence should mention at least one entity by its canonical name (not pronouns). Prefer concrete claims to abstractions. Stop when you have said something — no closing remarks, no "in summary".`;
+
+function _dreamBuildProseUserMsg(injection) {
+  const cfg = STATE.dreamConfig;
+  const lines = [];
+  for (const id of injection.entityIds) {
+    const ent = STATE.entities.get(id);
+    if (!ent) continue;
+    const defs = getAllDefsForSubject(id).slice(0, 4);
+    const sketch = defs.map(d => {
+      const v = d.valueIsEntity
+        ? (STATE.entities.get(d.value)?.canonical || d.value)
+        : String(d.value).slice(0, 60);
+      return `${d.predicate} → ${v}`;
+    });
+    const tag = id === injection.longDistance ? ' (stray fragment)' : '';
+    lines.push(`- ${ent.canonical}${tag}${sketch.length ? ': ' + sketch.join('; ') : ''}`);
+  }
+  const head = 'Entities the system has been tracking:\n';
+  const tail = '\n\nReflect.';
+  // Cap body roughly proportional to spanCharCap × token budget.
+  const cap = Math.max(400, cfg.spanCharCap * 6);
+  let body = lines.join('\n');
+  if (body.length > cap) body = body.slice(0, cap) + '…';
+  return head + body + tail;
+}
+
+async function _dreamGenerateProse(session, injection) {
+  const cfg = STATE.dreamConfig;
+  const journal = document.getElementById('dream-journal');
+  const stepMeta = {
+    step: session.stepCount + 1,
+    injectionLongDistanceEntityId: injection.longDistance,
+  };
+  if (journal) {
+    // Drop the empty-state once the first cycle starts producing prose.
+    const empty = journal.querySelector('.empty-state');
+    if (empty) empty.remove();
+    _dreamEnsureStepEl(journal, stepMeta);
+  }
+  const userMsg = _dreamBuildProseUserMsg(injection);
+
+  const supportsStream = STATE.llmBackend === 'anthropic';
+  if (supportsStream && journal) {
+    let buffer = '';
+    let cursor = 0;
+    const flushSentences = () => {
+      while (cursor < buffer.length) {
+        const tail = buffer.slice(cursor);
+        const m = tail.match(/[.!?]+["')\]]*\s+/);
+        if (!m) break;
+        const endIdx = cursor + m.index + m[0].length;
+        const sent = buffer.slice(cursor, endIdx).trim();
+        cursor = endIdx;
+        if (sent) _dreamCommitLine(journal, stepMeta, sent);
+      }
+    };
+    const onChunk = (delta) => {
+      buffer += delta;
+      flushSentences();
+    };
+    const result = await callLLM(
+      DREAM_PROSE_SYSTEM, userMsg,
+      cfg.proseMaxTokens, 'dream-prose',
+      { temperature: cfg.proseTemperature, onChunk }
+    );
+    flushSentences();
+    if (cursor < buffer.length) {
+      const trail = buffer.slice(cursor).trim();
+      if (trail) _dreamCommitLine(journal, stepMeta, trail);
+    }
+    return (result || buffer).trim();
+  }
+
+  const text = await callLLM(
+    DREAM_PROSE_SYSTEM, userMsg,
+    cfg.proseMaxTokens, 'dream-prose',
+    { temperature: cfg.proseTemperature }
+  );
+  const trimmed = (text || '').trim();
+  if (journal && trimmed) {
+    for (const sent of _dreamSplitSentences(trimmed)) {
+      _dreamCommitLine(journal, stepMeta, sent);
+    }
+  }
+  return trimmed;
+}
+
 // ─── Dream session lifecycle ────────────────────────────────────────
 // A "dream session" is the namespace inside which modal-mode ingestion
 // runs. Sessions never write to STATE.G directly; they accumulate SIG
@@ -13735,12 +13943,15 @@ function renderDreamView() {
   const rail    = document.getElementById('dream-rail-body');
   const startBtn = document.getElementById('dream-start-btn');
   const stopBtn  = document.getElementById('dream-stop-btn');
-  if (journal) {
+  // Journal is append-only and must survive mid-cycle re-renders triggered
+  // by notifyDataChanged() elsewhere in the app. Initialize once.
+  if (journal && !journal.dataset.dreamInitialized) {
     journal.innerHTML = `<div class="empty-state" style="padding: 40px 24px; font-family:'Newsreader',serif;color:var(--ink-soft);max-width: 540px;">
-      <p>The dream loop is being rewritten.</p>
-      <p style="margin-top: 0.8em;">New architecture: stochastic collisions over the existing graph + embeddings. Dream prose runs through the same ingester that reads source documents — but in modal mode, where extracted ops land as SIG candidates you can promote via INS, never directly into <code>STATE.G</code>. Novelty + truth filters sit between the modal commit and the surfaced card.</p>
-      <p style="margin-top: 0.8em;font-style: italic;">Phase 1 (session lifecycle) is wired. Picker, prose generator, cycle, filters, and surfacing UI to follow.</p>
+      <p>The dream loop reads the graph as a nearly-said thing.</p>
+      <p style="margin-top: 0.8em;">Each cycle picks a few entities, asks the model for a short reflective passage, and runs the same ingester that reads source documents over the result — but in modal mode, where extracted ops land as SIG candidates you can promote via INS, never directly into <code>STATE.G</code>. Novelty and truth filters sit between the modal commit and the surfaced card.</p>
+      <p style="margin-top: 0.8em;font-style: italic;">Press Begin reflection to start a session.</p>
     </div>`;
+    journal.dataset.dreamInitialized = '1';
   }
   if (rail) {
     rail.innerHTML = `<div class="empty-state" style="padding: 20px;font-family:'Newsreader',serif;font-style:italic;color:var(--ink-soft);">No candidates yet.</div>`;
