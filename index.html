@@ -3086,9 +3086,10 @@ const STATE = {
   lastSentenceEmbedding: null,            // Int8Array — sentence-embedding of the prior sentence
   // Tunables
   hypothesisDivergenceDelta: 0.15,        // cosine drop from baseline that triggers REC
-  hypothesisFirstPromotionAt: 30,         // sentence idx at which to fire unconditional first-promotion REC
+  hypothesisFirstPromotionAt: 30,         // legacy: sentence idx — superseded by hypothesisFirstPromotionRingMin
+  hypothesisFirstPromotionRingMin: 8,     // textbase-ring events that must land before first-promotion REC fires
   divergenceCheckEveryN: 5,               // re-check divergence every N classified events
-  summaryFallbackEveryN: 8,               // regenerate summary every N sentences absent other triggers
+  summaryFallbackEveryN: 4,               // regenerate summary every N textbase-ring events absent other triggers
   summaryDiscontinuityCosine: 0.4,        // sentence cosine to prior below this triggers regenerate
 
   // Grammar-polish layer toggles. editsEnabled gates whether the
@@ -4812,6 +4813,13 @@ function appendEvent(ev) {
     spanText: ev.spanText ?? null,
     authoredBy: ev.authoredBy ?? 'system',
     chromeSuspect: ev.chromeSuspect ?? false,
+    // Document-region tag derived from the chrome classifier. Exposes
+    // structure to the Log/filter UI and lets downstream code (meta-
+    // narrative, reconciliation) reason about where in the document an
+    // event came from. 'body' = real prose; 'chrome' = page chrome,
+    // infobox, citation list, running heads. Defaults from chromeSuspect
+    // if no explicit region was supplied.
+    region: ev.region ?? (ev.chromeSuspect ? 'chrome' : 'body'),
     eoCoord: assignEoCoord(ev.op, ev.payload),
   };
   STATE.G.push(event);
@@ -7685,9 +7693,19 @@ function eoNotationForEvent(ev) {
 // Append an event to the textbase ring and drop the oldest if the
 // ring is over capacity. Mechanical state — never paraphrases. No
 // LLM call regenerates this.
+//
+// Also bumps STATE.textbaseRingTotalSize, a cumulative counter that
+// only ever goes up. The summary + hypothesis triggers gate on growth
+// of this counter: if it hasn't moved since the last fire, no real
+// propositional content has landed and the meta-narrative engine has
+// nothing to anchor on. Without this gate, SIG-flooded ingests (e.g.
+// Wikipedia PDFs where the regex matcher mints entity sightings but
+// the LLM extractor produces no DEF/CON) trip the body-sentence
+// counter and fire confabulated summaries against an empty ring.
 function appendToTextbaseRing(ev) {
   if (!ev) return;
   STATE.textbaseRing.push(ev);
+  STATE.textbaseRingTotalSize = (STATE.textbaseRingTotalSize || 0) + 1;
   const cap = STATE.textbaseRingMax || 5;
   while (STATE.textbaseRing.length > cap) STATE.textbaseRing.shift();
 }
@@ -7713,6 +7731,14 @@ function resetLayeredContextForIngest() {
   STATE.lastSummaryUpdateAtBodyIdx = 0;
   STATE.lastSummaryAttemptAtBodyIdx = 0;
   STATE.bodySentencesSeen = 0;
+  // Cumulative count of events ever appended to the textbase ring this
+  // ingest. Drives the "did real propositional content land?" gate on
+  // summary + hypothesis. Snapshots taken at each successful fire let
+  // the gate detect growth without scanning STATE.G.
+  STATE.textbaseRingTotalSize = 0;
+  STATE.textbaseRingSizeAtLastSummaryUpdate = 0;
+  STATE.textbaseRingSizeAtLastSummaryAttempt = 0;
+  STATE.textbaseRingSizeAtLastHypothesisAttempt = 0;
   STATE.lastSummaryEventIdx = STATE.G.length;
   STATE.lastDivergenceCheckEventIdx = STATE.G.length;
   STATE.lastSentenceEmbedding = null;
@@ -7758,7 +7784,7 @@ function recentEventCentroid(n = 30) {
 // ─── RUNNING SUMMARY REGENERATION ─────────────────────────────────────
 // Smooth, event-boundary-triggered. Three triggers fire regeneration:
 //   (1) the just-classified event has operator SEG (structural break),
-//   (2) sentences-since-last-update >= summaryFallbackEveryN (default 8),
+//   (2) textbase-ring-events-since-last-update >= summaryFallbackEveryN (default 4),
 //   (3) sentence-embedding cosine to prior sentence < summaryDiscontinuityCosine.
 // The regeneration is a small LLM call. Anti-invention: every claim must
 // be supported by events between lastSummaryEventIdx and now.
@@ -7814,6 +7840,7 @@ async function regenerateRunningSummary(source, sentenceIdx, reason) {
   // every subsequent sentence re-fire the fallback trigger.
   STATE.lastSummaryAttemptAt = sentenceIdx;
   STATE.lastSummaryAttemptAtBodyIdx = STATE.bodySentencesSeen || 0;
+  STATE.textbaseRingSizeAtLastSummaryAttempt = STATE.textbaseRingTotalSize || 0;
   STATE.metaCallSpentThisSentence = true;
   STATE.llmCallsThisIngest++;
   let raw;
@@ -7845,6 +7872,7 @@ async function regenerateRunningSummary(source, sentenceIdx, reason) {
   STATE.runningSummary = summary;
   STATE.lastSummaryUpdateAt = sentenceIdx;
   STATE.lastSummaryUpdateAtBodyIdx = STATE.bodySentencesSeen || 0;
+  STATE.textbaseRingSizeAtLastSummaryUpdate = STATE.textbaseRingTotalSize || 0;
   STATE.lastSummaryEventIdx = STATE.G.length;
   // Stash on the sentence record so scrubbing the source view can show
   // what the read looked like at this moment.
@@ -7866,18 +7894,24 @@ async function maybeRegenerateRunningSummary(source, sentenceIdx, sentenceText, 
   // Per-sentence meta-call budget — only one summary OR hypothesis call
   // per sentence iteration. Sentence-extraction calls always run.
   if (STATE.metaCallSpentThisSentence) return false;
-  // Body-sentence gate: never run before at least one substantive
-  // narrative sentence has been read. Front matter shouldn't get to
-  // burn an LLM call summarizing nothing.
-  const bodyIdx = STATE.bodySentencesSeen || 0;
-  if (bodyIdx < 1) return false;
+  // Textbase-ring growth gate: refuse to fire unless real propositional
+  // content (DEF/CON/etc, the events that pass `isEventAmbiguous`) has
+  // landed in the textbase ring since the last fire. The body-sentence
+  // counter alone isn't enough — Wikipedia/PDF infobox lines pass
+  // `isProseClause` and inflate it without producing any DEF/CON, so
+  // the LLM ends up confabulating prose from a SIG-only entity stream.
+  // If the ring hasn't grown, there's literally nothing new to summarize.
+  const ringNow = STATE.textbaseRingTotalSize || 0;
+  const ringAtLastUpdate = STATE.textbaseRingSizeAtLastSummaryUpdate || 0;
+  if (ringNow <= ringAtLastUpdate) return false;
   // Self-revising back-off: don't re-attempt summary regen within
-  // SUMMARY_MIN_RETRY_GAP body-sentences of the last attempt — successful
-  // or not. Counted in body sentences, not raw, so a long run of TOC
-  // lines doesn't burn down the back-off window.
-  const SUMMARY_MIN_RETRY_GAP = 4;
-  const sinceAttemptBody = bodyIdx - (STATE.lastSummaryAttemptAtBodyIdx || 0);
-  if ((STATE.lastSummaryAttemptAtBodyIdx || 0) > 0 && sinceAttemptBody < SUMMARY_MIN_RETRY_GAP) {
+  // SUMMARY_MIN_RETRY_GAP textbase-ring events of the last attempt —
+  // successful or not. Measuring in propositional events (rather than
+  // raw or body sentences) means a long run of SIG-flooded chrome can't
+  // burn down the back-off window.
+  const SUMMARY_MIN_RETRY_GAP = 2;
+  const ringAtLastAttempt = STATE.textbaseRingSizeAtLastSummaryAttempt || 0;
+  if (ringAtLastAttempt > 0 && (ringNow - ringAtLastAttempt) < SUMMARY_MIN_RETRY_GAP) {
     return false;
   }
   const triggers = [];
@@ -7889,10 +7923,12 @@ async function maybeRegenerateRunningSummary(source, sentenceIdx, sentenceText, 
       break;
     }
   }
-  // Trigger 2: long stable stretch fallback. Counted in body sentences
-  // — N body-sentences read since the last successful summary update.
-  const sinceLastBody = bodyIdx - (STATE.lastSummaryUpdateAtBodyIdx || 0);
-  if (sinceLastBody >= (STATE.summaryFallbackEveryN || 8)) {
+  // Trigger 2: stable stretch fallback. Counted in textbase-ring events
+  // — N propositional events landed since the last successful summary
+  // update. Default 4 ring-events ≈ the same density as the prior
+  // 8-body-sentence threshold but anchored to actual content.
+  const sinceLastUpdate = ringNow - ringAtLastUpdate;
+  if (sinceLastUpdate >= (STATE.summaryFallbackEveryN || 4)) {
     triggers.push('fallback');
   }
   // Trigger 3: semantic discontinuity vs prior sentence.
@@ -9639,14 +9675,14 @@ async function ingestCSVFile(text, sourceName, fileMetadata) {
 }
 
 async function ingestPlainTextFile(text, sourceName, fileMetadata) {
-  // Plain text: reuse the prose ingest pipeline but force the no-LLM
-  // path. Entity detection still runs (geometric pre-pass); each sentence
-  // emits SIG-only events. Filename + size/mime/modified are attached
-  // as queryable DEFs on a per-file entity.
+  // Plain text: reuse the prose ingest pipeline. rawMode skips inline
+  // phasepost classification (cheaper) but reading still runs — body
+  // sentences produce DEF/CON events that drive the textbase ring and
+  // the meta-narrative engine. Filename + size/mime/modified are
+  // attached as queryable DEFs on a per-file entity.
   const source = await ingestSource(text, {
     name: sourceName,
     rawMode: true,
-    cleanChrome: false,
     fileMetadata,
   });
   if (source) {
@@ -9752,7 +9788,12 @@ async function ingestPDFFile(file, fileMetadata, onProgress) {
   const source = await ingestSource(text, {
     name: sourceName,
     rawMode: true,
-    cleanChrome: false,
+    // No cleanChrome:false override — PDFs need chrome tagging just
+    // like other sources, otherwise infobox / citation / running-head
+    // lines get treated as body and the matcher mints garbage entities
+    // and SIG-floods the event log. cleanCorpus tags but doesn't strip
+    // (line ~9970), so all content is still processed; the tags just
+    // gate per-sentence entity minting + LLM extraction.
     fileMetadata,
     publicationDate: pubDate ? new Date(pubDate).toISOString() : undefined,
   });
@@ -10076,7 +10117,7 @@ async function ingestSource(text, opts = {}) {
     if (f) STATE.hypothesisEmbedding = quantizeFloat32(f);
   } catch (e) { /* embedder may not be ready yet — divergence monitor lazily catches up */ }
   if (progressEl && isLLMReady() && !opts.rawMode) {
-    progressEl.innerHTML = `metadata-only frame · beginning extraction (grounded refresh after ${STATE.hypothesisFirstPromotionAt || 30} body sentences)…`;
+    progressEl.innerHTML = `metadata-only frame · beginning extraction (grounded refresh after ${STATE.hypothesisFirstPromotionRingMin || 8} propositional events land)…`;
   }
   // NOTE: metadata stub has NO principals — we deliberately skip
   // preMintHypothesisPrincipals and emitHypothesisDEFs. The grounded
@@ -10185,7 +10226,16 @@ async function ingestSource(text, opts = {}) {
     }
 
     let llmResult;
-    if (!opts.rawMode && isLLMReady() && isProseClause(clause)) {
+    // Reading-path gate: run LLM extraction on any sentence that looks
+    // like prose AND isn't flagged as page chrome (header, footer,
+    // infobox label/value, citation). Chrome-suspect sentences get the
+    // SIG-only fallback so the matcher can record their entities for
+    // coref but no LLM call wastes time confabulating claims from
+    // structural metadata. rawMode used to suppress the entire reading
+    // path on PDFs — now that chrome detection runs on PDFs too (no
+    // more cleanChrome:false override), reading is allowed to proceed
+    // and the chrome flag is what protects the textbase ring.
+    if (isLLMReady() && isProseClause(clause) && !isChromeSuspect) {
       STATE.clausesProcessed++;
       try {
         llmResult = await processClauseWithEscalation(clause, allMentioned, salWindow, mentions, source);
@@ -10194,10 +10244,10 @@ async function ingestSource(text, opts = {}) {
         llmResult = { events: [], unresolved: [], needs: [], _error: e.message };
       }
     } else {
-      // Either no backend, or this clause isn't substantive prose (a section
-      // header, caption fragment, or short title). Emit SIG-only — the
-      // entities are recorded but no LLM call wastes time hallucinating
-      // claims that aren't there.
+      // Either no backend, this clause isn't substantive prose (a section
+      // header, caption fragment, or short title), or it's flagged as
+      // chrome. Emit SIG-only — the entities are recorded but no LLM
+      // call wastes time hallucinating claims that aren't there.
       if (isLLMReady()) STATE.clausesSkippedNonProse++;
       llmResult = {
         events: allMentioned.map(e => ({ op: 'SIG', entityRef: e.canonical, surface: e.canonical })),
@@ -10254,11 +10304,17 @@ async function ingestSource(text, opts = {}) {
     // — none reaches above its station.
     {
       // Textbase ring: append actually-classified events from THIS sentence.
-      // Mechanical state — no LLM call regenerates it.
+      // Mechanical state — no LLM call regenerates it. Chrome-tagged
+      // events are excluded: even if a chrome line somehow produced a
+      // DEF/CON (e.g. an infobox sentence that passed isProseClause
+      // before chrome flagging caught it), it doesn't get to drive the
+      // meta-narrative. The summary + hypothesis triggers gate on this
+      // ring's growth, so this is the chokepoint.
       for (const eid of sentenceEventIds) {
         const ev = STATE.G.find(e => e.id === eid);
         if (!ev) continue;
         if (!isEventAmbiguous(ev)) continue;  // SIG/INS aren't propositional
+        if (ev.chromeSuspect) continue;
         appendToTextbaseRing(ev);
       }
 
@@ -10363,30 +10419,32 @@ async function ingestSource(text, opts = {}) {
       try { maybeRunDecayPass(); } catch (e) { /* non-fatal */ }
 
       // ── HYPOTHESIS REC TRIGGERS ──
-      // First-promotion: after the reader has consumed `firstPromoteAt`
-      // BODY sentences (not raw — front matter, TOC, infobox lines don't
-      // count), unconditionally refresh from minimal → grounded. After
-      // first promotion, the refresh path runs only when divergence
-      // crosses the threshold.
+      // First-promotion: after the reader has accumulated enough real
+      // propositional evidence (events landed in the textbase ring),
+      // unconditionally refresh from minimal → grounded. Gating on the
+      // textbase ring (not bodySentencesSeen) is what prevents SIG-
+      // flooded ingests — Wikipedia infoboxes, chrome-heavy PDFs —
+      // from triggering grounded promotion against a ring that's
+      // actually empty.
       //
       // Self-revising back-off: if a refresh attempt fails (parse error,
       // LLM echoed `minimal: true` back, or a timeout) we DON'T retry on
       // the very next sentence — that's how the loop forms. Mark the
-      // attempt and skip until at least FIRST_PROMOTION_BACKOFF more body
-      // sentences of fresh evidence have accumulated. End-of-doc fallback
-      // still runs at the bottom of ingestSource.
-      const firstPromoteAt = STATE.hypothesisFirstPromotionAt ?? 30;
-      const FIRST_PROMOTION_BACKOFF = 30;
+      // attempt and skip until at least FIRST_PROMOTION_RING_BACKOFF more
+      // textbase-ring events of fresh propositional evidence have landed.
+      // End-of-doc fallback still runs at the bottom of ingestSource.
+      const MIN_RING_FOR_FIRST_PROMOTION = STATE.hypothesisFirstPromotionRingMin ?? 8;
+      const FIRST_PROMOTION_RING_BACKOFF = 8;
       const isMinimalNow = source.hypothesis && source.hypothesis.minimal;
-      const bodyIdxNow = STATE.bodySentencesSeen || 0;
-      const lastAttemptBodyIdx = source._firstPromotionLastAttemptBodyIdx ?? -Infinity;
-      const cooledDown = (bodyIdxNow - lastAttemptBodyIdx) >= FIRST_PROMOTION_BACKOFF;
+      const ringNowH = STATE.textbaseRingTotalSize || 0;
+      const lastAttemptRing = source._firstPromotionLastAttemptRing ?? -Infinity;
+      const cooledDown = (ringNowH - lastAttemptRing) >= FIRST_PROMOTION_RING_BACKOFF;
       // Per-sentence meta-call budget already spent (running-summary fired
       // earlier this iteration)? Skip hypothesis this round; it'll be
       // eligible again next sentence. One meta-call max per sentence.
       const metaBudgetAvailable = !STATE.metaCallSpentThisSentence;
-      if (isMinimalNow && isBodySentence && bodyIdxNow >= firstPromoteAt && cooledDown && metaBudgetAvailable) {
-        source._firstPromotionLastAttemptBodyIdx = bodyIdxNow;
+      if (isMinimalNow && isBodySentence && ringNowH >= MIN_RING_FOR_FIRST_PROMOTION && cooledDown && metaBudgetAvailable) {
+        source._firstPromotionLastAttemptRing = ringNowH;
         source._firstPromotionLastAttemptIdx = i;
         STATE.metaCallSpentThisSentence = true;
         try {
@@ -10418,21 +10476,22 @@ async function ingestSource(text, opts = {}) {
           } else {
             // Refresh produced nothing usable — keep moving. Back-off
             // window prevents an immediate retry; we'll either try again
-            // in FIRST_PROMOTION_BACKOFF sentences or fall through to the
-            // end-of-doc promotion fallback.
+            // after FIRST_PROMOTION_RING_BACKOFF more textbase-ring events
+            // land, or fall through to the end-of-doc promotion fallback.
             if (progressEl) {
-              progressEl.innerHTML = `hypothesis refresh deferred at sentence ${i + 1} · retrying in ${FIRST_PROMOTION_BACKOFF} sentences if still minimal`;
+              progressEl.innerHTML = `hypothesis refresh deferred at sentence ${i + 1} · retrying after ${FIRST_PROMOTION_RING_BACKOFF} more propositional events if still minimal`;
             }
           }
         } catch (e) {
           console.warn('[anchorage] first-promotion refresh failed:', e);
         }
-      } else if (source.hypothesis && !source.hypothesis.minimal && !STATE.metaCallSpentThisSentence && isBodySentence) {
-        // Divergence monitor — fires every N classified events. When the
-        // cosine drop crosses the threshold, refresh discretely with full
-        // REC provenance (logged, not silent). Gated by per-sentence
-        // meta-call budget AND isBodySentence: front matter / chrome
-        // shouldn't be allowed to drag the hypothesis cosine around.
+      } else if (source.hypothesis && !source.hypothesis.minimal && !STATE.metaCallSpentThisSentence && isBodySentence && (STATE.textbaseRingTotalSize || 0) > (source._lastDivergenceCheckRing ?? -1)) {
+        // Divergence monitor — fires when the cosine drop crosses the
+        // threshold. Gated by per-sentence meta-call budget AND
+        // isBodySentence AND textbase-ring growth: chrome lines, plus
+        // sentences that didn't produce any propositional evidence,
+        // shouldn't drag the hypothesis cosine around.
+        source._lastDivergenceCheckRing = STATE.textbaseRingTotalSize || 0;
         const div = checkHypothesisDivergence(source);
         if (div && div.needsBaseline) {
           try { await ensureHypothesisEmbedding(source); } catch {}
@@ -10492,21 +10551,22 @@ async function ingestSource(text, opts = {}) {
     }
   }
 
-  // End-of-doc first-promotion fallback. The loop's per-sentence trigger
-  // only fires at sentence index >= hypothesisFirstPromotionAt (default 30).
-  // Documents shorter than that complete with the minimal hypothesis still
-  // in place — and the minimal hypothesis is the prompt-shaped fallback
-  // that small models can leak schema strings into. If the document ended
-  // before promotion fired and the graph has accumulated propositional
-  // evidence, fire one final first-promotion REC so finalHypothesis ships
-  // a grounded hypothesis instead of a schema-template artifact.
+  // End-of-doc first-promotion fallback. If the in-loop first-promotion
+  // never fired (short doc, or back-off windows kept skipping it) AND
+  // real propositional evidence landed in the textbase ring, fire one
+  // final REC so finalHypothesis ships grounded prose instead of the
+  // minimal schema stub.
+  //
+  // Gate is textbase-ring growth, not a count of DEF/CON across all of
+  // STATE.G — file-metadata DEFs (pdf-author, page-count, etc.) inflate
+  // the latter on PDFs and used to trip this path against an empty
+  // narrative ring. The textbase ring only counts events that pass
+  // isEventAmbiguous, so it's purged of bookkeeping-style DEFs.
   // Skip when the user aborted — the run is over, no recovery LLM call.
   if (!STATE.ingestAborted && source.hypothesis && source.hypothesis.minimal && sentences.length > 0) {
-    const propositional = STATE.G.filter(
-      e => e.sourceId === source.id && (e.op === 'DEF' || e.op === 'CON')
-    ).length;
-    const MIN_EVIDENCE_FOR_END_PROMOTION = 8;
-    if (propositional >= MIN_EVIDENCE_FOR_END_PROMOTION) {
+    const ringSize = STATE.textbaseRingTotalSize || 0;
+    const MIN_RING_FOR_END_PROMOTION = 8;
+    if (ringSize >= MIN_RING_FOR_END_PROMOTION) {
       try {
         await ensureHypothesisEmbedding(source);
         const c = recentEventCentroid(30);
@@ -10608,6 +10668,7 @@ async function foldEvents(proposedEvents, clauseText, source, sentenceIdx, chrom
     narrativePos: { sourceId: source.id, sentenceIdx },
     spanText: clauseText,
     chromeSuspect,
+    region: chromeSuspect ? 'chrome' : 'body',
   };
 
   for (const pe of proposedEvents) {
@@ -14267,7 +14328,7 @@ function renderInspectView() {
       <tr><td style="width:32%;">current hypothesis cosine to graph centroid</td><td style="font-family:'IBM Plex Mono',monospace;">${cosFmt(curCos)}</td></tr>
       <tr><td>baseline (at last refresh)</td><td style="font-family:'IBM Plex Mono',monospace;">${cosFmt(baseline)}</td></tr>
       <tr><td>divergence delta (baseline − current)</td><td style="font-family:'IBM Plex Mono',monospace;${deltaColor}">${delta != null ? delta.toFixed(3) : '—'} <span style="color:var(--ink-faint);">/ threshold ${(STATE.hypothesisDivergenceDelta || 0.15).toFixed(2)}</span></td></tr>
-      <tr><td>first-promotion at sentence</td><td style="font-family:'IBM Plex Mono',monospace;">${(STATE.hypothesisFirstPromotionAt || 30) + 1}</td></tr>
+      <tr><td>first-promotion after</td><td style="font-family:'IBM Plex Mono',monospace;">${STATE.hypothesisFirstPromotionRingMin || 8} propositional events</td></tr>
       <tr><td>divergence check every N events</td><td style="font-family:'IBM Plex Mono',monospace;">${STATE.divergenceCheckEveryN || 5}</td></tr>
     </tbody></table>`;
 
@@ -14299,7 +14360,7 @@ function renderInspectView() {
       }
       html += `</tbody></table></div>`;
     } else {
-      html += `<div style="margin-top:8px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-faint);">no historical hypotheses yet — first-promotion REC fires at sentence ${(STATE.hypothesisFirstPromotionAt || 30) + 1}.</div>`;
+      html += `<div style="margin-top:8px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-faint);">no historical hypotheses yet — first-promotion REC fires after ${STATE.hypothesisFirstPromotionRingMin || 8} propositional events land in the textbase ring.</div>`;
     }
 
     if (STATE.runningSummary) {
