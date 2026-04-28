@@ -10000,13 +10000,18 @@ async function ingestSource(text, opts = {}) {
 
   // ── NER PRE-PASS ──
   // One-shot named-entity extraction over the whole source. Entities
-  // are minted up front so the per-sentence loop only RESOLVES against
-  // them; the regex matcher's mint path is gated on this allowlist
-  // below, killing the "title-case-soup" entities the previous pass
-  // produced (Spouses Valerie Velardi, Awards Full, Medium Stand…).
-  // If compromise can't load (offline / blocked CDN), `nerAvailable`
-  // is false and we leave the regex mint path un-gated so the source
-  // doesn't ingest with zero entities.
+  // get pre-minted with their kind (person / place / organization),
+  // which gives the per-sentence matcher proper-name anchors to
+  // resolve against — "Spouses Valerie Velardi" word-overlaps with
+  // pre-minted "Valerie Velardi" and SIGs that entity instead of
+  // minting a garbage referent.
+  //
+  // No strict whitelist: the per-sentence regex matcher remains free
+  // to mint surfaces NER didn't catch. NER is a high-precision pre-
+  // pass; the matcher is the recall path. SIGs flowing from the
+  // matcher when it lands on a pre-minted name are how downstream
+  // code "grabs" each occurrence — figuring out what to do with
+  // those is a separate concern.
   const ner = await extractNamedEntitiesFromText(processedText);
   source.nerSurfaces = ner.entities.size;
   source.nerAvailable = ner.available;
@@ -10021,14 +10026,6 @@ async function ingestSource(text, opts = {}) {
       });
     } catch (e) { /* non-fatal */ }
   }
-  // Whitelist of surfaces the per-sentence regex matcher is allowed to
-  // mint. Lowercased for case-insensitive lookup. The matcher's coref
-  // tier (findEntityByMention) still runs against the full alias set,
-  // so "Williams" later in the text resolves to the NER-minted "Robin
-  // Williams" via word-overlap even though "williams" alone isn't on
-  // this list.
-  const nerAllowedSurfaces = new Set([...ner.entities.keys()]);
-  const nerAvailable = ner.available;
 
   // Salience window: last few sentences' active entities
   const salience = []; // ordered list of entity refs, most recent last
@@ -10138,21 +10135,8 @@ async function ingestSource(text, opts = {}) {
     // Chrome-suspect gate: skip the entire mint pass for sentences flagged as
     // page chrome (section headers, page numbers, captions, footnotes). The
     // referent will be re-detected from a non-chrome sentence later.
-    // NER-whitelist gate: only mint surfaces the document-level NER pre-pass
-    // identified as PERSON / PLACE / ORGANIZATION. Without this, the regex
-    // grabs any title-case run and produces phrases like "Spouses Valerie
-    // Velardi" or "Medium Stand" as entities. The matcher's coref tier
-    // (findEntityByMention) still runs over the full mentions list, so
-    // a later "Williams" still resolves to the pre-minted "Robin Williams"
-    // via word-overlap; only the new-entity-mint step is gated.
     const newCandidates = isChromeSuspect ? [] : mentions
-      .filter(m => m.isCapitalized && !m.matchedEntity && !m.isPronoun)
-      .filter(m => {
-        if (!nerAvailable) return true;  // graceful fallback: NER didn't load
-        const s = (m.surface || '').toLowerCase();
-        const o = (m.originalSurface || '').toLowerCase();
-        return nerAllowedSurfaces.has(s) || nerAllowedSurfaces.has(o);
-      });
+      .filter(m => m.isCapitalized && !m.matchedEntity && !m.isPronoun);
 
     const seenCanonicals = new Set();
     const provisional = [];
