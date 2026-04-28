@@ -2525,6 +2525,14 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+// Inverse of escapeHtml — used when feeding HTML-derived text to an LLM
+// so apostrophes and ampersands in entity names render naturally.
+function decodeHtmlEntities(s) {
+  if (s == null) return '';
+  return String(s).replace(/&(amp|lt|gt|quot|#39);/g, (_, t) =>
+    ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" }[t]));
+}
+
 function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
 // Sentence segmentation — protects common abbreviations from being treated
@@ -9788,21 +9796,19 @@ const CITE_CONNECTIVES = {
 };
 
 // Predicate shape inference — emergent predicates can take many forms:
-//   verb-shaped:  "marries", "governs", "founded"      → "<S> <pred> <V>."
-//   relational:   "is-spouse-of", "is-employed-by"     → "<S> is <noun-of-pred> <V>."
-//   attributive:  "has-trait", "has-character"         → "<S> is described as <V>."
-//   has-X:        "has-budget", "has-address"          → "<S>'s <X> is <V>."
-//   property-of:  bare nominal predicate ("budget")    → "<S>'s <pred> is <V>."
+//   has_x:          "has-budget", "has-address"      → "<S>'s <X> is <V>."
+//   is_x:           "is-spouse-of", "was-tenant-of"  → "<S> is <X> <V>."
+//   verb_with_prep: "speaks-to", "works-for"         → "<S> <verb-conj> <prep> <V>."
+//   verb:           "marries", "governs", "possess"  → "<S> <verb-conj> <V>."
+//   property:       bare nominal ("budget", "wife")  → "<S>'s <pred> is <V>."
 function inferPredicateShape(pred) {
   const p = String(pred || '').toLowerCase().trim();
-  if (!p) return 'attributive';
-  if (p.startsWith('is-') || p.startsWith('was-') || p.endsWith('-of') || p.endsWith('-by') || p.endsWith('-to') || p.endsWith('-with')) return 'relational';
+  if (!p) return 'property';
   if (p.startsWith('has-')) return 'has_x';
-  // Heuristic: if it looks like a single verb (no hyphens, ends in
-  // common verb endings), treat as verb.
-  if (!p.includes('-') && /(s|ed|ing|es)$/.test(p)) return 'verb';
-  if (!p.includes('-')) return 'property';
-  return 'attributive';
+  if (p.startsWith('is-') || p.startsWith('was-')) return 'is_x';
+  if (p.includes('-')) return 'verb_with_prep';
+  if (/(s|ed|ing|es)$/.test(p)) return 'verb';
+  return 'property';
 }
 
 // Render a predicate as a natural-language fragment. For "is-spouse-of"
@@ -9811,8 +9817,30 @@ function readablePredicate(pred) {
   const p = String(pred || '');
   const shape = inferPredicateShape(p);
   if (shape === 'has_x') return p.replace(/^has-/, '').replace(/-/g, ' ');
-  if (shape === 'relational') return p.replace(/^is-/, '').replace(/^was-/, 'was ').replace(/-/g, ' ');
+  if (shape === 'is_x') return p.replace(/^is-/, '').replace(/^was-/, 'was ').replace(/-/g, ' ');
   return p.replace(/-/g, ' ');
+}
+
+// Conjugate a bare-infinitive verb to third-person singular present.
+// Already-conjugated, past, or progressive forms are returned unchanged.
+// Used so the templated answer reads "Mr. Bennet possesses quick parts"
+// instead of "Mr. Bennet possess quick parts".
+function conjugateThirdPersonSingular(verb) {
+  const v = String(verb || '').trim();
+  if (!v) return v;
+  const lower = v.toLowerCase();
+  if (/(?:ed|ing)$/.test(lower)) return v;
+  if (/(?:ies|oes|shes|ches|xes|zes|sses)$/.test(lower)) return v;
+  const irreg = { be: 'is', have: 'has', do: 'does', go: 'goes', say: 'says' };
+  if (irreg[lower]) return irreg[lower];
+  // Already 3rd-person singular: ends in -s after a non-sibilant consonant
+  // ("speaks", "reads", "buys") or after a vowel ("is", "was").
+  if (/[^aeiouhsxz]s$/.test(lower)) return v;
+  if (/[aeiou]s$/.test(lower)) return v;
+  if (/[^aeiou]y$/.test(lower)) return v.slice(0, -1) + 'ies';
+  if (/(?:ss|sh|ch|x|z)$/.test(lower)) return v + 'es';
+  if (/[^aeiou]o$/.test(lower)) return v + 'es';
+  return v + 's';
 }
 
 // Build an entity hyperlink — clickable, opens the entity inspector.
@@ -9937,15 +9965,18 @@ function renderPredicateClause(subjCanonical, subjLink, pred, rs) {
   const shape = inferPredicateShape(pred);
   let main;
   if (shape === 'verb') {
-    main = `${subjLink} ${escapeHtml(pred)} ${valueHtml}${cite}.`;
-  } else if (shape === 'relational') {
+    main = `${subjLink} ${escapeHtml(conjugateThirdPersonSingular(pred))} ${valueHtml}${cite}.`;
+  } else if (shape === 'is_x') {
     main = `${subjLink} is ${escapeHtml(readablePredicate(pred))} ${valueHtml}${cite}.`;
+  } else if (shape === 'verb_with_prep') {
+    const words = String(pred).replace(/-/g, ' ').split(/\s+/).filter(Boolean);
+    if (words.length) words[0] = conjugateThirdPersonSingular(words[0]);
+    main = `${subjLink} ${escapeHtml(words.join(' '))} ${valueHtml}${cite}.`;
   } else if (shape === 'has_x') {
     main = `${subjLink}'s ${escapeHtml(readablePredicate(pred))} is ${valueHtml}${cite}.`;
-  } else if (shape === 'property') {
-    main = `${subjLink}'s ${escapeHtml(pred)} is ${valueHtml}${cite}.`;
   } else {
-    main = `${subjLink} is described as ${valueHtml}${cite} for ${escapeHtml(pred)}.`;
+    // property — bare nominal predicate
+    main = `${subjLink}'s ${escapeHtml(pred)} is ${valueHtml}${cite}.`;
   }
   // Superposition / contested handling: append "Another source instead names…"
   if (alternates.length > 0) {
@@ -10520,47 +10551,46 @@ function answerToEditableText(html) {
   const re = /<(a class="entity-link"[^>]*>[\s\S]*?<\/a>|sup class="citation"[^>]*>\[(\d+)\]<\/sup>)/g;
   let m;
   while ((m = re.exec(html)) !== null) {
-    plain += html.slice(pos, m.index).replace(/<[^>]+>/g, '');
+    plain += decodeHtmlEntities(html.slice(pos, m.index).replace(/<[^>]+>/g, ''));
     if (m[0].startsWith('<sup')) {
       const n = m[2];
       // Render citations to the editor as `[N]` so the model preserves them
       plain += `[${n}]`;
       tokens.push({ kind: 'citation', n: parseInt(n, 10), html: m[0], plain: `[${n}]` });
     } else {
-      // Entity link — extract its visible text
-      const inner = m[0].replace(/^<a[^>]*>|<\/a>$/g, '');
+      // Entity link — extract its visible text. Decode HTML entities so the
+      // model sees "O'Brien" instead of "O&#39;Brien".
+      const inner = decodeHtmlEntities(m[0].replace(/^<a[^>]*>|<\/a>$/g, ''));
       plain += inner;
       tokens.push({ kind: 'entity', plain: inner, html: m[0] });
     }
     pos = m.index + m[0].length;
   }
-  plain += html.slice(pos).replace(/<[^>]+>/g, '');
+  plain += decodeHtmlEntities(html.slice(pos).replace(/<[^>]+>/g, ''));
   return { plain: plain.replace(/\s+/g, ' ').trim(), tokens };
 }
 
-const LIBRARIAN_POLISH_SYSTEM = `You polish a templated answer assembled from a typed knowledge graph. The mechanical templating produces broken English — unconjugated verbs ("Mr. Bennet possess"), awkward genitive constructions ("Mr. Bennet's become is softened"), missing articles, broken verb phrases ("is speak to"). Rewrite the answer for fluent English while preserving every fact, every entity reference, and every citation marker.
+const LIBRARIAN_POLISH_SYSTEM = `You polish a templated answer assembled from a typed knowledge graph. The mechanical templating produces broken English. Rewrite for fluent, natural English while preserving every fact, every entity name, and every [N] citation marker.
 
-CONSTRAINTS
+HARD CONSTRAINTS (your output is rejected if any are violated)
 
-Citation markers: every [N] in the input (e.g. [1], [2], [3]) MUST appear in your output, with the same numbers and the same count. Do not add new citation numbers. Do not drop any. Each marker should sit immediately after the claim it supports.
+1. Every [N] citation marker in the input MUST appear in your output, same numbers, same count. Do not add or drop any. Place each marker immediately after the clause it supports.
+2. Every named entity (e.g. "Mr. Bennet", "Elizabeth Bennet", "Pride and Prejudice") MUST appear spelled exactly as in the input at least once. After the first mention, you MAY use he / she / it / they / his / her / its / their for repeat references when the antecedent is unambiguous.
+3. Numbers, dates, and quoted values MUST be preserved verbatim. Do not spell out digits ("5" stays "5", not "five"). Do not introduce new numbers.
+4. Do NOT invent facts. Do NOT drop facts. Do NOT change which entity does what to whom.
 
-Entity names: every named entity (e.g. "Mr. Bennet", "Mrs. Bennet", "Elizabeth", "Pride and Prejudice") must remain spelled exactly as in the input. The canonical form must appear at least once. After it has been mentioned, you MAY use a pronoun (he / she / it / they / his / her) for repeat references when unambiguous.
+YOU SHOULD FIX (these are the exact patterns the templater produces)
 
-Numbers, dates, quoted values: must remain unchanged.
-
-Do NOT invent facts not in the input. Do NOT drop facts. Do NOT change which entity does what.
-
-You MAY:
-- Conjugate verbs ("possess" → "possesses", "is speak to" → "speaks to").
-- Fix subject-verb agreement and tense.
-- Insert articles (a / an / the) where natural.
-- Smooth awkward "X's predicate is Y" or "X is described as Y for predicate" constructions into fluent English, keeping the same predicate words and value.
-- Reorder words and split or merge sentences for clarity.
-- Add light connective glue (and, but, however, also, while, though).
-- Replace repeat entity mentions with pronouns when the antecedent is clear.
+- Unconjugated verbs: "Mr. Bennet possess Y" → "Mr. Bennet possesses Y". "Elizabeth marry Mr. Darcy" → "Elizabeth marries Mr. Darcy".
+- Verb-with-prep predicates rendered raw: "Mr. Bennet speak to Mrs. Bennet" → "Mr. Bennet speaks to Mrs. Bennet". "Mr. Bingley work for himself" → "Mr. Bingley works for himself".
+- "is X-ed-to" patterns: "Mr. Bennet is married to Mrs. Bennet" stays as is; "Mr. Bennet is spouse of Mrs. Bennet" → "Mr. Bennet is the spouse of Mrs. Bennet".
+- Awkward genitives: "Mr. Bennet's character trait is quick parts" → "Mr. Bennet has quick parts" or "Mr. Bennet is known for his quick parts" (keep "quick parts" verbatim).
+- "X's become is Y" / "X's age is Y" → "X becomes Y" / "X is Y years old" (keep value verbatim).
+- Missing articles ("the", "a", "an") and conjunctions where the prose needs them.
+- Choppy sentence flow — you may merge or split sentences and add light connectives ("and", "but", "though", "while", "also").
 
 OUTPUT
-Just the polished prose. No preamble, no quotes, no headers, no explanation. One paragraph.`;
+A single paragraph of polished prose. No preamble, no quotes, no headers, no commentary, no markdown. Just the rewritten answer.`;
 
 // Pull all citation marker numbers out of a plain string as a sorted
 // multiset (so order doesn't matter, but counts do).
@@ -10576,6 +10606,18 @@ function extractNumericTokens(s) {
   return [...stripped.matchAll(/\b\d+(?:[.,\-/]\d+)*\b/g)].map(m => m[0]).sort();
 }
 
+// Normalize a string for forgiving entity matching: collapse whitespace,
+// strip ASCII punctuation that the model commonly drops or adds (periods
+// in "Mr." / "Mrs.", apostrophes in possessives), lowercase. Used by the
+// polish validator and the link applier so "Mr Bennet" matches "Mr. Bennet".
+function normalizeForEntityMatch(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[.,;:!?'"`]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // Validate that the LLM's polish preserves citations, entities, and
 // numbers. Returns { ok: true } on success or { ok: false, error } on
 // failure.
@@ -10588,22 +10630,37 @@ function validatePolishedText(originalPlain, polished, tokens) {
     return { ok: false, error: `citation markers differ. orig=[${oCites.join(',')}] polished=[${pCites.join(',')}]` };
   }
 
+  // Entity check: every canonical name must appear in the polished
+  // output, but match forgivingly so "Mr Bennet" still counts as
+  // "Mr. Bennet" and "Mr. Bennet's" still counts as "Mr. Bennet".
   const entityNames = new Set();
   for (const tok of tokens) {
     if (tok.kind === 'entity') entityNames.add(tok.plain);
   }
+  const polishedNorm = normalizeForEntityMatch(polished);
   for (const name of entityNames) {
-    if (!polished.includes(name)) {
+    if (!polishedNorm.includes(normalizeForEntityMatch(name))) {
       return { ok: false, error: `entity "${name}" missing from polished text` };
     }
   }
 
-  const oNums = extractNumericTokens(originalPlain);
-  const pNums = extractNumericTokens(polished);
-  // Every original number must appear in the polished output; the polish
-  // may not introduce new ones. (Equal multisets after sorting.)
-  if (oNums.length !== pNums.length || oNums.some((v, i) => v !== pNums[i])) {
-    return { ok: false, error: `numeric tokens differ. orig=[${oNums.join(',')}] polished=[${pNums.join(',')}]` };
+  // Numeric check: the polish may NOT introduce a number that isn't in
+  // the original (that would be hallucination), but it MAY drop a number
+  // (e.g., "1 source" → "the source") or repeat one fewer time. The
+  // strict multiset check from PR #9 was rejecting too many otherwise
+  // good polishes whenever the model paraphrased a count.
+  const oCounts = new Map();
+  for (const n of extractNumericTokens(originalPlain)) {
+    oCounts.set(n, (oCounts.get(n) || 0) + 1);
+  }
+  const pCounts = new Map();
+  for (const n of extractNumericTokens(polished)) {
+    pCounts.set(n, (pCounts.get(n) || 0) + 1);
+  }
+  for (const [n, c] of pCounts) {
+    if ((oCounts.get(n) || 0) < c) {
+      return { ok: false, error: `polish introduced number "${n}" not in original` };
+    }
   }
 
   return { ok: true };
@@ -10651,7 +10708,10 @@ function applyPolishToTemplatedHTML(originalHTML, polishedPlain) {
     }
 
     for (const name of entityNamesByLen) {
-      const i = rest.indexOf(name);
+      // Exact match wins; fall back to case-insensitive so a polish that
+      // wrote "elizabeth bennet" still gets linked.
+      let i = rest.indexOf(name);
+      if (i < 0) i = rest.toLowerCase().indexOf(name.toLowerCase());
       if (i < 0) continue;
       if (bestIdx < 0 || i < bestIdx) {
         bestIdx = i;
@@ -10687,9 +10747,13 @@ async function requestStylisticEdits(turn) {
   const { plain, tokens } = answerToEditableText(turn.answer);
   if (!plain) return null;
   const userMsg = `Templated answer (broken grammar from mechanical assembly):\n${plain}\n\nPolished version (fluent English; same facts, same [N] citations, same entity names):`;
+  // Scale the token budget with the input. The previous fixed 480 was
+  // truncating long overview answers, which then failed validation
+  // because the missing tail dropped citations or entity mentions.
+  const polishBudget = Math.max(800, Math.min(2000, Math.ceil(plain.length / 2)));
   let raw;
   try {
-    raw = await callLLM(LIBRARIAN_POLISH_SYSTEM, userMsg, 480, 'librarian-polish');
+    raw = await callLLM(LIBRARIAN_POLISH_SYSTEM, userMsg, polishBudget, 'librarian-polish');
   } catch (e) { return { error: e.message }; }
   if (!raw) return { error: 'empty polish response' };
 
