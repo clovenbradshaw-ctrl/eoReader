@@ -3037,10 +3037,41 @@ const STATE = {
   // prior sentence (verbatim). Each layer carries distinct epistemic
   // status — none reaches above its station.
   runningSummary: '',                     // narrative gist, regenerated at boundaries
-  textbaseRing: [],                       // last N classified events (full event objects)
+  textbaseRing: [],                       // last N classified events (full event objects) — INTERNAL/UI ONLY, never reaches LLM-facing prompts
   textbaseRingMax: 5,                     // ring size cap
   priorSentenceText: '',                  // verbatim previous sentence
-  hypothesisHistory: [],                  // [{hypothesis, embedding, activeFromSentenceIdx, activeToSentenceIdx, reason}]
+  // ─── PROSE LAYERS (what reaches LLM-facing prompts) ──────────────
+  // The four-section assembler reads ONLY these. Source-text strings and
+  // pre-cached prose strings — never internal vocabulary, never operator
+  // labels, never axis answers, never event payloads.
+  hypothesisProse: '',                    // plain-language paragraph describing current hypothesis (cached, regenerated on hypothesis update)
+  recentSentences: [],                    // ring buffer of last N source sentences, VERBATIM
+  recentSentencesMax: 5,                  // ring size cap
+  semanticSentences: [],                  // semantically-targeted source sentences for the current iteration (Edit A); set at sentence start, cleared at end
+  entityDescriptions: new Map(),          // Map<entityId, one-sentence prose description> (cached, regenerated when entity gains evidence)
+  entityDescriptionEventCounts: new Map(),// Map<entityId, lastEventCountWhenDescriptionRefreshed> — drives re-run on threshold crossings (Edit B)
+  entityDescriptionTopCells: new Map(),   // Map<entityId, "act|site|res string"> — re-run trigger on role-profile shift (Edit B)
+  topSemanticEntityIds: [],               // ordered list of entity IDs picked as top-N for current iteration (Edit B feeds descriptions into prompt)
+
+  // ─── OUTCOME-DISPATCHED FOLD (3×3 precision-weighted updates) ─────
+  // Two centroid registries that the dispatched fold updates incrementally
+  // alongside per-entity centroids. Each entry: {centroid: Int8Array,
+  // precision: number 0-1, count: number}. Operators: NUL/SIG/INS/SEG/...
+  // Cells: full "OPERATOR(Resolution, Site)" labels.
+  operatorCentroids: new Map(),
+  cellCentroids: new Map(),
+  // Per-source comprehension-difficulty counters incremented by the fold
+  // when fit-deferred / miss-deferred / void-deferred land. Map<sourceId,
+  // {fitDeferred, missDeferred, voidDeferred}>.
+  sourceDifficulty: new Map(),
+  // Embedding-region quality flags (sparse). Set when miss-deferred or
+  // void-deferred lands in a region; retrieval can choose to deprioritize
+  // these, but evidence still accumulates.
+  unreadableRegions: [],                  // [{centroid: Int8Array, deprioritize: true, ts}]
+  lastDecayPassAt: 0,                     // sentence count when the decay pass last ran
+  outcomeDecayEveryN: 50,                 // sentences between decay passes
+  recBaseDelta: 0.15,                     // base hypothesisDivergenceDelta; modulated by hypothesis.precision
+  hypothesisHistory: new Map(),           // Map<sourceId, [{hypothesis, activeFromSentenceIdx, activeToSentenceIdx, reason, ts}]>; per-source REC epochs
   hypothesisBaselineCosine: null,         // cosine at last refresh, for threshold compare
   hypothesisEmbedding: null,              // cached Int8Array; recompute only on hypothesis refresh
   lastSummaryUpdateAt: 0,                 // global sentence idx of last summary regeneration
@@ -3739,98 +3770,263 @@ Examples:
 
 Use the surrounding context to inform your answers. The three answers must be independent — don't let one question's answer constrain the others.
 
-Output JSON only — no preamble, no markdown fences:
-{"q1":"DIFFERENTIATING|RELATING|GENERATING","q2":"EXISTENCE|STRUCTURE|SIGNIFICANCE","q3":"CONDITION|ENTITY|PATTERN","rationale":"<one sentence>"}
+Output JSON only — no preamble, no markdown fences. Pick exactly ONE of the following two shapes:
 
-Use exact uppercase tokens. Pick exactly one value per question.`;
+Shape A (classified): you are committing to a classification.
+{"result":"classified","q1":"DIFFERENTIATING|RELATING|GENERATING","q2":"EXISTENCE|STRUCTURE|SIGNIFICANCE","q3":"CONDITION|ENTITY|PATTERN","confidence":0.0-1.0,"rationale":"<one sentence>"}
 
-// Build the user message for one event — proposition + clause + light
-// entity context (canonical names, aliases) so the LLM can disambiguate.
-//
-// When a layered-context snapshot is available (passed via opts.layered
-// or read from STATE during inline ingest classification), the prompt
-// surfaces four separately-addressable layers:
-//   HYPOTHESIS         — frame (possibility)
-//   RUNNING SUMMARY    — read (gist)
-//   RECENT EVENTS      — what landed (textbase ring, EO notation)
-//   PRIOR SENTENCE     — what was said (verbatim)
-// Each layer carries distinct epistemic status; never merged.
+Shape B (defer): you are choosing not to commit. Pick exactly one reason from the closed list.
+{"result":"defer","reason":"unresolved-reference|unfamiliar-vocabulary|figurative-or-ambiguous|insufficient-context"}
+
+Reason meanings:
+- unresolved-reference: pronouns or descriptions that don't resolve against the context provided.
+- unfamiliar-vocabulary: terms you can't disambiguate from the context.
+- figurative-or-ambiguous: the proposition may be metaphorical, ironic, or genuinely ambiguous.
+- insufficient-context: the proposition's role is unclear without more surrounding material.
+
+Use exact lowercase tokens for "result" and "reason". Use exact uppercase tokens for q1/q2/q3. Pick exactly one value per question. Confidence is a number, not a string.`;
+
+// Build the user message for one event by routing through the mechanical
+// prompt assembler. The assembler accepts only source-text strings and
+// pre-cached prose strings; nothing internal (no operator labels, no axis
+// answers, no event payloads beyond the proposition's own text) reaches
+// the LLM. The recent-sentences ring carries the verbatim source-text
+// context; the textbase ring (event-based, EO notation) is intentionally
+// NOT used here.
 function buildPhasepostUserMsg(ev, opts) {
   const text = propositionTextForEvent(ev);
-  const p = ev.payload || {};
-  const lines = [];
-
-  // Layered context — only surfaced when at least one layer is non-empty.
-  // Layers come from opts.layered (preferred — captured at ingest) or
-  // current STATE (inline, when called from the per-sentence loop).
-  const layered = (opts && opts.layered)
-    || ev.layeredContext
-    || null;
-  if (layered) {
-    if (layered.hypothesisLine) {
-      lines.push(`HYPOTHESIS: ${layered.hypothesisLine}`);
-      lines.push('');
-    }
-    if (layered.runningSummary && layered.runningSummary.trim()) {
-      lines.push('RUNNING SUMMARY (where we are):');
-      lines.push(layered.runningSummary.trim());
-      lines.push('');
-    }
-    if (layered.textbase && layered.textbase.trim()) {
-      lines.push('RECENT EVENTS (what just happened):');
-      // Indent the ring under the header for readability
-      lines.push('  ' + layered.textbase.trim());
-      lines.push('');
-    }
-    if (layered.priorSentence && layered.priorSentence.trim()) {
-      lines.push(`PRIOR SENTENCE: "${layered.priorSentence.trim()}"`);
-      lines.push('');
-    }
-    if (layered.currentSentence && layered.currentSentence.trim()) {
-      lines.push(`CURRENT SENTENCE: "${layered.currentSentence.trim()}"`);
-      lines.push('');
-    }
-  }
-
-  // Existing classification payload (proposition + clause + entity hints).
-  lines.push(`Proposition: ${text}`);
-  const clause = ev.spanText || '';
-  if (clause && clause.trim() !== text.trim() && clause.length < 600) {
-    lines.push(`Clause: ${clause.trim()}`);
-  }
-  const subjId = p.subject || p.from;
-  if (subjId) {
-    const subj = STATE.entities.get(subjId);
-    if (subj) {
-      const aliases = (subj.aliases || []).filter(a => a !== subj.canonical);
-      if (aliases.length > 0) {
-        lines.push(`Subject "${subj.canonical}" also known as: ${aliases.slice(0, 4).join(', ')}`);
-      }
-    }
-  }
-  const objId = (p.valueIsEntity ? p.value : null) || (p.toIsEntity ? p.to : null);
-  if (objId) {
-    const obj = STATE.entities.get(objId);
-    if (obj && obj.canonical) {
-      lines.push(`Object: "${obj.canonical}"`);
-    }
-  }
-  return lines.join('\n');
+  // Layered context lives as pre-cached prose on STATE (preferred) or on
+  // a snapshot stored on the event itself (so re-classification reproduces
+  // the original conditioning).
+  const layered = (opts && opts.layered) || ev.layeredContext || null;
+  const hypothesisProse = (layered && layered.hypothesisProse) || STATE.hypothesisProse || '';
+  const runningSummary = (layered && layered.runningSummary) || STATE.runningSummary || '';
+  const recentSentences = (layered && Array.isArray(layered.recentSentences))
+    ? layered.recentSentences
+    : (STATE.recentSentences || []);
+  const semanticSentences = (layered && Array.isArray(layered.semanticSentences))
+    ? layered.semanticSentences
+    : (STATE.semanticSentences || []);
+  const hypothesisExtras = (layered && Array.isArray(layered.hypothesisExtras))
+    ? layered.hypothesisExtras
+    : collectTopEntityDescriptions();
+  // The "content to parse" is the proposition's own text. The current
+  // sentence (verbatim) is in the recent-sentences ring (added there after
+  // each sentence is classified).
+  return assemblePrompt({
+    systemInstructions: 'Classify the proposition below into a 27-cell phasepost. Answer the three independent questions described in the system prompt. Output JSON only.',
+    hypothesisProse,
+    hypothesisExtras,
+    runningSummary,
+    recentSentences,
+    semanticSentences,
+    content: text,
+  });
 }
 
-// Capture the current four-layer context for an event being classified
+// Collect cached one-sentence entity descriptions for the entities the
+// current sentence is semantically near (top-N via Edit A's selection).
+// Missing descriptions are silently omitted — they're supplementary, not
+// required.
+function collectTopEntityDescriptions() {
+  const ids = STATE.topSemanticEntityIds || [];
+  const out = [];
+  for (const id of ids) {
+    const desc = STATE.entityDescriptions.get(id);
+    if (desc && typeof desc === 'string' && desc.trim()) {
+      out.push(desc.trim());
+    }
+  }
+  return out;
+}
+
+// Capture the current prose-layer context for an event being classified
 // inline during per-sentence ingest. Stored on the event so any later
-// re-classification reproduces the same conditioning, and so the prompt
-// log preserves what the model actually saw.
+// re-classification reproduces the same conditioning. Snapshots ONLY
+// pre-cached prose strings — never raw events, never operator-named state.
 function captureLayeredContextForEvent(source, sentenceText) {
-  const h = source && source.hypothesis ? source.hypothesis : null;
   return {
-    hypothesisLine: h ? formatHypothesisForClause(h) : null,
+    hypothesisProse: STATE.hypothesisProse || '',
+    hypothesisExtras: collectTopEntityDescriptions(),
     runningSummary: STATE.runningSummary || '',
-    textbase: renderTextbaseRing(),
+    recentSentences: (STATE.recentSentences || []).slice(),
+    semanticSentences: (STATE.semanticSentences || []).slice(),
+    // priorSentence + currentSentence retained as a debug record only;
+    // they do NOT feed the assembler (recentSentences carries the same
+    // information in ring form).
     priorSentence: STATE.priorSentenceText || '',
     currentSentence: sentenceText || '',
   };
+}
+
+// ─── COMPREHENSION MONITORING ────────────────────────────────────────
+// The classifier output is a discriminated union: result="classified" with
+// q1/q2/q3/confidence, OR result="defer" with a reason from a closed enum.
+// The defer path is enabled by schema (the prompt does not instruct the
+// model that defer is an option). A defer triggers ONE enriched-context
+// retry whose enrichment is keyed by reason. If the retry also defers (or
+// the validation fails), the event lands as a SIG marker — honest about
+// what the system did not understand.
+
+const DEFER_REASONS = new Set([
+  'unresolved-reference',
+  'unfamiliar-vocabulary',
+  'figurative-or-ambiguous',
+  'insufficient-context',
+]);
+const SIG_CONFIDENCE_FLOOR = 0.6;
+
+// Build a phasepost user message with enrichment driven by defer reason.
+// Uses the same assembler — no annotation that this is a retry. The
+// enrichment is purely a state swap (more sentences, semantically-targeted
+// expansion, a backed-up summary).
+async function buildEnrichedPhasepostUserMsg(ev, deferReason) {
+  // Snapshot current state, swap in enriched values, build, restore.
+  const text = propositionTextForEvent(ev);
+  const baseRecent = STATE.recentSentences || [];
+  const baseSemantic = STATE.semanticSentences || [];
+  const baseSummary = STATE.runningSummary || '';
+
+  let recentSentences = baseRecent;
+  let semanticSentences = baseSemantic;
+  let runningSummary = baseSummary;
+
+  // Reason-keyed enrichment table. Source-text only; nothing internal added.
+  const wantsWiderRecent = deferReason === 'unfamiliar-vocabulary'
+    || deferReason === 'figurative-or-ambiguous'
+    || deferReason === 'insufficient-context';
+  const wantsExpandedSemantic = deferReason === 'unresolved-reference'
+    || deferReason === 'figurative-or-ambiguous'
+    || deferReason === 'insufficient-context';
+  const wantsPriorSummary = deferReason === 'insufficient-context';
+
+  // Widen narratively-recent: walk the source's sentences back further.
+  if (wantsWiderRecent) {
+    const sourceId = ev.sourceId || ev.narrativePos?.sourceId;
+    const source = sourceId ? STATE.sources.get(sourceId) : null;
+    const cur = ev.narrativePos?.sentenceIdx ?? null;
+    if (source && Array.isArray(source.sentences) && cur != null) {
+      const wider = source.sentences
+        .filter(s => s.idx <= cur)
+        .slice(-12)
+        .map(s => s.text);
+      if (wider.length > 0) recentSentences = wider;
+    }
+  }
+
+  // Expand semantically-targeted from top 3 → top 5 entities, 2 sentences each.
+  if (wantsExpandedSemantic) {
+    try {
+      const picked = await pickSemanticContextForSentence(text, { k: 5, perEntity: 2, minSim: 0.25 });
+      if (picked.sentences.length > 0) semanticSentences = picked.sentences;
+    } catch (e) { /* embedder unavailable; keep base */ }
+  }
+
+  // Prior version of the running summary — pull the second-most-recent
+  // summary stored on the source's sentences (summaryAtSentence trail).
+  let priorSummaryNote = '';
+  if (wantsPriorSummary) {
+    const sourceId = ev.sourceId || ev.narrativePos?.sourceId;
+    const source = sourceId ? STATE.sources.get(sourceId) : null;
+    if (source && Array.isArray(source.sentences)) {
+      const summaries = source.sentences
+        .map(s => s.summaryAtSentence)
+        .filter(Boolean);
+      if (summaries.length >= 2) {
+        priorSummaryNote = summaries[summaries.length - 2];
+      }
+    }
+  }
+
+  return assemblePrompt({
+    systemInstructions: 'Classify the proposition below into a 27-cell phasepost. Answer the three independent questions described in the system prompt. Output JSON only.',
+    hypothesisProse: STATE.hypothesisProse || '',
+    hypothesisExtras: collectTopEntityDescriptions(),
+    runningSummary: priorSummaryNote
+      ? `${runningSummary}\n\n(prior summary: ${priorSummaryNote})`
+      : runningSummary,
+    recentSentences,
+    semanticSentences,
+    content: text,
+  });
+}
+
+// Validate a parsed classifier response against the discriminated-union
+// schema. Returns { kind, payload } or { kind: 'invalid', error }.
+function validateClassifierResponse(parsed) {
+  if (!parsed || typeof parsed !== 'object') {
+    return { kind: 'invalid', error: 'not an object' };
+  }
+  const result = String(parsed.result || '').toLowerCase().trim();
+  if (result === 'defer') {
+    const reason = String(parsed.reason || '').toLowerCase().trim();
+    if (!DEFER_REASONS.has(reason)) {
+      return { kind: 'invalid', error: `defer reason not in enum: "${reason}"` };
+    }
+    return { kind: 'defer', reason };
+  }
+  // Tolerate omitted "result" if q1/q2/q3 are present (forward-compat).
+  if (result === 'classified' || (!result && parsed.q1 && parsed.q2 && parsed.q3)) {
+    const q1 = String(parsed.q1 || '').toUpperCase().trim();
+    const q2 = String(parsed.q2 || '').toUpperCase().trim();
+    const q3 = String(parsed.q3 || '').toUpperCase().trim();
+    if (!VALID_Q1.has(q1) || !VALID_Q2.has(q2) || !VALID_Q3.has(q3)) {
+      return { kind: 'invalid', error: `invalid axis values: q1=${q1} q2=${q2} q3=${q3}` };
+    }
+    const cell = answersToCellLabel(q1, q2, q3);
+    if (!cell) {
+      return { kind: 'invalid', error: `cell lookup failed for ${q1}|${q2}|${q3}` };
+    }
+    let confidence = parsed.confidence;
+    if (typeof confidence === 'string') confidence = parseFloat(confidence);
+    if (typeof confidence !== 'number' || !Number.isFinite(confidence)) {
+      // Default to 0.7 — the model declined to commit a number; treat as
+      // moderately confident so it isn't unfairly demoted to SIG.
+      confidence = 0.7;
+    }
+    confidence = Math.max(0, Math.min(1, confidence));
+    const rationale = String(parsed.rationale || '').slice(0, 240);
+    return { kind: 'classified', q1, q2, q3, cell, confidence, rationale };
+  }
+  return { kind: 'invalid', error: `unknown result token: "${result}"` };
+}
+
+// Append a SIG event marking that the system did not commit a
+// classification for this proposition. Carries the original attempt (if
+// any) so the auditable trail is preserved. Caller decides whether to
+// delete the original event — by default we leave it in G with the SIG
+// flag set on it so the prompt log still references the same event id.
+function appendComprehensionSig(ev, payload) {
+  const sourceId = ev.sourceId || ev.narrativePos?.sourceId || null;
+  const sentenceText = (() => {
+    const sentenceIdx = ev.narrativePos?.sentenceIdx;
+    if (sourceId != null && sentenceIdx != null) {
+      const src = STATE.sources.get(sourceId);
+      const srec = src && Array.isArray(src.sentences)
+        ? src.sentences.find(s => s.idx === sentenceIdx) : null;
+      if (srec && srec.text) return srec.text;
+    }
+    return ev.spanText || '';
+  })();
+
+  return appendEvent({
+    op: 'SIG',
+    payload: {
+      kind: 'comprehension',
+      awaitingResolution: true,
+      deferReason: payload.deferReason || null,
+      deferAttempts: payload.deferAttempts || 1,
+      permanentlyUnresolved: false,
+      originalClassificationAttempt: payload.originalClassificationAttempt || null,
+      originalEventId: ev.id,
+      sentenceText,
+    },
+    sourceId,
+    narrativePos: ev.narrativePos || null,
+    authoredBy: 'system',
+    spanText: sentenceText || ev.spanText || null,
+    intakeTs: Date.now(),
+  });
 }
 
 async function classifyEventViaLLM(ev, opts) {
@@ -3838,29 +4034,128 @@ async function classifyEventViaLLM(ev, opts) {
   if (!isLLMReady()) throw new Error('No LLM backend ready');
   const text = propositionTextForEvent(ev);
   if (!text || text.length < 2) return null;
+
+  // ── First attempt ──
   const userMsg = buildPhasepostUserMsg(ev, opts);
-  const raw = await callLLM(PHASEPOST_CLASSIFY_SYSTEM, userMsg, 200, 'phasepost');
-  const parsed = extractJSON(raw);
-  if (!parsed || typeof parsed !== 'object') {
-    ev.llmClassifyError = `unparseable response: ${(raw || '').slice(0, 80)}`;
-    return null;
+  const raw = await callLLM(PHASEPOST_CLASSIFY_SYSTEM, userMsg, 220, 'phasepost');
+  let parsed = extractJSON(raw);
+  let validated = validateClassifierResponse(parsed);
+
+  // Schema-malformed → single retry with the same assembled prompt.
+  if (validated.kind === 'invalid') {
+    const raw2 = await callLLM(PHASEPOST_CLASSIFY_SYSTEM, userMsg, 220, 'phasepost-retry');
+    parsed = extractJSON(raw2);
+    validated = validateClassifierResponse(parsed);
+    if (validated.kind === 'invalid') {
+      ev.llmClassifyError = validated.error;
+      return null;
+    }
   }
-  const q1 = String(parsed.q1 || '').toUpperCase().trim();
-  const q2 = String(parsed.q2 || '').toUpperCase().trim();
-  const q3 = String(parsed.q3 || '').toUpperCase().trim();
-  if (!VALID_Q1.has(q1) || !VALID_Q2.has(q2) || !VALID_Q3.has(q3)) {
-    ev.llmClassifyError = `invalid axis values: q1=${q1} q2=${q2} q3=${q3}`;
-    return null;
+
+  // Defer → one enriched-context retry with reason-keyed enrichment.
+  if (validated.kind === 'defer') {
+    const firstReason = validated.reason;
+    ev.deferAttempts = (ev.deferAttempts || 0) + 1;
+    const enrichedMsg = await buildEnrichedPhasepostUserMsg(ev, firstReason);
+    const rawR = await callLLM(PHASEPOST_CLASSIFY_SYSTEM, enrichedMsg, 220, 'phasepost-enriched');
+    const parsedR = extractJSON(rawR);
+    const validatedR = validateClassifierResponse(parsedR);
+    if (validatedR.kind === 'classified') {
+      validated = validatedR;
+    } else if (validatedR.kind === 'defer') {
+      ev.deferAttempts = (ev.deferAttempts || 0) + 1;
+      ev.deferReason = validatedR.reason;
+      ev.llmClassifyError = `defer×2 (${firstReason} → ${validatedR.reason})`;
+      // Append a comprehension SIG so the failure is honest and auditable.
+      try {
+        appendComprehensionSig(ev, {
+          deferReason: validatedR.reason,
+          deferAttempts: ev.deferAttempts,
+          originalClassificationAttempt: null,
+        });
+      } catch (e) { /* non-fatal */ }
+      return null;
+    } else {
+      ev.deferReason = firstReason;
+      ev.llmClassifyError = validatedR.error || 'enriched retry invalid';
+      return null;
+    }
   }
-  const cell = answersToCellLabel(q1, q2, q3);
-  if (!cell) {
-    ev.llmClassifyError = `cell lookup failed for ${q1}|${q2}|${q3}`;
-    return null;
+
+  // Classified — branch on confidence.
+  ev.llmCell = validated.cell;
+  ev.llmAnswers = { q1: validated.q1, q2: validated.q2, q3: validated.q3 };
+  ev.llmConfidence = validated.confidence;
+  ev.llmRationale = validated.rationale;
+
+  if (validated.confidence < SIG_CONFIDENCE_FLOOR) {
+    // Low-confidence path: classification stays on the event for audit
+    // but a sibling SIG marker is appended so the comprehension monitor
+    // can surface this as not-yet-resolved.
+    ev.lowConfidence = true;
+    try {
+      appendComprehensionSig(ev, {
+        deferReason: null,
+        deferAttempts: 1,
+        originalClassificationAttempt: {
+          q1: validated.q1, q2: validated.q2, q3: validated.q3,
+          cell: validated.cell, confidence: validated.confidence,
+          rationale: validated.rationale,
+        },
+      });
+    } catch (e) { /* non-fatal */ }
   }
-  ev.llmCell = cell;
-  ev.llmAnswers = { q1, q2, q3 };
-  ev.llmRationale = String(parsed.rationale || '').slice(0, 240);
-  return cell;
+  return validated.cell;
+}
+
+// Force a re-classification: clear the cached cell and run again with
+// current context. Used by the periodic re-read pass to revisit pending
+// SIGs once the document state has matured.
+async function reclassifyEventViaLLM(ev) {
+  if (!ev) return null;
+  ev.llmCell = null;
+  ev.llmAnswers = null;
+  ev.llmConfidence = null;
+  ev.llmRationale = null;
+  ev.llmClassifyError = null;
+  return classifyEventViaLLM(ev);
+}
+
+// Walk pending comprehension SIGs and re-attempt classification of the
+// original events. SIGs that resolve get marked awaitingResolution=false;
+// SIGs that don't resolve after 3 attempts get permanentlyUnresolved=true.
+async function rereadPendingComprehensionSigs(source) {
+  if (!isLLMReady()) return { resolved: 0, retried: 0, permanent: 0 };
+  let resolved = 0, retried = 0, permanent = 0;
+  for (const sig of STATE.G) {
+    if (!sig || sig.op !== 'SIG') continue;
+    const sp = sig.payload || {};
+    if (sp.kind !== 'comprehension') continue;
+    if (!sp.awaitingResolution || sp.permanentlyUnresolved) continue;
+    if (source && sig.sourceId && sig.sourceId !== source.id) continue;
+    const original = STATE.G.find(e => e.id === sp.originalEventId);
+    if (!original) continue;
+
+    retried++;
+    let cell = null;
+    try {
+      cell = await reclassifyEventViaLLM(original);
+    } catch (e) { cell = null; }
+    sp.deferAttempts = (sp.deferAttempts || 0) + 1;
+
+    const conf = original.llmConfidence;
+    if (cell && typeof conf === 'number' && conf >= SIG_CONFIDENCE_FLOOR) {
+      sp.awaitingResolution = false;
+      sp.resolvedAt = Date.now();
+      sp.resolvedCell = cell;
+      original.lowConfidence = false;
+      resolved++;
+    } else if (sp.deferAttempts >= 3) {
+      sp.permanentlyUnresolved = true;
+      permanent++;
+    }
+  }
+  return { resolved, retried, permanent };
 }
 
 // ─── PRIMARY PHASEPOST ACCESSOR ──────────────────────────────────────
@@ -5670,47 +5965,45 @@ function buildCorefCandidates(rawMentions, alreadyMatchedIds) {
 }
 
 async function llmProcessClause(clauseText, mentionedEntities, salienceWindow, additionalContext = [], rawMentions = [], source = null) {
-  // Mentioned entities — just canonical names, comma-separated.
-  // (Earlier versions included aliases in parens, but small models copied
-  //  the parens into entityRef literally, producing garbage like
-  //  "Iran's Border (On Iran's Border)". Aliases are matched server-side.)
+  // Operational context (prose strings only — canonical entity names and
+  // verb stems). The assembler bundles these inside the "# To Process"
+  // section; the architectural boundary holds because nothing here is an
+  // operator label, axis token, or event payload.
   const entLines = mentionedEntities.length
     ? mentionedEntities.map(e => e.canonical).join(', ')
     : null;
-
   const salLine = salienceWindow.length > 0
     ? salienceWindow.map(e => e.canonical).join(', ')
     : null;
-
   const predLine = buildPredicateVocabularyContext(mentionedEntities);
-
   const matchedIds = new Set(mentionedEntities.map(e => e.id));
   const corefLine = buildCorefCandidates(rawMentions, matchedIds);
 
-  // Document-level hypothesis context (terse one-liner). Comes first in the
-  // user message so the LLM reads its frame before the clause.
-  const hypLine = source && source.hypothesis
-    ? formatHypothesisForClause(source.hypothesis)
-    : null;
-
-  // Build a compact user message — only include non-empty sections.
-  const parts = [];
-  if (hypLine) parts.push(`Document: ${hypLine}`);
-  parts.push(`Clause: "${clauseText}"`);
-  if (entLines) parts.push(`Entities: ${entLines}`);
-  if (salLine) parts.push(`Salience: ${salLine}`);
-  if (predLine) parts.push(`Vocabulary: ${predLine}`);
-  if (corefLine) parts.push(`Ambiguous coref: ${corefLine}`);
-
+  // Bundle the clause + operational context into a single content string
+  // for the assembler. The clause is the actual input being acted on; the
+  // hints below it are guides the model uses to pick the right names.
+  const contentParts = [`Clause: "${clauseText}"`];
+  if (entLines) contentParts.push(`Entities: ${entLines}`);
+  if (salLine) contentParts.push(`Salience: ${salLine}`);
+  if (predLine) contentParts.push(`Vocabulary: ${predLine}`);
+  if (corefLine) contentParts.push(`Ambiguous coref: ${corefLine}`);
   if (additionalContext.length > 0) {
-    parts.push('Requested context:');
+    contentParts.push('Requested context:');
     for (const ctx of additionalContext) {
-      parts.push(`  ${ctx.request}\n${ctx.content}`);
+      contentParts.push(`  ${ctx.request}\n${ctx.content}`);
     }
   }
-  parts.push('Output JSON.');
+  const content = contentParts.join('\n');
 
-  const userMsg = parts.join('\n\n');
+  const userMsg = assemblePrompt({
+    systemInstructions: 'Extract structured events (SIG / CON / DEF) from the clause under "To Process". Output a single JSON object as described in the system prompt — no preamble, no markdown fences.',
+    hypothesisProse: STATE.hypothesisProse || '',
+    hypothesisExtras: collectTopEntityDescriptions(),
+    runningSummary: STATE.runningSummary || '',
+    recentSentences: STATE.recentSentences || [],
+    semanticSentences: STATE.semanticSentences || [],
+    content,
+  });
 
   STATE.llmCallsThisIngest++;
   const raw = await callLLM(PER_CLAUSE_SYSTEM, userMsg, 500, 'per-clause');
@@ -6165,10 +6458,959 @@ function formatHypothesisForClause(h) {
   return line;
 }
 
+// ─── MECHANICAL PROMPT ASSEMBLY (anti-bleed, v25 spec) ────────────────
+// Every LLM-facing prompt is assembled here. The function accepts ONLY
+// source-text strings and pre-cached prose strings. It has no access to
+// internal data structures (no role-profile distributions, no operator
+// labels, no axis answers, no event payloads). The architectural
+// boundary is enforced by the input contract — a prompt that bypasses
+// this function and synthesizes itself from STATE.G or operator-named
+// helpers is a bug.
+//
+// Output: a single Markdown document whose top-level structure encodes
+// the integral/delta split — context (everything integrated up to this
+// point) versus the new input being acted on. The headings carry the
+// distinction; nothing in prose explains it to the model.
+//
+//   # Task            (role-specific request)
+//   # Context         (the integral)
+//     ## Working Hypothesis    — hypothesisProse + cached entity descriptions
+//     ## Recent Reading        — runningSummary + recent + semantic sentences
+//   # To Process      (the delta — the single input as a markdown blockquote)
+//
+// Caller passes the Markdown as the user message and a static role
+// system prompt (which can carry taxonomy/schema details and is
+// cache-friendly) as the system message.
+function assemblePrompt({
+  systemInstructions,    // role-specific request, plain prose
+  hypothesisProse,       // STATE.hypothesisProse, verbatim
+  hypothesisExtras,      // optional array of extra prose lines (entity descriptions, etc.) appended under ## Working Hypothesis
+  runningSummary,        // STATE.runningSummary, verbatim
+  recentSentences,       // narratively-recent source sentences (verbatim, last N)
+  semanticSentences,     // semantically-targeted source sentences (verbatim, top entities by cosine)
+  content,               // single input being acted on (source-text string)
+}) {
+  // Defensive: drop anything that isn't a string. Internal data structures
+  // passed in by mistake will fail the boundary, surfacing the bug rather
+  // than silently leaking.
+  const safe = v => (typeof v === 'string') ? v : '';
+  const cleanArr = arr => Array.isArray(arr)
+    ? arr.filter(s => typeof s === 'string' && s.trim())
+    : [];
+  const narrative = cleanArr(recentSentences).slice(-5);
+  const semantic = cleanArr(semanticSentences).slice(0, 6);
+  const extras = cleanArr(hypothesisExtras);
+  const hp = safe(hypothesisProse).trim();
+  const rs = safe(runningSummary).trim();
+
+  // The markdown carries the integral/delta split structurally. Two
+  // top-level sections beyond the task line:
+  //
+  //   # Context       — everything integrated up to this point. The
+  //                     hypothesis, the running summary, the recent and
+  //                     semantically-primed sentences. Nested H2 layers
+  //                     so the model can see what kind of context each
+  //                     piece is, but the H1 says "this is the integral."
+  //
+  //   # To Process    — the single new input the call is about. Quoted
+  //                     as a markdown blockquote so it's visually and
+  //                     structurally distinct from the integral above.
+  //
+  // The split is not explained in prose. The headings do the work.
+
+  const lines = [];
+  lines.push('# Task');
+  lines.push(safe(systemInstructions));
+  lines.push('');
+  lines.push('# Context');
+  lines.push('');
+  lines.push('## Working Hypothesis');
+  lines.push(hp || '(no hypothesis prose yet — operating with thin frame)');
+  if (extras.length > 0) {
+    lines.push('');
+    // Each extra is a prose line (e.g., one-sentence entity description). No
+    // labels distinguishing them from the hypothesis paragraph — just prose.
+    lines.push(extras.join('\n'));
+  }
+  lines.push('');
+  lines.push('## Recent Reading');
+  lines.push(rs || '(no running summary yet)');
+  if (narrative.length > 0) {
+    lines.push('');
+    lines.push(narrative.join('\n'));
+  }
+  if (semantic.length > 0) {
+    // Semantic-targeted sentences come after the narrative ring, separated
+    // by a blank line. NO label distinguishes the two groups — the spec is
+    // explicit: just two blocks of prose.
+    lines.push('');
+    lines.push(semantic.join('\n'));
+  }
+  lines.push('');
+  lines.push('# To Process');
+  lines.push('');
+  // Blockquote the delta so it reads as a distinct unit even before the
+  // model parses the heading. Multi-line content keeps a leading "> " on
+  // each line so the quote shape holds.
+  const quoted = safe(content).split('\n').map(l => `> ${l}`).join('\n');
+  lines.push(quoted);
+  return lines.join('\n');
+}
+
+// Append a verbatim sentence to the recent-sentences ring used by
+// assemblePrompt. Mechanical state — never paraphrases, never folds.
+function appendToRecentSentences(text) {
+  if (typeof text !== 'string') return;
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  STATE.recentSentences.push(trimmed);
+  const cap = STATE.recentSentencesMax || 5;
+  while (STATE.recentSentences.length > cap) STATE.recentSentences.shift();
+}
+
+// ─── SEMANTICALLY-TARGETED CONTEXT (Edit A) ──────────────────────────
+// Embed the candidate sentence and pull source sentences from entities
+// anywhere in the document whose centroids cluster near it. Produces
+// up to k*perEntity verbatim source-text strings, ready to drop into
+// the assembler's # Recent Context section.
+//
+// All strings come straight from event.spanText — no operator labels,
+// no axis tokens, no internal vocabulary. The architectural boundary
+// holds because the function returns only source-text strings.
+// Pick the semantic context for the sentence currently being processed.
+// Returns { sentences, entityIds } — the verbatim source sentences that
+// will land in the assembler's # Recent Context, and the ranked entity IDs
+// whose cached descriptions can be appended to # Working Hypothesis.
+//
+// Embeds the candidate once; both selections are derived from the same
+// embedding so they stay aligned. Empty arrays when the embedder isn't
+// ready or when no entity centroid clears the floor.
+async function pickSemanticContextForSentence(candidateText, opts = {}) {
+  if (!candidateText || typeof candidateText !== 'string') return { sentences: [], entityIds: [] };
+  if (typeof EMBEDDER === 'undefined' || EMBEDDER.status !== 'ready') return { sentences: [], entityIds: [] };
+  const k = opts.k != null ? opts.k : 3;
+  const perEntity = opts.perEntity != null ? opts.perEntity : 2;
+  const minSim = opts.minSim != null ? opts.minSim : 0.3;
+
+  let candidateF;
+  try {
+    candidateF = await embedText(candidateText);
+  } catch (e) {
+    return { sentences: [], entityIds: [] };
+  }
+  if (!candidateF) return { sentences: [], entityIds: [] };
+  const candidateInt8 = quantizeFloat32(candidateF);
+  if (!candidateInt8) return { sentences: [], entityIds: [] };
+
+  // Precision-weighted scoring: low-precision centroids contribute less
+  // to retrieval, but the floor (0.3) keeps new entities reachable when
+  // they're cosine-near. Constants chosen so a precision-1.0 entity is
+  // weighted 1.0× and a precision-0.0 entity is weighted 0.3×.
+  const ranked = [];
+  for (const [id, ent] of STATE.entities) {
+    if (!ent || !ent._centroid) continue;
+    const sim = cosineInt8(candidateInt8, ent._centroid);
+    if (sim < minSim) continue;
+    const precision = clampPrecision(ent.precision || 0);
+    const weighted = sim * (0.3 + 0.7 * precision);
+    ranked.push({ id, sim: weighted, rawSim: sim });
+  }
+  ranked.sort((a, b) => b.sim - a.sim);
+  const top = ranked.slice(0, k);
+  if (top.length === 0) return { sentences: [], entityIds: [] };
+
+  const recentSet = new Set(
+    (STATE.recentSentences || [])
+      .map(s => (typeof s === 'string' ? s.trim() : ''))
+      .filter(Boolean)
+  );
+  const sentences = [];
+  const entityIds = [];
+  for (const { id } of top) {
+    entityIds.push(id);
+    const seen = new Set();
+    let added = 0;
+    for (let i = STATE.G.length - 1; i >= 0 && added < perEntity; i--) {
+      const ev = STATE.G[i];
+      if (!ev) continue;
+      if (ev.op !== 'DEF' && ev.op !== 'CON') continue;
+      const p = ev.payload || {};
+      const subj = p.subject || p.from;
+      if (subj !== id) continue;
+      const span = (ev.spanText || '').trim();
+      if (!span || seen.has(span) || recentSet.has(span)) continue;
+      seen.add(span);
+      sentences.push(span);
+      added++;
+    }
+  }
+  return { sentences, entityIds };
+}
+
+async function findSemanticallyTargetedSentences(candidateText, narrativeRecent, opts = {}) {
+  if (!candidateText || typeof candidateText !== 'string') return [];
+  if (typeof EMBEDDER === 'undefined' || EMBEDDER.status !== 'ready') return [];
+  const k = opts.k != null ? opts.k : 3;
+  const perEntity = opts.perEntity != null ? opts.perEntity : 2;
+  const minSim = opts.minSim != null ? opts.minSim : 0.3;
+
+  let candidateF;
+  try {
+    candidateF = await embedText(candidateText);
+  } catch (e) {
+    return [];
+  }
+  if (!candidateF) return [];
+  const candidateInt8 = quantizeFloat32(candidateF);
+  if (!candidateInt8) return [];
+
+  // Score entities by centroid cosine. _centroid is set during
+  // snapshotTrajectoriesForSentence; entities without one (no events yet)
+  // are simply excluded.
+  const ranked = [];
+  for (const [id, ent] of STATE.entities) {
+    if (!ent || !ent._centroid) continue;
+    const sim = cosineInt8(candidateInt8, ent._centroid);
+    if (sim < minSim) continue;
+    ranked.push({ id, sim });
+  }
+  ranked.sort((a, b) => b.sim - a.sim);
+  const top = ranked.slice(0, k);
+  if (top.length === 0) return [];
+
+  // Avoid duplicating sentences already in the narrative-recent ring.
+  const recentSet = new Set(
+    (Array.isArray(narrativeRecent) ? narrativeRecent : [])
+      .map(s => (typeof s === 'string' ? s.trim() : ''))
+      .filter(Boolean)
+  );
+
+  const out = [];
+  for (const { id } of top) {
+    const seen = new Set();
+    let added = 0;
+    // Walk events backwards (most recent first) for source sentences where
+    // this entity appeared as subject (or sender of a CON edge).
+    for (let i = STATE.G.length - 1; i >= 0 && added < perEntity; i--) {
+      const ev = STATE.G[i];
+      if (!ev) continue;
+      if (ev.op !== 'DEF' && ev.op !== 'CON') continue;
+      const p = ev.payload || {};
+      const subj = p.subject || p.from;
+      if (subj !== id) continue;
+      const span = (ev.spanText || '').trim();
+      if (!span) continue;
+      if (seen.has(span) || recentSet.has(span)) continue;
+      seen.add(span);
+      out.push(span);
+      added++;
+    }
+  }
+  return out;
+}
+
+// ─── PROSE LAYER REGENERATION (single-output, cached) ────────────────
+// Two prompt types whose output feeds the assembler's # Working Hypothesis
+// section and (later) per-entity context. Each runs only when its inputs
+// change — at hypothesis update for prose, when an entity gains new
+// evidence for description.
+
+const HYPOTHESIS_PROSE_SYSTEM = `You write a plain-language paragraph describing a document's working hypothesis.
+
+ABSOLUTE RULES:
+- Output ONLY the paragraph. No preamble, no markdown, no bullet points, no quotes around the whole thing.
+- Use ordinary English. NO jargon, NO classification labels, NO axis vocabulary.
+- 2-4 sentences. Tight is better.
+- Describe what the document is and (if principals are listed) who or what it is about.
+- Use ONLY the facts supplied. Do NOT speculate beyond them.`;
+
+async function regenerateHypothesisProse(hyp) {
+  if (!hyp) {
+    STATE.hypothesisProse = '';
+    return null;
+  }
+  if (!isLLMReady()) return null;
+
+  // Plain field-name → plain-value lines. No site labels, no operator
+  // names, no axis tokens. The model paraphrases this list into prose.
+  const facts = [];
+  if (hyp.kind) facts.push(`Document kind: ${hyp.kind}`);
+  if (hyp.register) facts.push(`Register: ${hyp.register}`);
+  if (hyp.discourse) facts.push(`Discourse mode: ${hyp.discourse}`);
+  if (hyp.period && hyp.period !== 'unknown') facts.push(`Period: ${hyp.period}`);
+  if (hyp.summary) facts.push(`Working summary: ${hyp.summary}`);
+  if (Array.isArray(hyp.principals) && hyp.principals.length > 0) {
+    const names = hyp.principals.slice(0, 8).map(p => p && p.name).filter(Boolean);
+    if (names.length > 0) facts.push(`Principals named so far: ${names.join(', ')}`);
+  }
+  if (Array.isArray(hyp.authorship) && hyp.authorship.length > 0) {
+    const names = hyp.authorship.map(a => a && a.name).filter(Boolean);
+    if (names.length > 0) facts.push(`Documentary apparatus (author / publisher): ${names.join(', ')}`);
+  }
+  if (facts.length === 0) return null;
+
+  const userMsg = assemblePrompt({
+    systemInstructions: 'Rewrite the hypothesis facts under "To Process" as a 2-4 sentence plain-language paragraph. Use ordinary English. Do not list fields. Do not invent. Output the paragraph only.',
+    hypothesisProse: '',          // we are CREATING this layer; do not feed it back in
+    runningSummary: '',
+    recentSentences: [],
+    content: facts.join('\n'),
+  });
+
+  STATE.llmCallsThisIngest++;
+  let raw;
+  try {
+    raw = await callLLM(HYPOTHESIS_PROSE_SYSTEM, userMsg, 220, 'hypothesis-prose');
+  } catch (e) {
+    console.warn('[anchorage] hypothesis prose generation failed:', e);
+    return null;
+  }
+  let prose = String(raw || '').trim();
+  prose = prose.replace(/^```[a-z]*\n?|```$/gi, '').trim();
+  prose = prose.replace(/^["']|["']$/g, '').trim();
+  if (!prose) return null;
+  // Truncate to four sentences so a chatty model can't blow the budget.
+  const sentSplit = prose.match(/[^.!?]+[.!?]+(\s|$)/g);
+  if (sentSplit && sentSplit.length > 4) {
+    prose = sentSplit.slice(0, 4).join('').trim();
+  }
+  STATE.hypothesisProse = prose;
+  return prose;
+}
+
+const ENTITY_DESCRIPTION_SYSTEM = `You write a one-sentence plain-language description of how a document positions an entity.
+
+ABSOLUTE RULES:
+- One sentence. No more.
+- Output ONLY the sentence. No preamble, no markdown, no quotes.
+- Use ordinary English. NO classification vocabulary, NO axis labels, NO operator names.
+- Use ONLY the facts supplied. Do NOT invent details.`;
+
+async function regenerateEntityDescription(entity, opts = {}) {
+  if (!entity || !isLLMReady()) return null;
+  // Skip if already cached and the caller didn't force a refresh. Caching
+  // prompts run only when inputs change — the caller is responsible for
+  // calling with force:true when the entity gained new evidence.
+  if (!opts.force && STATE.entityDescriptions.has(entity.id)) {
+    return STATE.entityDescriptions.get(entity.id);
+  }
+
+  // Pull source sentences (verbatim) where the entity appears as subject
+  // or target. Up to 8, most recent first. Source-text only — no operator
+  // labels, no axis tokens, no system vocabulary.
+  const sentences = [];
+  const seen = new Set();
+  for (let i = STATE.G.length - 1; i >= 0 && sentences.length < 8; i--) {
+    const ev = STATE.G[i];
+    if (!ev) continue;
+    if (ev.op !== 'DEF' && ev.op !== 'CON') continue;
+    const p = ev.payload || {};
+    const ids = [p.subject, p.from, (p.valueIsEntity ? p.value : null), (p.toIsEntity ? p.to : null)].filter(Boolean);
+    if (!ids.includes(entity.id)) continue;
+    const span = (ev.spanText || '').trim();
+    if (!span || seen.has(span)) continue;
+    seen.add(span);
+    sentences.push(span);
+  }
+  if (sentences.length === 0) return null;
+
+  const aliases = (entity.aliases || []).filter(a => a && a !== entity.canonical).slice(0, 6);
+  const aliasLine = aliases.length > 0
+    ? `${entity.canonical} (also referred to as: ${aliases.join(', ')})`
+    : entity.canonical;
+
+  const contentParts = [
+    `The entity is referred to as: ${aliasLine}`,
+    '',
+    'The entity appears in these sentences from the document:',
+    sentences.join('\n'),
+  ];
+
+  const userMsg = assemblePrompt({
+    systemInstructions: `Given the source sentences under "To Process" where ${entity.canonical} appears, write one plain-language sentence describing how the document positions it. Use plain language. Do not name analytic categories. Output the sentence only.`,
+    hypothesisProse: STATE.hypothesisProse || '',
+    runningSummary: STATE.runningSummary || '',
+    recentSentences: [],
+    content: contentParts.join('\n'),
+  });
+
+  STATE.llmCallsThisIngest++;
+  let raw;
+  try {
+    raw = await callLLM(ENTITY_DESCRIPTION_SYSTEM, userMsg, 120, 'entity-description');
+  } catch (e) {
+    return null;
+  }
+  let desc = String(raw || '').trim();
+  desc = desc.replace(/^```[a-z]*\n?|```$/gi, '').trim();
+  desc = desc.replace(/^["']|["']$/g, '').trim();
+  if (!desc) return null;
+  // Truncate to one sentence.
+  const m = desc.match(/[^.!?]+[.!?]/);
+  if (m) desc = m[0].trim();
+  STATE.entityDescriptions.set(entity.id, desc);
+  return desc;
+}
+
+// Count an entity's events in G — DEFs and CONs where the entity is
+// subject or target. Used to gate description re-runs at threshold
+// crossings.
+function entityEventCount(entityId) {
+  let n = 0;
+  for (const ev of STATE.G) {
+    if (!ev) continue;
+    if (ev.op !== 'DEF' && ev.op !== 'CON') continue;
+    const p = ev.payload || {};
+    const ids = [p.subject, p.from, (p.valueIsEntity ? p.value : null), (p.toIsEntity ? p.to : null)].filter(Boolean);
+    if (ids.includes(entityId)) n++;
+  }
+  return n;
+}
+
+// Encode top-cell-on-each-face as a stable string. Comparison against
+// the previously stored value tells us whether the role profile shifted
+// substantively — top cell on any face changed.
+function topCellSignature(profile) {
+  if (!profile) return '';
+  const head = (slice, names) => {
+    const top = topProfileCells(slice || [], names, 1);
+    return top.length ? top[0].name : '';
+  };
+  return [
+    head(profile.subjectAct, OPERATOR_NAMES),
+    head(profile.subjectSite, SITE_NAMES),
+    head(profile.subjectResolution, RESOLUTION_NAMES),
+    head(profile.targetAct, OPERATOR_NAMES),
+    head(profile.targetSite, SITE_NAMES),
+    head(profile.targetResolution, RESOLUTION_NAMES),
+  ].join('|');
+}
+
+// Trigger thresholds for re-running an entity's description: 5, 15, 30,
+// then every 30 events thereafter. The function returns the most recent
+// threshold that the new count has crossed past the prior count, or null.
+function crossedDescriptionThreshold(prior, current) {
+  if (current <= 0) return null;
+  const fixed = [5, 15, 30];
+  for (const t of fixed) {
+    if (prior < t && current >= t) return t;
+  }
+  if (current >= 30) {
+    const lastAfter30 = Math.floor((current - 30) / 30) * 30 + 30;
+    const lastBefore = Math.floor(Math.max(prior - 30, 0) / 30) * 30 + (prior >= 30 ? 30 : 0);
+    if (lastAfter30 > lastBefore) return lastAfter30;
+  }
+  return null;
+}
+
+// ─── DEPENDENCY-CHAIN POST-CLASSIFICATION CHECK (Edit D) ────────────
+// Mechanical only — no LLM call. For each propositional event the
+// extractor produced, check whether each entity it mentions has a prior
+// INS in the graph. If not, flag the event.
+//
+// Two flag values:
+//   'introduces-with-higher-op' — entity has no prior events at all; the
+//     higher-op event is doing introduction work too. Common, not
+//     necessarily wrong.
+//   'missing-prerequisites' — entity has prior events but no INS.
+//     More suspect; the entity is being re-elaborated without ever having
+//     been formally introduced.
+//
+// The flag is a precision-weighted prior, not a hard gate. UI surfaces
+// the flag; nothing else changes.
+const DEPENDENCY_OPS = new Set(['CON', 'SYN', 'DEF', 'EVA', 'REC']);
+
+function checkDependencyChainForEvent(ev) {
+  if (!ev || !DEPENDENCY_OPS.has(ev.op)) return null;
+  const p = ev.payload || {};
+  const ids = [
+    p.subject, p.from,
+    (p.valueIsEntity ? p.value : null),
+    (p.toIsEntity ? p.to : null),
+  ].filter(Boolean);
+  if (ids.length === 0) return null;
+
+  // Walk G once; for each entity find earliest event index. We only need
+  // to know (a) any prior event exists, (b) any prior INS exists.
+  for (const id of ids) {
+    let hasPrior = false;
+    let hasPriorIns = false;
+    for (const other of STATE.G) {
+      if (!other || other.id === ev.id) continue;
+      // Compare by intake order — events are appended in order.
+      if (other.intakeTs >= ev.intakeTs) continue;
+      const op = other.payload || {};
+      const ids2 = [
+        op.subject, op.from, op.entity,
+        (op.valueIsEntity ? op.value : null),
+        (op.toIsEntity ? op.to : null),
+      ].filter(Boolean);
+      if (!ids2.includes(id)) continue;
+      hasPrior = true;
+      if (other.op === 'INS') { hasPriorIns = true; break; }
+    }
+    if (!hasPriorIns) {
+      return hasPrior ? 'missing-prerequisites' : 'introduces-with-higher-op';
+    }
+  }
+  return null;
+}
+
+function applyDependencyFlags(sentenceEventIds) {
+  if (!Array.isArray(sentenceEventIds)) return;
+  for (const eid of sentenceEventIds) {
+    const ev = STATE.G.find(e => e.id === eid);
+    if (!ev) continue;
+    const flag = checkDependencyChainForEvent(ev);
+    if (flag) ev.dependencyFlag = flag;
+  }
+}
+
+// ─── PRIMING FIT (predictive processing as schema activation) ────────
+// "Prediction" here is priming, not explicit-guess prediction. The
+// retrieval at the top of each iteration (pickSemanticContextForSentence)
+// queries the graph for which entities are about to be relevant — it
+// pre-activates the structure the incoming sentence is most likely to
+// draw on. The classifier then reads the sentence inside that activated
+// context.
+//
+// The priming-fit signal is the cosine between an extracted event's
+// embedding and the centroids of the entities the priming retrieved. It
+// is computed mechanically — no LLM call required:
+//   - High fit  → the structure was already there. The graph barely
+//     moves; we log a NUL "priming-confirmation" so the non-transformation
+//     is auditable.
+//   - Low fit   → the priming missed. The new event represents structure
+//     the graph hadn't anticipated; the existing DEF/CON does that work
+//     and gets a primingMiss marker for surface-able review.
+
+const PRIMING_FIT_FLOOR = 0.5;
+
+function computePrimingFit(eventId, retrievedEntityIds) {
+  if (!eventId || !Array.isArray(retrievedEntityIds) || retrievedEntityIds.length === 0) return null;
+  const eventVec = EMBEDDING_STORE.byEventId.get(eventId);
+  if (!eventVec) return null;
+  let best = -Infinity;
+  let bestEntityId = null;
+  for (const id of retrievedEntityIds) {
+    const ent = STATE.entities.get(id);
+    if (!ent || !ent._centroid) continue;
+    const sim = cosineInt8(eventVec, ent._centroid);
+    if (sim > best) { best = sim; bestEntityId = id; }
+  }
+  if (best === -Infinity) return null;
+  return { fit: best, bestEntityId };
+}
+
+// Walk a sentence's just-classified events and stamp primingState +
+// primingFitCosine per event. Determination only — the outcome-
+// dispatched fold (below) is what acts on the result.
+function applyPrimingFit(sentenceEventIds, retrievedEntityIds) {
+  if (!Array.isArray(sentenceEventIds) || sentenceEventIds.length === 0) return;
+  const haveRetrieval = Array.isArray(retrievedEntityIds) && retrievedEntityIds.length > 0;
+  for (const eid of sentenceEventIds) {
+    const ev = STATE.G.find(e => e.id === eid);
+    if (!ev) continue;
+    if (ev.op !== 'DEF' && ev.op !== 'CON') continue;
+    if (!haveRetrieval) {
+      // Nothing was retrieved — the sentence sits in a region of the
+      // graph the system hadn't seen yet.
+      ev.primingState = 'void';
+      ev.primingFitCosine = null;
+      continue;
+    }
+    const score = computePrimingFit(eid, retrievedEntityIds);
+    if (!score) {
+      // Retrieval ran but this event isn't embedded yet; treat as void
+      // for the dispatch (no centroids to compare against either way).
+      ev.primingState = 'void';
+      ev.primingFitCosine = null;
+      continue;
+    }
+    ev.primingFitCosine = score.fit;
+    ev.primingFit = score.fit;            // legacy alias for Log marker
+    ev.bestPrimedEntityId = score.bestEntityId;
+    if (score.fit >= PRIMING_FIT_FLOOR) {
+      ev.primingState = 'fit';
+      ev.primingMiss = false;
+    } else {
+      ev.primingState = 'miss';
+      ev.primingMiss = true;
+    }
+  }
+}
+
+// ─── OUTCOME-DISPATCHED FOLD (3×3 precision-weighted updates) ──────
+//
+// Two axes determine each event's outcome cell:
+//   priming   ∈ {fit, miss, void}     — was retrieval predictive?
+//   commit    ∈ {committed, provisional, deferred} — did the classifier commit?
+//
+// Each of the nine cells has its own update rule. The dispatch table is
+// the single source of truth; the dispatcher reads it and applies the
+// effects mechanically.
+//
+// Constraints:
+//   - No outcome cell exposes precision values to the LLM (precision
+//     modulates retrieval weighting and update thresholds, never the
+//     prompt content)
+//   - Deferred rows do not update centroids
+//   - Void rows create centroids rather than updating existing ones
+//   - Miss rows penalize the wrongly-retrieved entities as well as
+//     updating the classified one
+//   - Every event's outcome cell is auditable on the event record
+
+const OUTCOME_FOLD = {
+  // priming-fit row — retrieval predicted correctly
+  'fit-committed': {
+    classifiedLerp: 0.05, classifiedPrecision: +0.03,
+    opLerp: 0.05, opPrecision: +0.02,
+    cellLerp: 0.05, cellPrecision: +0.02,
+    retrievedPenalty: 0,
+    roleWeight: 1.0,
+    integralContribution: 1.0,
+    rereadPriority: 0,
+  },
+  'fit-provisional': {
+    classifiedLerp: 0.025, classifiedPrecision: +0.015,
+    opLerp: 0.025, opPrecision: +0.01,
+    cellLerp: 0.025, cellPrecision: +0.01,
+    retrievedPenalty: 0,
+    roleWeight: 0.5,
+    integralContribution: 0.5,
+    rereadPriority: 1,
+  },
+  'fit-deferred': {
+    classifiedLerp: 0, classifiedPrecision: 0,
+    opLerp: 0, opPrecision: 0,
+    cellLerp: 0, cellPrecision: 0,
+    retrievedPenalty: 0,
+    roleWeight: 0,
+    integralContribution: 0,
+    rereadPriority: 0,
+    deferralCountInc: true,
+    sourceDifficultyKey: 'fitDeferred',
+  },
+  // miss row — retrieval was wrong
+  'miss-committed': {
+    classifiedLerp: 0.15, classifiedPrecision: +0.04,
+    opLerp: 0.10, opPrecision: +0.03,
+    cellLerp: 0.10, cellPrecision: +0.03,
+    retrievedPenalty: -0.02,
+    roleWeight: 1.0,
+    integralContribution: 1.0,
+    rereadPriority: 0,
+    surpriseMarker: true,
+  },
+  'miss-provisional': {
+    classifiedLerp: 0.04, classifiedPrecision: +0.01,
+    opLerp: 0.04, opPrecision: +0.005,
+    cellLerp: 0.04, cellPrecision: +0.005,
+    retrievedPenalty: -0.01,
+    roleWeight: 0.25,
+    integralContribution: 0.25,
+    rereadPriority: 1,
+    surpriseMarker: true,
+  },
+  'miss-deferred': {
+    classifiedLerp: 0, classifiedPrecision: 0,
+    opLerp: 0, opPrecision: 0,
+    cellLerp: 0, cellPrecision: 0,
+    retrievedPenalty: -0.02,
+    roleWeight: 0,
+    integralContribution: 0,
+    rereadPriority: 0,
+    sourceDifficultyKey: 'missDeferred',
+    markRegionUnreadable: false,
+  },
+  // void row — nothing to retrieve
+  'void-committed': {
+    classifiedLerp: null, classifiedPrecision: 0.10,    // null means "adopt event embedding as centroid"
+    opLerp: null, opPrecision: 0.05,
+    cellLerp: null, cellPrecision: 0.05,
+    retrievedPenalty: 0,
+    roleWeight: 1.0,
+    integralContribution: 1.0,
+    rereadPriority: 0,
+    structuralGrowth: true,
+  },
+  'void-provisional': {
+    classifiedLerp: null, classifiedPrecision: 0.05,
+    opLerp: null, opPrecision: 0.02,
+    cellLerp: null, cellPrecision: 0.02,
+    retrievedPenalty: 0,
+    roleWeight: 0.5,
+    integralContribution: 0.5,
+    rereadPriority: 1,
+    structuralGrowth: true,
+  },
+  'void-deferred': {
+    classifiedLerp: 0, classifiedPrecision: 0,
+    opLerp: 0, opPrecision: 0,
+    cellLerp: 0, cellPrecision: 0,
+    retrievedPenalty: 0,
+    roleWeight: 0,
+    integralContribution: 0,
+    rereadPriority: 0,
+    sourceDifficultyKey: 'voidDeferred',
+    markRegionUnreadable: true,
+  },
+};
+
+function determineCommitState(ev) {
+  // Comprehension-monitoring path stamped these on the event during
+  // classification: ev.deferAttempts, ev.lowConfidence, ev.deferReason.
+  if ((ev.deferAttempts || 0) >= 2) return 'deferred';
+  if (ev.lowConfidence) return 'provisional';
+  return 'committed';
+}
+
+function determineOutcomeCell(ev) {
+  if (!ev) return null;
+  const priming = ev.primingState || 'void';
+  const commit = determineCommitState(ev);
+  return `${priming}-${commit}`;
+}
+
+function clampPrecision(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(1, v));
+}
+
+function bumpEntityPrecision(entity, delta) {
+  if (!entity) return;
+  entity.precision = clampPrecision((entity.precision || 0) + delta);
+}
+
+function updateCentroidRegistry(map, key, eventVec, lerp, precisionDelta) {
+  if (!map || !key) return;
+  let entry = map.get(key);
+  if (!entry) {
+    entry = { centroid: null, precision: 0, count: 0 };
+    map.set(key, entry);
+  }
+  if (lerp === null) {
+    // Void/structural-growth path: adopt the event embedding directly
+    // when this is the registry's first evidence; otherwise small lerp.
+    entry.centroid = entry.centroid
+      ? lerpCentroidInt8(entry.centroid, eventVec, 0.05)
+      : (eventVec ? new Int8Array(eventVec) : entry.centroid);
+  } else if (lerp > 0 && eventVec) {
+    entry.centroid = lerpCentroidInt8(entry.centroid, eventVec, lerp);
+  }
+  entry.precision = clampPrecision(entry.precision + precisionDelta);
+  entry.count += 1;
+}
+
+// Apply the dispatch rule for one event. Reads ev.outcomeCell, walks the
+// table, mutates centroids/precisions on the relevant entities, op, cell
+// registries. No LLM calls. No graph mutations beyond stamping on ev.
+function applyOutcomeWeightedFoldForEvent(ev, retrievedEntityIds) {
+  if (!ev) return;
+  if (ev.op !== 'DEF' && ev.op !== 'CON') return;
+  const cell = determineOutcomeCell(ev);
+  ev.outcomeCell = cell;
+  ev.commitState = determineCommitState(ev);
+  const rule = OUTCOME_FOLD[cell];
+  if (!rule) return;
+
+  // Per-event role-profile weight (read by entityRoleCounts).
+  ev.roleWeight = rule.roleWeight;
+  if (rule.surpriseMarker) ev.surpriseMarker = true;
+
+  // The classified entity for centroid update purposes is the subject of
+  // a DEF, or the from-end of a CON. (Targets aren't moved by this fold —
+  // role-profile aggregation already covers their target-side stats.)
+  const p = ev.payload || {};
+  const classifiedEntityId = p.subject || p.from || null;
+  const classifiedEntity = classifiedEntityId ? STATE.entities.get(classifiedEntityId) : null;
+  const eventVec = EMBEDDING_STORE.byEventId.get(ev.id) || null;
+
+  // Classified entity centroid + precision
+  if (classifiedEntity) {
+    if (rule.classifiedLerp === null) {
+      // Void path: adopt embedding as initial centroid (or small lerp if
+      // somehow already present).
+      classifiedEntity._centroid = classifiedEntity._centroid
+        ? lerpCentroidInt8(classifiedEntity._centroid, eventVec, 0.05)
+        : (eventVec ? new Int8Array(eventVec) : classifiedEntity._centroid);
+    } else if (rule.classifiedLerp > 0 && eventVec) {
+      classifiedEntity._centroid = lerpCentroidInt8(classifiedEntity._centroid, eventVec, rule.classifiedLerp);
+    }
+    if (rule.classifiedPrecision) {
+      bumpEntityPrecision(classifiedEntity, rule.classifiedPrecision);
+    }
+    // Surprise also dampens running surpriseRate (the moving fraction
+    // of recent miss outcomes for this entity).
+    if (cell.startsWith('miss-')) {
+      classifiedEntity.surpriseRate = clampPrecision((classifiedEntity.surpriseRate || 0) * 0.9 + 0.1);
+    } else if (cell.startsWith('fit-')) {
+      classifiedEntity.surpriseRate = clampPrecision((classifiedEntity.surpriseRate || 0) * 0.9);
+    }
+  }
+
+  // Operator and cell centroid updates
+  const op = ev.op;
+  if (op && rule.opPrecision !== undefined) {
+    updateCentroidRegistry(STATE.operatorCentroids, op, eventVec, rule.opLerp, rule.opPrecision);
+  }
+  const cellLabel = ev.llmCell || (ev.empiricalCells?.[0]?.cell);
+  if (cellLabel && rule.cellPrecision !== undefined) {
+    updateCentroidRegistry(STATE.cellCentroids, cellLabel, eventVec, rule.cellLerp, rule.cellPrecision);
+  }
+
+  // Penalize retrieved-but-not-classified entities on miss rows. Their
+  // centroid was misleading for this sentence; precision reflects that.
+  if (rule.retrievedPenalty < 0 && Array.isArray(retrievedEntityIds)) {
+    for (const id of retrievedEntityIds) {
+      if (id === classifiedEntityId) continue;
+      const ent = STATE.entities.get(id);
+      if (!ent) continue;
+      bumpEntityPrecision(ent, rule.retrievedPenalty);
+    }
+  }
+
+  // Defer rows: increment per-entity deferralCount on retrieved-top
+  // entities, and bump the per-source difficulty counter.
+  if (rule.deferralCountInc && Array.isArray(retrievedEntityIds)) {
+    for (const id of retrievedEntityIds) {
+      const ent = STATE.entities.get(id);
+      if (!ent) continue;
+      ent.deferralCount = (ent.deferralCount || 0) + 1;
+    }
+  }
+  if (rule.sourceDifficultyKey && ev.sourceId) {
+    let sd = STATE.sourceDifficulty.get(ev.sourceId);
+    if (!sd) { sd = { fitDeferred: 0, missDeferred: 0, voidDeferred: 0 }; STATE.sourceDifficulty.set(ev.sourceId, sd); }
+    sd[rule.sourceDifficultyKey] = (sd[rule.sourceDifficultyKey] || 0) + 1;
+  }
+
+  // Mark the embedding region as poorly mapped (void-deferred case). The
+  // flag deprioritizes retrieval there but does not exclude future
+  // accumulation.
+  if (rule.markRegionUnreadable && eventVec) {
+    STATE.unreadableRegions.push({
+      centroid: new Int8Array(eventVec),
+      deprioritize: true,
+      ts: Date.now(),
+    });
+    // Cap the list — older entries stay but we don't grow unbounded.
+    if (STATE.unreadableRegions.length > 256) {
+      STATE.unreadableRegions.shift();
+    }
+  }
+
+  // Log NUL "priming-confirmation" for fit-committed events so the non-
+  // transformation is auditable in G next to the DEF/CON. Other cells
+  // either do their own marking (surprise, defer SIG) or are silent.
+  if (cell === 'fit-committed') {
+    try {
+      appendEvent({
+        op: 'NUL',
+        payload: {
+          kind: 'priming-confirmation',
+          targetEventId: ev.id,
+          primingFit: ev.primingFitCosine,
+          bestPrimedEntityId: ev.bestPrimedEntityId || null,
+          primedEntityIds: Array.isArray(retrievedEntityIds) ? [...retrievedEntityIds] : [],
+          outcomeCell: cell,
+        },
+        sourceId: ev.sourceId,
+        narrativePos: ev.narrativePos,
+        authoredBy: 'system',
+        spanText: ev.spanText || null,
+        intakeTs: Date.now(),
+      });
+    } catch (e) { /* non-fatal */ }
+  }
+}
+
+// Walk a sentence's just-classified events and apply the outcome-
+// dispatched fold to each. Called once per sentence after classification
+// + priming-fit determination + embedding.
+function applyOutcomeWeightedFold(sentenceEventIds, retrievedEntityIds) {
+  if (!Array.isArray(sentenceEventIds) || sentenceEventIds.length === 0) return;
+  for (const eid of sentenceEventIds) {
+    const ev = STATE.G.find(e => e.id === eid);
+    if (!ev) continue;
+    applyOutcomeWeightedFoldForEvent(ev, retrievedEntityIds || []);
+  }
+}
+
+// Periodic decay pass — keeps stale centroids and precisions from
+// dominating retrieval indefinitely. Runs every outcomeDecayEveryN
+// sentences (default 50).
+function maybeRunDecayPass() {
+  const n = STATE.outcomeDecayEveryN || 50;
+  const since = (STATE.globalSentencesProcessed || 0) - (STATE.lastDecayPassAt || 0);
+  if (since < n) return false;
+  STATE.lastDecayPassAt = STATE.globalSentencesProcessed || 0;
+  for (const ent of STATE.entities.values()) {
+    if (ent.precision != null) ent.precision = clampPrecision(ent.precision * 0.98);
+    if (ent.surpriseRate != null) ent.surpriseRate = clampPrecision(ent.surpriseRate * 0.95);
+  }
+  for (const entry of STATE.operatorCentroids.values()) {
+    entry.precision = clampPrecision(entry.precision * 0.98);
+  }
+  for (const entry of STATE.cellCentroids.values()) {
+    entry.precision = clampPrecision(entry.precision * 0.98);
+  }
+  return true;
+}
+
+// Re-run cached entity descriptions for entities that gained evidence in
+// the sentence just classified. Triggers: event count crossing a fixed
+// threshold (5, 15, 30, then every 30) OR top-cell-on-any-face change.
+async function maybeRefreshEntityDescriptions(sentenceEventIds) {
+  if (!isLLMReady()) return;
+  if (!Array.isArray(sentenceEventIds) || sentenceEventIds.length === 0) return;
+
+  // Collect entities touched by this sentence's events.
+  const touched = new Set();
+  for (const eid of sentenceEventIds) {
+    const ev = STATE.G.find(e => e.id === eid);
+    if (!ev) continue;
+    if (ev.op !== 'DEF' && ev.op !== 'CON') continue;
+    const p = ev.payload || {};
+    const ids = [p.subject, p.from, (p.valueIsEntity ? p.value : null), (p.toIsEntity ? p.to : null)].filter(Boolean);
+    for (const id of ids) touched.add(id);
+  }
+  if (touched.size === 0) return;
+
+  for (const entityId of touched) {
+    const entity = STATE.entities.get(entityId);
+    if (!entity) continue;
+    const priorCount = STATE.entityDescriptionEventCounts.get(entityId) || 0;
+    const currentCount = entityEventCount(entityId);
+    const crossed = crossedDescriptionThreshold(priorCount, currentCount);
+
+    let profileSigChanged = false;
+    let currentSig = '';
+    try {
+      const profile = computeRoleProfile(entityId);
+      currentSig = topCellSignature(profile);
+      const priorSig = STATE.entityDescriptionTopCells.get(entityId) || '';
+      profileSigChanged = (priorSig !== '' && currentSig !== '' && priorSig !== currentSig);
+    } catch (e) { /* profile unavailable */ }
+
+    // Skip if neither trigger fired AND we already have a cached description.
+    if (!crossed && !profileSigChanged && STATE.entityDescriptions.has(entityId)) continue;
+
+    try {
+      await regenerateEntityDescription(entity, { force: true });
+      STATE.entityDescriptionEventCounts.set(entityId, currentCount);
+      if (currentSig) STATE.entityDescriptionTopCells.set(entityId, currentSig);
+    } catch (e) { /* non-fatal */ }
+  }
+}
+
 // ─── LAYERED CONTEXT HELPERS (v25 spec) ───────────────────────────────
 // Four context layers pass into per-sentence classification, kept
 // separately addressable: HYPOTHESIS (frame), RUNNING SUMMARY (gist),
-// TEXTBASE (recent events, mechanical), PRIOR SENTENCE (verbatim).
+// TEXTBASE (recent events, mechanical, INTERNAL/UI ONLY), PRIOR SENTENCE.
+// The prompt assembler reads from hypothesisProse + runningSummary +
+// recentSentences (source-text). The textbase ring is for diagnostic
+// rendering only and never reaches an LLM-facing prompt.
 
 // Render an event into compact EO notation: OP(subj, predicate, value).
 // Mirrors propositionTextForEvent in terms of resolution but keeps the
@@ -6234,6 +7476,8 @@ function renderTextbaseRing() {
 function resetLayeredContextForIngest() {
   STATE.runningSummary = '';
   STATE.textbaseRing = [];
+  STATE.recentSentences = [];
+  STATE.hypothesisProse = '';
   STATE.priorSentenceText = '';
   STATE.lastSummaryUpdateAt = 0;
   STATE.lastSummaryEventIdx = STATE.G.length;
@@ -6241,8 +7485,8 @@ function resetLayeredContextForIngest() {
   STATE.lastSentenceEmbedding = null;
   STATE.lastClassifiedSentenceText = '';
   // Don't reset hypothesisHistory — that survives across ingests so the
-  // user can scrub the full evolution; it's already keyed by sourceId
-  // when entries are pushed.
+  // user can scrub the full evolution; it's keyed by sourceId.
+  // entityDescriptions also persist across ingests.
 }
 
 // Serialize a hypothesis to a compact text form for embedding. Used to
@@ -6286,41 +7530,40 @@ function recentEventCentroid(n = 30) {
 // The regeneration is a small LLM call. Anti-invention: every claim must
 // be supported by events between lastSummaryEventIdx and now.
 
-const SUMMARY_REGEN_SYSTEM = `You write a short reading summary that describes ONLY what's established by a list of events drawn from a document.
+const SUMMARY_REGEN_SYSTEM = `You write a short reading summary that describes ONLY what's established by sentences drawn from a document.
 
 ABSOLUTE RULES:
-- Use ONLY information present in the events and sentences provided. Do NOT invent details, names, or backstory.
-- If the prior summary contained details that are NOT supported by the events below, drop them.
+- Use ONLY information present in the working hypothesis, prior summary, and the verbatim sentences provided. Do NOT invent details, names, or backstory.
+- If the prior summary contained details that are NOT supported by the sentences below, drop them.
 - Maximum 4 sentences. Tighter is better. The summary is gist, not transcript.
-- Describe where we are in the read — situation, who's present, what just shifted — not analysis.
+- The first sentence should locate the read inside the document's frame (drawing on the working hypothesis); subsequent sentences describe what just happened.
 - Output ONLY the summary text. No preamble, no markdown, no quotes.`;
 
 async function regenerateRunningSummary(source, sentenceIdx, reason) {
   if (!isLLMReady()) return null;
-  // Collect events that landed since the last regeneration
-  const startIdx = STATE.lastSummaryEventIdx || 0;
-  const newEvents = STATE.G.slice(startIdx);
-  // Render those events in EO notation, capped to keep the prompt small
-  const eoLines = newEvents.slice(-40).map(eoNotationForEvent).filter(Boolean);
-  // Sentences since prior summary, verbatim
+  // Sentences since prior summary, verbatim — the only material the
+  // summary can be drawn from. EO-notation rendering is intentionally
+  // gone: the assembler accepts only source-text and pre-cached prose.
   const lastSentIdx = STATE.lastSummaryUpdateAt || 0;
-  const sentenceLines = (source.sentences || [])
+  const sentenceTexts = (source.sentences || [])
     .filter(s => s.idx > lastSentIdx && s.idx <= sentenceIdx)
     .slice(-12)
-    .map(s => `#${s.idx} ${s.text}`);
-  if (sentenceLines.length === 0 && eoLines.length === 0) return null;
+    .map(s => s.text);
+  if (sentenceTexts.length === 0) return null;
 
-  const userMsg = [
-    `Prior summary: ${STATE.runningSummary || '(none yet)'}`,
-    '',
-    `New events since prior summary (in EO notation):`,
-    eoLines.length ? '  ' + eoLines.join('\n  ') : '  (no new propositional events)',
-    '',
-    `Sentences since prior summary (verbatim):`,
-    sentenceLines.length ? sentenceLines.join('\n') : '(none)',
-    '',
-    `Write a 2-4 sentence summary of where we now are. Describe ONLY what's established by the events above. DO NOT invent details. If the prior summary contained details no longer supported, drop them.`,
-  ].join('\n');
+  const contentParts = [];
+  contentParts.push(`Prior summary: ${STATE.runningSummary || '(none yet)'}`);
+  contentParts.push('');
+  contentParts.push('Sentences since prior summary (verbatim):');
+  contentParts.push(sentenceTexts.join('\n'));
+
+  const userMsg = assemblePrompt({
+    systemInstructions: 'Regenerate the running summary so it covers what the sentences below establish, framed inside the working hypothesis. 2-4 sentences. Do not invent. Output the summary text only.',
+    hypothesisProse: STATE.hypothesisProse || '',
+    runningSummary: STATE.runningSummary || '',
+    recentSentences: STATE.recentSentences || [],
+    content: contentParts.join('\n'),
+  });
 
   STATE.llmCallsThisIngest++;
   let raw;
@@ -6544,18 +7787,19 @@ async function refreshHypothesis(source, sentenceIdx, reason, currentCosine, bas
   parsed.refreshReason = reason;
   parsed.refreshAtSentence = sentenceIdx;
 
-  // Push the old hypothesis to history (REC supersedes; it does not erase).
+  // Push the old hypothesis to this source's history (REC supersedes; it
+  // does not erase). hypothesisHistory is a Map<sourceId, [epochs]> — each
+  // source carries its own ordered list of supersession events.
   const old = source.hypothesis || null;
   if (old) {
-    // Find the previous activeFrom for this source
-    let activeFrom = 0;
-    for (let i = STATE.hypothesisHistory.length - 1; i >= 0; i--) {
-      if (STATE.hypothesisHistory[i].sourceId === source.id) {
-        activeFrom = STATE.hypothesisHistory[i].activeToSentenceIdx + 1;
-        break;
-      }
+    if (!STATE.hypothesisHistory.has(source.id)) {
+      STATE.hypothesisHistory.set(source.id, []);
     }
-    STATE.hypothesisHistory.push({
+    const epochs = STATE.hypothesisHistory.get(source.id);
+    const activeFrom = epochs.length > 0
+      ? (epochs[epochs.length - 1].activeToSentenceIdx + 1)
+      : 0;
+    epochs.push({
       hypothesis: old,
       sourceId: source.id,
       activeFromSentenceIdx: activeFrom,
@@ -6567,6 +7811,16 @@ async function refreshHypothesis(source, sentenceIdx, reason, currentCosine, bas
     });
   }
   source.hypothesis = parsed;
+
+  // Regenerate the plain-language prose layer the assembler uses for the
+  // # Working Hypothesis section. Single-output, cached, runs only on
+  // hypothesis change.
+  try { await regenerateHypothesisProse(parsed); } catch (e) { /* non-fatal */ }
+
+  // Re-read pending comprehension SIGs — the document state has just
+  // shifted (REC supersedes), so previously deferred classifications may
+  // now resolve under the new frame.
+  try { await rereadPendingComprehensionSigs(source); } catch (e) { /* non-fatal */ }
 
   // Recompute hypothesis embedding + reset baseline
   const text = serializeHypothesisForEmbed(parsed);
@@ -6604,6 +7858,31 @@ async function refreshHypothesis(source, sentenceIdx, reason, currentCosine, bas
 
 // Embedding-divergence monitor — fires every divergenceCheckEveryN events.
 // Returns a reason string when refresh should fire, or null.
+// Compute the hypothesis's running precision as the mean of its
+// principals' precisions. A freshly-promoted hypothesis with sparse
+// evidence has low precision; a well-confirmed one tracks high.
+function computeHypothesisPrecision(source) {
+  if (!source || !source.hypothesis) return 0;
+  const principals = source.hypothesis.principals || [];
+  if (principals.length === 0) return 0;
+  let sum = 0, n = 0;
+  for (const p of principals) {
+    // The hypothesis lists names; preminted entities live in STATE.entities
+    // by id. Match by canonical name as a fallback when no id is stored.
+    let entity = null;
+    if (p.entityId) entity = STATE.entities.get(p.entityId);
+    if (!entity && p.name) {
+      for (const ent of STATE.entities.values()) {
+        if (ent.canonical === p.name) { entity = ent; break; }
+      }
+    }
+    if (!entity) continue;
+    sum += clampPrecision(entity.precision || 0);
+    n++;
+  }
+  return n > 0 ? sum / n : 0;
+}
+
 function checkHypothesisDivergence(source) {
   if (!source || !source.hypothesis) return null;
   const since = STATE.G.length - (STATE.lastDivergenceCheckEventIdx || 0);
@@ -6621,11 +7900,20 @@ function checkHypothesisDivergence(source) {
     STATE.hypothesisBaselineCosine = cur;
     return null;
   }
-  const delta = (STATE.hypothesisDivergenceDelta != null) ? STATE.hypothesisDivergenceDelta : 0.15;
+  // Precision-modulated REC threshold: a low-precision hypothesis is
+  // easy to revise (smaller drop fires REC); a high-precision hypothesis
+  // resists superficial drift (larger drop required).
+  //   threshold = baseDelta * (0.5 + precision)
+  // precision 0 → 0.5×base, precision 1 → 1.5×base.
+  const base = STATE.recBaseDelta != null ? STATE.recBaseDelta
+             : (STATE.hypothesisDivergenceDelta != null ? STATE.hypothesisDivergenceDelta : 0.15);
+  const precision = computeHypothesisPrecision(source);
+  source.hypothesis.precision = precision;
+  const delta = base * (0.5 + precision);
   if (cur < STATE.hypothesisBaselineCosine - delta) {
-    return { reason: 'divergence', currentCosine: cur, baseline: STATE.hypothesisBaselineCosine };
+    return { reason: 'divergence', currentCosine: cur, baseline: STATE.hypothesisBaselineCosine, threshold: delta, precision };
   }
-  return { reason: null, currentCosine: cur, baseline: STATE.hypothesisBaselineCosine };
+  return { reason: null, currentCosine: cur, baseline: STATE.hypothesisBaselineCosine, threshold: delta, precision };
 }
 
 // Lazily embed the current hypothesis if it isn't cached yet — used by
@@ -6894,6 +8182,28 @@ function dequantizeInt8(v) {
   const out = new Float32Array(v.length);
   for (let i = 0; i < v.length; i++) out[i] = v[i] / QUANT_SCALE;
   return out;
+}
+
+// Linear interpolation of an Int8Array centroid toward a new vector by
+// a small alpha. Used by the outcome-dispatched fold to do incremental
+// precision-weighted updates: high-fit confirmations move centroids
+// only slightly (small alpha), miss/refine events move them more
+// (larger alpha), defer events do not call this at all.
+function lerpCentroidInt8(centroid, newVec, alpha) {
+  if (!newVec) return centroid;
+  if (!centroid) {
+    // First evidence — adopt the new vector as the centroid.
+    return new Int8Array(newVec);
+  }
+  if (centroid.length !== newVec.length) return centroid;
+  const a = Math.max(0, Math.min(1, alpha));
+  const f = new Float32Array(centroid.length);
+  for (let i = 0; i < centroid.length; i++) {
+    const c = centroid[i] / QUANT_SCALE;
+    const n = newVec[i] / QUANT_SCALE;
+    f[i] = (1 - a) * c + a * n;
+  }
+  return quantizeFloat32(f);
 }
 
 // Cosine similarity for two Int8Array unit vectors. Computes dot
@@ -7266,10 +8576,16 @@ function entityRoleCounts(entityId, position /* 'subject' | 'target' */) {
     if (!matches) continue;
     const faces = eventFaces(ev);
     if (!faces) continue;
-    if (faces.operator) actCounts[faces.operator] = (actCounts[faces.operator] || 0) + 1;
-    if (faces.site) siteCounts[faces.site] = (siteCounts[faces.site] || 0) + 1;
-    if (faces.resolution) resolutionCounts[faces.resolution] = (resolutionCounts[faces.resolution] || 0) + 1;
-    total++;
+    // Per-event role weight: stamped by the outcome-dispatched fold
+    // (1.0 for committed, 0.5 for fit-provisional, 0.25 for miss-
+    // provisional, 0 for any deferred row). Defaults to 1.0 for events
+    // that pre-date the fold layer or were authored outside it.
+    const w = (typeof ev.roleWeight === 'number') ? ev.roleWeight : 1.0;
+    if (w <= 0) continue;
+    if (faces.operator) actCounts[faces.operator] = (actCounts[faces.operator] || 0) + w;
+    if (faces.site) siteCounts[faces.site] = (siteCounts[faces.site] || 0) + w;
+    if (faces.resolution) resolutionCounts[faces.resolution] = (resolutionCounts[faces.resolution] || 0) + w;
+    total += w;
   }
   return { actCounts, siteCounts, resolutionCounts, total };
 }
@@ -7540,10 +8856,13 @@ function snapshotTrajectoriesForSentence(source, sentenceIdx, sentenceEventIds) 
     // Role profile (the structural reading)
     const profile = computeRoleProfile(entityId);
 
-    // Gestalt centroid (the semantic reading) — only if embeddings exist
-    const gestalt = computeEntityGestalt(entityId);
-    if (gestalt) ent._centroid = gestalt.centroid;
-    const neighbors = gestalt ? topKNeighborsForGestalt(entityId, gestalt.centroid) : [];
+    // Centroid is now maintained incrementally by the outcome-dispatched
+    // fold (precision-weighted lerp). We no longer recompute as a flat
+    // mean — the fold's per-event update rule is what keeps the centroid
+    // current. We still want neighbor diagnostics, so just read the
+    // current centroid for that.
+    const neighbors = ent._centroid ? topKNeighborsForGestalt(entityId, ent._centroid) : [];
+    const gestaltCount = ent._centroid ? 1 : 0;  // legacy field retained for export shape
 
     if (!ent.roleTrajectory) ent.roleTrajectory = [];
     ent.roleTrajectory.push({
@@ -7559,7 +8878,10 @@ function snapshotTrajectoriesForSentence(source, sentenceIdx, sentenceEventIds) 
       targetAct: topProfileCells(profile.targetAct, OPERATOR_NAMES, 3),
       targetSite: topProfileCells(profile.targetSite, SITE_NAMES, 3),
       targetResolution: topProfileCells(profile.targetResolution, RESOLUTION_NAMES, 3),
-      gestaltCount: gestalt?.count || 0,
+      gestaltCount,
+      precision: clampPrecision(ent.precision || 0),
+      surpriseRate: clampPrecision(ent.surpriseRate || 0),
+      deferralCount: ent.deferralCount || 0,
       topK: neighbors.map(n => ({ id: n.entityId, sim: Math.round(n.sim * 1000) / 1000 })),
     });
   }
@@ -8140,6 +9462,10 @@ async function ingestSource(text, opts = {}) {
           const f = await embedText(serializeHypothesisForEmbed(hyp));
           if (f) STATE.hypothesisEmbedding = quantizeFloat32(f);
         } catch (e) { /* embedder may not be ready yet — divergence monitor lazily catches up */ }
+        // Generate the plain-language prose layer that the assembler uses
+        // for the # Working Hypothesis section. Cached on STATE; refreshes
+        // run only when the hypothesis itself changes.
+        try { await regenerateHypothesisProse(hyp); } catch (e) { /* non-fatal */ }
         // NOTE: minimal hypothesis has NO principals — so we deliberately
         // skip preMintHypothesisPrincipals and emitHypothesisDEFs. The
         // grounded hypothesis (with principals) is produced later by REC.
@@ -8228,6 +9554,20 @@ async function ingestSource(text, opts = {}) {
       return ent && !allMentioned.find(m => m.id === ent.id);
     }).map(eid => STATE.entities.get(eid)).filter(Boolean);
 
+    // ── SEMANTIC TARGETING (Edit A) ──
+    // Embed the candidate sentence and pull source-text from entities
+    // anywhere in the document whose centroids cluster near it. The picks
+    // are stored on STATE so the assembler-using prompt builders can read
+    // them without API plumbing; cleared at the end of this iteration.
+    try {
+      const picked = await pickSemanticContextForSentence(clause);
+      STATE.semanticSentences = picked.sentences;
+      STATE.topSemanticEntityIds = picked.entityIds;
+    } catch (e) {
+      STATE.semanticSentences = [];
+      STATE.topSemanticEntityIds = [];
+    }
+
     let llmResult;
     if (!opts.rawMode && isLLMReady() && isProseClause(clause)) {
       STATE.clausesProcessed++;
@@ -8253,6 +9593,11 @@ async function ingestSource(text, opts = {}) {
     // Validate and fold the proposed events
     const sentenceEventIds = await foldEvents(llmResult.events || [], clause, source, i, isChromeSuspect);
     source.eventIds.push(...sentenceEventIds);
+
+    // ── DEPENDENCY-CHAIN CHECK (Edit D, mechanical) ──
+    // Flag higher-op events whose entities have no prior INS. Pure
+    // structural observation — no LLM call, no automatic rejection.
+    applyDependencyFlags(sentenceEventIds);
 
     // ── INLINE PHASEPOST CLASSIFICATION + EMBEDDING ──
     // Each propositional event the extractor produced gets its phasepost
@@ -8331,6 +9676,58 @@ async function ingestSource(text, opts = {}) {
       STATE.lastSentenceEmbedding = curSentenceEmbedding;
       STATE.lastClassifiedSentenceText = clause;
       STATE.globalSentencesProcessed = (STATE.globalSentencesProcessed || 0) + 1;
+
+      // Append the verbatim sentence to the assembler's recent-sentences
+      // ring. This is the source-text layer the assembler reads — the
+      // textbase ring (event-based, EO notation) is intentionally NOT
+      // surfaced to LLM-facing prompts.
+      appendToRecentSentences(clause);
+
+      // ── PERIODIC RE-READ OF PENDING SIGS ──
+      // Every 30 sentences, revisit comprehension SIGs that may now
+      // resolve given fuller context. SIGs that have been retried 3
+      // times stay as honest "permanently-unresolved" markers.
+      if ((STATE.globalSentencesProcessed % 30) === 0) {
+        try {
+          const r = await rereadPendingComprehensionSigs(source);
+          if (r.resolved > 0 && progressEl) {
+            progressEl.innerHTML = `re-read: ${r.resolved} SIG${r.resolved === 1 ? '' : 's'} resolved (of ${r.retried} retried)`;
+          }
+        } catch (e) { /* non-fatal */ }
+      }
+
+      // ── ENTITY DESCRIPTION REGENERATION (Edit B) ──
+      // For entities that gained evidence in this sentence, refresh the
+      // cached one-sentence description if a trigger fired. Cached state;
+      // the LLM call only runs when inputs actually changed.
+      try {
+        await maybeRefreshEntityDescriptions(sentenceEventIds);
+      } catch (e) { /* non-fatal */ }
+
+      // ── PRIMING FIT + OUTCOME-DISPATCHED FOLD ──
+      // Two mechanical passes:
+      //   1. Determine each event's primingState (fit / miss / void) by
+      //      comparing its embedding against the centroids of the entities
+      //      retrieval picked at the top of the iteration.
+      //   2. Apply the 3×3 outcome-dispatched fold: each event's
+      //      <priming, commit> cell selects an update rule for the
+      //      classified entity centroid + precision, the operator centroid,
+      //      the cell centroid, role-profile weight, and (for fit-committed)
+      //      a NUL "priming-confirmation" log.
+      try {
+        applyPrimingFit(sentenceEventIds, STATE.topSemanticEntityIds || []);
+        applyOutcomeWeightedFold(sentenceEventIds, STATE.topSemanticEntityIds || []);
+      } catch (e) { /* non-fatal */ }
+
+      // Clear per-iteration semantic context. The next sentence will
+      // recompute these at the top of its iteration.
+      STATE.semanticSentences = [];
+      STATE.topSemanticEntityIds = [];
+
+      // Periodic decay pass. Stale precisions and surprise rates fade so
+      // entities not mentioned for many sentences become less confidently
+      // positioned in retrieval.
+      try { maybeRunDecayPass(); } catch (e) { /* non-fatal */ }
 
       // ── HYPOTHESIS REC TRIGGERS ──
       // First-promotion: at sentence (default) 30, unconditionally
@@ -11668,7 +13065,8 @@ function renderSourcesView() {
         const allEpochs = [];
         const totalSentences = Math.max(1, src.sentences.length);
         // Reconstruct epochs for THIS source from history + current.
-        const histForSrc = (STATE.hypothesisHistory || []).filter(h => h.sourceId === src.id);
+        // hypothesisHistory is now Map<sourceId, [epochs]>; lookup is direct.
+        const histForSrc = STATE.hypothesisHistory.get(src.id) || [];
         for (const h of histForSrc) {
           allEpochs.push({
             from: h.activeFromSentenceIdx,
@@ -12169,11 +13567,18 @@ function renderInspectView() {
       <tr><td>divergence check every N events</td><td style="font-family:'IBM Plex Mono',monospace;">${STATE.divergenceCheckEveryN || 5}</td></tr>
     </tbody></table>`;
 
-    if ((STATE.hypothesisHistory || []).length > 0) {
+    // hypothesisHistory: Map<sourceId, [epochs]>. Walk all sources, all
+    // epochs, render the union sorted by ts.
+    const allEpochs = [];
+    for (const [, epochs] of STATE.hypothesisHistory) {
+      for (const h of epochs) allEpochs.push(h);
+    }
+    allEpochs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    if (allEpochs.length > 0) {
       html += `<div style="margin-top:10px;">
         <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:6px;">historical hypotheses (REC supersedes; nothing erased)</div>
         <table class="inspect-table"><thead><tr><th>source</th><th>active span</th><th>reason</th><th>cosine→baseline</th><th>summary</th></tr></thead><tbody>`;
-      for (const h of STATE.hypothesisHistory) {
+      for (const h of allEpochs) {
         const srcName = STATE.sources.get(h.sourceId)?.name || h.sourceId;
         const cosLine = h.cosineAtTrigger != null && h.baseline != null
           ? `${h.cosineAtTrigger.toFixed(3)} → ${h.baseline.toFixed(3)}`
@@ -12197,6 +13602,107 @@ function renderInspectView() {
         <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:4px;">current running summary (last regenerated at sentence ${(STATE.lastSummaryUpdateAt || 0) + 1})</div>
         <div style="font-family:'Newsreader',serif;font-style:italic;font-size:13px;background:var(--paper-soft);padding:10px 12px;border:1px solid var(--rule);">${escapeHtml(STATE.runningSummary)}</div>
       </div>`;
+    }
+
+    // ── COMPREHENSION MONITOR ──
+    // Counts of pending / resolved / permanently-unresolved SIG markers
+    // landed by the classifier when it could not commit. Gives the user
+    // a comprehension-difficulty profile of the document.
+    {
+      const counts = {
+        pendingByReason: { 'unresolved-reference': 0, 'unfamiliar-vocabulary': 0, 'figurative-or-ambiguous': 0, 'insufficient-context': 0, 'low-confidence': 0 },
+        resolved: 0,
+        permanent: 0,
+        total: 0,
+      };
+      for (const ev of STATE.G) {
+        if (!ev || ev.op !== 'SIG') continue;
+        const sp = ev.payload || {};
+        if (sp.kind !== 'comprehension') continue;
+        counts.total++;
+        if (sp.permanentlyUnresolved) counts.permanent++;
+        else if (!sp.awaitingResolution) counts.resolved++;
+        else {
+          const key = sp.deferReason || 'low-confidence';
+          if (counts.pendingByReason[key] != null) counts.pendingByReason[key]++;
+        }
+      }
+      html += `<div style="margin-top:14px;">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:6px;">comprehension monitor — sentences the system did not commit on</div>`;
+      if (counts.total === 0) {
+        html += `<div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-faint);">no comprehension SIGs yet — every classification committed.</div>`;
+      } else {
+        const pendRows = Object.entries(counts.pendingByReason)
+          .filter(([, v]) => v > 0)
+          .map(([k, v]) => `<tr><td style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);">pending · ${escapeHtml(k)}</td><td style="font-family:'IBM Plex Mono',monospace;font-size:11px;">${v}</td></tr>`)
+          .join('');
+        html += `<table class="inspect-table"><tbody>
+          ${pendRows || `<tr><td style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);">pending</td><td style="font-family:'IBM Plex Mono',monospace;font-size:11px;">0</td></tr>`}
+          <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);">resolved on re-read</td><td style="font-family:'IBM Plex Mono',monospace;font-size:11px;">${counts.resolved}</td></tr>
+          <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);">permanently unresolved</td><td style="font-family:'IBM Plex Mono',monospace;font-size:11px;">${counts.permanent}</td></tr>
+          <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);">total comprehension SIGs</td><td style="font-family:'IBM Plex Mono',monospace;font-size:11px;">${counts.total}</td></tr>
+        </tbody></table>`;
+      }
+      html += `</div>`;
+    }
+
+    // ── OUTCOME DISTRIBUTION (3×3 fold) ──
+    // Each propositional event lands in one of nine cells determined by
+    // <priming, commit>. The grid is the system's running account of
+    // where reading is efficient (fit-committed), where the model is
+    // refining (miss-committed), where structure is growing (void-
+    // committed), and where comprehension is stalling (any deferred row).
+    {
+      const cells = [
+        ['fit-committed', 'fit-provisional', 'fit-deferred'],
+        ['miss-committed', 'miss-provisional', 'miss-deferred'],
+        ['void-committed', 'void-provisional', 'void-deferred'],
+      ];
+      const counts = {};
+      for (const row of cells) for (const c of row) counts[c] = 0;
+      let total = 0;
+      for (const ev of STATE.G) {
+        if (!ev || !ev.outcomeCell) continue;
+        if (counts[ev.outcomeCell] != null) {
+          counts[ev.outcomeCell]++;
+          total++;
+        }
+      }
+      html += `<div style="margin-top:14px;">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:6px;">outcome distribution — 3×3 precision-weighted fold</div>`;
+      if (total === 0) {
+        html += `<div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-faint);">no events with outcome cells yet — fold runs as classification lands.</div>`;
+      } else {
+        const cellTip = c => {
+          switch (c) {
+            case 'fit-committed':   return 'efficient reading — priming caught it, classifier committed';
+            case 'fit-provisional': return 'partial confirm — priming caught it, low confidence';
+            case 'fit-deferred':    return 'opaque despite good context — sentence itself is hard';
+            case 'miss-committed':  return 'refining the model — priming missed, classifier committed (centroid shifts)';
+            case 'miss-provisional':return 'tentative refinement — priming missed, low confidence';
+            case 'miss-deferred':   return 'deepest signal of poor regional mapping';
+            case 'void-committed':  return 'structural growth — new entity / new region of the graph';
+            case 'void-provisional':return 'tentative new structure';
+            case 'void-deferred':   return 'unreadable region — graph couldn\'t even prime';
+          }
+          return '';
+        };
+        html += `<table class="inspect-table" style="max-width:520px;"><thead><tr><th></th><th>committed</th><th>provisional</th><th>deferred</th></tr></thead><tbody>`;
+        for (const row of cells) {
+          const head = row[0].split('-')[0];
+          html += `<tr><td style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.06em;">${head}</td>`;
+          for (const c of row) {
+            const n = counts[c];
+            const intensity = total > 0 ? Math.min(1, n / Math.max(1, total / 4)) : 0;
+            const bg = n > 0 ? `background:rgba(74,124,89,${0.08 + 0.18 * intensity});` : '';
+            html += `<td style="font-family:'IBM Plex Mono',monospace;font-size:11px;${bg}" title="${escapeHtml(cellTip(c))}">${n}</td>`;
+          }
+          html += `</tr>`;
+        }
+        html += `</tbody></table>`;
+        html += `<div style="margin-top:6px;font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-faint);">${total} events with outcome cells · centroid + precision updates dispatched per cell</div>`;
+      }
+      html += `</div>`;
     }
   }
   html += `</div>`;
@@ -12290,11 +13796,19 @@ function renderPromptsContextPanels() {
     gistHtml += `<div class="panel-sub-label">running summary</div>`;
     gistHtml += `<div class="gist-summary">${escapeHtml(STATE.runningSummary.trim())}</div>`;
   }
-  const history = STATE.hypothesisHistory || [];
-  if (history.length > 1) {
-    const priorCount = history.length - 1;
+  // Pull this source's history from the per-source Map. Fall back to a
+  // flattened union when no source is selected (rare).
+  const historyForLatest = latestSource
+    ? (STATE.hypothesisHistory.get(latestSource.id) || [])
+    : (() => {
+        const all = [];
+        for (const [, eps] of STATE.hypothesisHistory) all.push(...eps);
+        return all.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      })();
+  if (historyForLatest.length > 0) {
+    const priorCount = historyForLatest.length;
     gistHtml += `<div class="panel-sub-label">${priorCount} prior revision${priorCount === 1 ? '' : 's'}</div>`;
-    const recent = history.slice(0, -1).slice(-3).reverse();
+    const recent = historyForLatest.slice(-3).reverse();
     for (const h of recent) {
       const fromIdx = h.activeFromSentenceIdx;
       const toIdx = h.activeToSentenceIdx;
@@ -13706,9 +15220,37 @@ function logRowHtml(ev, offsets, opColor) {
   const predicate = comp.predicate ? escapeHtml(comp.predicate) : empty;
   const value = comp.value ? escapeHtml(comp.value) : empty;
   const flashCls = LOG_RENDER.flashIds.has(ev.id) ? ' flash' : '';
+
+  // Marker pills: priming miss (event embedding diverged from the
+  // entities the retrieval primed), dependency-chain warning, comprehension
+  // SIG. NUL "priming-confirmation" events are not marked — they ARE the
+  // marker: a non-transformation logged because the priming caught it.
+  const markers = [];
+  if (ev.primingMiss) {
+    const fit = typeof ev.primingFit === 'number' ? ev.primingFit.toFixed(2) : '—';
+    const tip = `priming miss — event embedding diverged from retrieved entity centroids (cosine ${fit})`;
+    markers.push(`<span title="${escapeHtml(tip)}" style="display:inline-block;margin-left:4px;padding:0 4px;border:1px solid var(--gap, #b07a3a);color:var(--gap, #b07a3a);font-size:9px;font-family:'IBM Plex Mono',monospace;letter-spacing:0.04em;">miss</span>`);
+  }
+  if (ev.dependencyFlag === 'missing-prerequisites') {
+    markers.push(`<span title="entity has prior events but no INS — possible dependency violation" style="display:inline-block;margin-left:4px;padding:0 4px;border:1px solid #b04a4a;color:#b04a4a;font-size:9px;font-family:'IBM Plex Mono',monospace;letter-spacing:0.04em;">⚑ deps</span>`);
+  } else if (ev.dependencyFlag === 'introduces-with-higher-op') {
+    markers.push(`<span title="entity has no prior events; this higher-op event is doing introduction work too" style="display:inline-block;margin-left:4px;padding:0 4px;border:1px solid var(--ink-faint);color:var(--ink-faint);font-size:9px;font-family:'IBM Plex Mono',monospace;letter-spacing:0.04em;">no-INS</span>`);
+  }
+  if (ev.op === 'SIG' && ev.payload && ev.payload.kind === 'comprehension') {
+    const sp = ev.payload;
+    const reason = sp.permanentlyUnresolved ? 'permanently unresolved'
+      : sp.awaitingResolution ? `pending · ${sp.deferReason || 'low-confidence'}`
+      : `resolved · ${sp.resolvedCell || 'classified'}`;
+    const color = sp.permanentlyUnresolved ? '#7a3a3a'
+      : sp.awaitingResolution ? 'var(--gap, #b07a3a)'
+      : 'var(--confirm, #4a7c59)';
+    markers.push(`<span title="${escapeHtml(reason)}" style="display:inline-block;margin-left:4px;padding:0 4px;border:1px solid ${color};color:${color};font-size:9px;font-family:'IBM Plex Mono',monospace;letter-spacing:0.04em;">comp</span>`);
+  }
+  const markerHtml = markers.join('');
+
   return `<tr class="log-row${flashCls}" data-event-id="${escapeHtml(ev.id)}">
     <td class="col-span">${spanLabel}</td>
-    <td class="col-op" style="color:${c};">${escapeHtml(ev.op)}</td>
+    <td class="col-op" style="color:${c};">${escapeHtml(ev.op)}${markerHtml}</td>
     <td class="col-subject">${subject}</td>
     <td class="col-pred">${predicate}</td>
     <td class="col-value">${value}</td>
@@ -14283,7 +15825,13 @@ document.getElementById('export-btn').addEventListener('click', () => {
     // gist; the per-sentence summaryAtSentence fields already live on
     // sources[].sentences[] so scrubbing the source view in a fresh
     // session reproduces the original moment-by-moment view.
-    hypothesisHistory: STATE.hypothesisHistory || [],
+    // hypothesisHistory is per-source (Map<sourceId, [epochs]>); export
+    // as an object keyed by sourceId to mirror finalHypothesis's shape.
+    hypothesisHistory: (() => {
+      const out = {};
+      for (const [sid, epochs] of STATE.hypothesisHistory) out[sid] = epochs;
+      return out;
+    })(),
     finalHypothesis: (() => {
       const out = {};
       for (const [id, src] of STATE.sources) {
