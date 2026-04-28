@@ -5633,9 +5633,11 @@ async function callWebLLM(systemPrompt, userMsg, maxTokens = 800, opts = null) {
   const temperature = opts?.temperature ?? 0.2;
   const top_p       = opts?.top_p ?? 1.0;
   const stop        = opts?.stop !== undefined ? opts.stop : COMMENTARY_STOP_SEQUENCES;
+  const fewShot     = Array.isArray(opts?.fewShot) ? opts.fewShot : [];
   const req = {
     messages: [
       { role: 'system', content: systemPrompt },
+      ...fewShot,
       { role: 'user', content: userMsg },
     ],
     max_tokens: maxTokens,
@@ -5657,6 +5659,7 @@ async function callOllama(systemPrompt, userMsg, maxTokens = 800, opts = null) {
   const stop = opts?.stop !== undefined ? (opts.stop || []) : COMMENTARY_STOP_SEQUENCES;
   const ollamaOpts = { num_predict: maxTokens, temperature, stop };
   if (opts?.top_p != null) ollamaOpts.top_p = opts.top_p;
+  const fewShot = Array.isArray(opts?.fewShot) ? opts.fewShot : [];
   const res = await fetch(`${url}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -5664,6 +5667,7 @@ async function callOllama(systemPrompt, userMsg, maxTokens = 800, opts = null) {
       model: STATE.ollamaModel || 'llama3.2',
       messages: [
         { role: 'system', content: systemPrompt },
+        ...fewShot,
         { role: 'user', content: userMsg },
       ],
       stream: false,
@@ -5694,10 +5698,12 @@ async function testOllamaConnection() {
 // ─── LM Studio backend (OpenAI-compatible) ───────────────────────────
 async function callLMStudio(systemPrompt, userMsg, maxTokens = 800, opts = null) {
   const url = (STATE.lmstudioUrl || 'http://localhost:1234').replace(/\/$/, '');
+  const fewShot = Array.isArray(opts?.fewShot) ? opts.fewShot : [];
   const body = {
     model: STATE.lmstudioModel || 'auto',
     messages: [
       { role: 'system', content: systemPrompt },
+      ...fewShot,
       { role: 'user', content: userMsg },
     ],
     max_tokens: maxTokens,
@@ -5843,17 +5849,6 @@ COREFERENCE: prefer existing entities. The user message lists matched entities a
 
 AUTHORSHIP IS NOT PARTICIPATION: bylines, photo credits, news organizations publishing the piece are ABOUT the document, not IN its events. Even when an author appears briefly in their own reporting ("I asked the colonel"), they are documentary frame — emit SIG if their name is genuinely in the clause, but don't generate DEFs about them as if they were a story participant.
 
-WORKED EXAMPLE
-Clause: "Annie Karni is a congressional correspondent for The Times."
-Entities: Annie Karni; The Times
-Output:
-{"events":[
-  {"op":"SIG","entityRef":"Annie Karni","surface":"Annie Karni"},
-  {"op":"SIG","entityRef":"The Times","surface":"The Times"},
-  {"op":"DEF","subject":"Annie Karni","predicate":"serve-as","value":"congressional correspondent","valueIsEntity":false},
-  {"op":"DEF","subject":"Annie Karni","predicate":"work-for","value":"The Times","valueIsEntity":true}
-],"unresolved":[],"needs":[]}
-
 UNRESOLVED vs NEEDS — these are different fields:
 - "unresolved": pronouns or descriptions you genuinely cannot resolve (e.g., "he", "the official"). Plain text strings only.
 - "needs": requests for graph context to unblock a specific resolution. Format MUST start with one of: "integral:", "edges:", "history:". The system fulfills these and re-calls you.
@@ -5881,6 +5876,22 @@ DO NOT include:
   - Schema placeholders like "<canonical>" or "<text>" — substitute real values
 
 The first character of your output must be \`{\`. The last character must be \`}\`. Between them, valid JSON. After the closing \`}\`, your output ends.`;
+
+// Few-shot example for the per-clause extractor. Lives outside the system
+// prompt so the chat template wraps it as a prior user/assistant turn —
+// small local models then read it as past conversation rather than as
+// instructions to copy. Embedding the same example inline in the system
+// prompt caused models to echo "Annie Karni" / "The Times" into real outputs.
+const PER_CLAUSE_FEW_SHOT = [
+  {
+    role: 'user',
+    content: 'Clause: "Annie Karni is a congressional correspondent for The Times."\nEntities: Annie Karni; The Times',
+  },
+  {
+    role: 'assistant',
+    content: '{"events":[{"op":"SIG","entityRef":"Annie Karni","surface":"Annie Karni"},{"op":"SIG","entityRef":"The Times","surface":"The Times"},{"op":"DEF","subject":"Annie Karni","predicate":"serve-as","value":"congressional correspondent","valueIsEntity":false},{"op":"DEF","subject":"Annie Karni","predicate":"work-for","value":"The Times","valueIsEntity":true}],"unresolved":[],"needs":[]}',
+  },
+];
 
 // Build a compact view of the existing predicate vocabulary for the prompt.
 // Returns top 40 predicates by use count, with example subjects.
@@ -5995,10 +6006,19 @@ async function llmProcessClause(clauseText, mentionedEntities, salienceWindow, a
   }
   const content = contentParts.join('\n');
 
+  // Fulfilled "needs:" requests anchor the call as warm even when graph
+  // priors haven't accumulated yet — pass them through hypothesisExtras
+  // so assemblePrompt's cold-start detector sees real prior content and
+  // the model gets the integral/delta context it asked for.
+  const extrasFromGraph = collectTopEntityDescriptions();
+  const extrasFromContext = additionalContext.length > 0
+    ? [`Prior context fulfilled for this call: ${additionalContext.map(c => c.request).join('; ')}`]
+    : [];
+
   const userMsg = assemblePrompt({
-    systemInstructions: 'Extract structured events (SIG / CON / DEF) from the clause under "To Process". Output a single JSON object as described in the system prompt — no preamble, no markdown fences.',
+    systemInstructions: 'Extract structured events (SIG / CON / DEF) from the clause under "To Process" (or "Input" on a cold call). Output a single JSON object as described in the system prompt — no preamble, no markdown fences.',
     hypothesisProse: STATE.hypothesisProse || '',
-    hypothesisExtras: collectTopEntityDescriptions(),
+    hypothesisExtras: [...extrasFromGraph, ...extrasFromContext],
     runningSummary: STATE.runningSummary || '',
     recentSentences: STATE.recentSentences || [],
     semanticSentences: STATE.semanticSentences || [],
@@ -6006,7 +6026,7 @@ async function llmProcessClause(clauseText, mentionedEntities, salienceWindow, a
   });
 
   STATE.llmCallsThisIngest++;
-  const raw = await callLLM(PER_CLAUSE_SYSTEM, userMsg, 500, 'per-clause');
+  const raw = await callLLM(PER_CLAUSE_SYSTEM, userMsg, 500, 'per-clause', { fewShot: PER_CLAUSE_FEW_SHOT });
 
   // ── Repetition-loop detection ──
   // Small models can get stuck emitting the same short token sequence over
@@ -6077,6 +6097,93 @@ async function llmProcessClause(clauseText, mentionedEntities, salienceWindow, a
     return true;
   });
   if (droppedCount > 0) console.log(`Dropped ${droppedCount} garbage events from LLM output`);
+
+  // 1.5. SIG-downgrade rule: drop DEF/CON events whose entity participants
+  //      and non-entity values can't be anchored to literal spanText. The
+  //      principle is "don't assert what isn't in the text" — under-claim
+  //      rather than confabulate. Predicates are exempt because they're
+  //      normalized vocabulary, not extracted surface forms ("serve-as"
+  //      derives from "is a", "married-to" from "the wife of").
+  //
+  //      Two anchor sources:
+  //        (a) Same-response SIG: a SIG event whose `surface` appears in
+  //            clauseText. The SIG's entityRef anchors any DEF/CON
+  //            reference to that entityRef. This is the path that lets
+  //            coref resolution survive: clause says "his lady", model
+  //            emits SIG with surface="his lady", entityRef="Mrs. Bennet";
+  //            DEF subject="Mrs. Bennet" anchors via the SIG.
+  //        (b) Direct substring: the ref/value itself appears in clauseText.
+  //
+  //      Non-entity values also accept token-AND: every token of length > 3
+  //      in the value must appear in the clause (any order). Catches
+  //      "congressional correspondent" / "correspondent at The Times"
+  //      where the value paraphrases but every content word is grounded.
+  //
+  //      Unanchored DEFs and CONs are dropped, not converted. The model
+  //      almost always emits SIGs alongside its DEFs/CONs, so the
+  //      anchorable participants already have SIG records — dropping
+  //      the assertion preserves the entity trace through those SIGs.
+  const clauseLower = String(clauseText || '').toLowerCase();
+  const directInClause = (s) => {
+    if (typeof s !== 'string') return false;
+    const t = s.trim().toLowerCase();
+    if (!t) return false;
+    return clauseLower.includes(t);
+  };
+  const tokenAndInClause = (s) => {
+    if (typeof s !== 'string') return false;
+    const tokens = s.toLowerCase().split(/\s+/).filter(t => t.length > 3);
+    if (tokens.length === 0) return directInClause(s);
+    return tokens.every(t => clauseLower.includes(t));
+  };
+  const valueAnchored = (s) => directInClause(s) || tokenAndInClause(s);
+
+  // First pass: filter SIGs whose surface isn't in clauseText. SIGs
+  // without an anchored surface are themselves hallucinations (the model
+  // claiming something appeared that didn't).
+  let downgradeDrops = 0;
+  const declaredSigRefs = new Set();
+  events = events.filter(ev => {
+    if (ev.op !== 'SIG') return true;
+    const surface = String(ev.surface || ev.entityRef || '').trim();
+    if (!directInClause(surface)) { downgradeDrops++; return false; }
+    if (typeof ev.entityRef === 'string') {
+      declaredSigRefs.add(ev.entityRef.trim().toLowerCase());
+    }
+    return true;
+  });
+  const refAnchored = (s) => {
+    if (typeof s !== 'string') return false;
+    if (declaredSigRefs.has(s.trim().toLowerCase())) return true;
+    return directInClause(s);
+  };
+
+  // Second pass: drop DEF/CON whose entity participants or non-entity
+  // values aren't anchored.
+  events = events.filter(ev => {
+    if (ev.op === 'DEF') {
+      if (!refAnchored(ev.subject)) { downgradeDrops++; return false; }
+      if (ev.valueIsEntity) {
+        if (!refAnchored(ev.value)) { downgradeDrops++; return false; }
+      } else {
+        if (!valueAnchored(ev.value)) { downgradeDrops++; return false; }
+      }
+      return true;
+    }
+    if (ev.op === 'CON') {
+      if (!refAnchored(ev.from)) { downgradeDrops++; return false; }
+      if (ev.toIsEntity) {
+        if (!refAnchored(ev.to)) { downgradeDrops++; return false; }
+      } else {
+        if (!valueAnchored(ev.to)) { downgradeDrops++; return false; }
+      }
+      return true;
+    }
+    return true;
+  });
+  if (downgradeDrops > 0) {
+    console.log(`SIG-downgrade: dropped ${downgradeDrops} unanchored DEF/CON/SIG events`);
+  }
 
   // 2. Reroute and validate needs
   const NEED_PREFIX = /^\s*(integral|edges|history)\s*:\s*\S/i;  // require something AFTER the colon
@@ -6293,25 +6400,57 @@ summary: terse, accurate. "Investigation of cartel gold mining on a Colombian mi
 // summary, source_metadata}. NO principals, NO pronoun-chain expectation,
 // NO role-description expectation. The first grounded hypothesis comes
 // from accumulated graph evidence at the first-promotion REC (~sentence 30).
+//
+// IMPORTANT: the schema description below uses prose, not pipe-separated
+// enums or angle-bracket placeholders. Small local models echo schema
+// strings shaped like "news_article|opinion|essay|..." or
+// "<one bare-genre sentence; no content claims>" verbatim into output —
+// the model treats schema-shaped JSON as content to copy. Allowed values
+// are listed in prose; few-shot turns (HYPOTHESIS_MINIMAL_FEW_SHOT)
+// supply the actual JSON shape via the chat-template's role delimiters.
 const HYPOTHESIS_MINIMAL_SYSTEM = `You characterize a document at ingest start, working from ONLY title/structure/first-paragraph genre cues.
 
 ABSOLUTE RULES:
 - Output ONLY genre/structure cues. NO speculation about principals, characters, named entities, roles, or content.
 - Do NOT list any principals, even ones that appear in the sample. Principals are derived later from graph evidence, not guessed at.
 - Do NOT set expects_pronoun_chains or expects_role_descriptions — those require evidence we don't have yet.
-- Keep summary to one bare-genre sentence ("a 19th-century English novel," "a contemporary news article"), not a content summary.
+- Keep summary to one bare-genre sentence (for example: a 19th-century English novel; a contemporary news article), not a content summary.
 
-Output JSON only — no preamble, no markdown fences:
-{
-  "kind": "news_article|opinion|essay|fiction|dialogue|transcript|academic|legal|memoir|letter|other",
-  "register": "contemporary_informal|contemporary_formal|historical_formal|period_dialogue|vernacular|technical|other",
-  "discourse": "reportage|argument|narrative|dialogue|exposition|mixed",
-  "period": "<date or era of reference if obvious from genre cues, or 'unknown'>",
-  "summary": "<one bare-genre sentence; no content claims>",
-  "authorship": [
-    {"name": "<author / reporter / publisher if obvious from byline/header>", "role": "<author|reporter|photographer|editor|publisher|other>"}
-  ]
-}`;
+Output a single JSON object with exactly these fields. Choose ONE value for each enumerated field — do not include the list of options in your output.
+
+- kind: choose one of news_article, opinion, essay, fiction, dialogue, transcript, academic, legal, memoir, letter, other
+- register: choose one of contemporary_informal, contemporary_formal, historical_formal, period_dialogue, vernacular, technical, other
+- discourse: choose one of reportage, argument, narrative, dialogue, exposition, mixed
+- period: a date or era if obvious from genre cues; otherwise the string unknown
+- summary: one terse genre sentence, no content claims
+- authorship: an array of objects with fields name and role; role is one of author, reporter, photographer, editor, publisher, other; empty array if no byline is visible
+
+Output JSON only — no preamble, no markdown fences, no schema enumerations.`;
+
+// Few-shot turns for the minimal hypothesizer. Lives outside the system
+// prompt so the chat template wraps it as a prior conversation; small
+// local models then anchor on real example outputs rather than copying
+// schema notation. Two examples — a contemporary news article and a
+// classic novel — span the two main genre poles to discourage the model
+// from defaulting to one or the other.
+const HYPOTHESIS_MINIMAL_FEW_SHOT = [
+  {
+    role: 'user',
+    content: 'Source metadata:\n  title: City Council Approves New Transit Budget\n  publication: 2024-03-15\n\nOpening sample (first 240 chars):\n\nThe city council voted Tuesday to approve a $42 million transit budget, ending months of debate over fare increases and service cuts. The measure passed 8-3 after a marathon hearing that drew dozens of public commenters.\n\nOutput the MINIMAL hypothesis JSON ONLY.',
+  },
+  {
+    role: 'assistant',
+    content: '{"kind":"news_article","register":"contemporary_formal","discourse":"reportage","period":"2024","summary":"A contemporary news article reporting on a municipal vote.","authorship":[]}',
+  },
+  {
+    role: 'user',
+    content: 'Source metadata:\n  title: Pride and Prejudice\n  filename: pride-prejudice.txt\n\nOpening sample (first 240 chars):\n\nIt is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife. However little known the feelings or views of such a man may be on his first entering a neighbourhood,\n\nOutput the MINIMAL hypothesis JSON ONLY.',
+  },
+  {
+    role: 'assistant',
+    content: '{"kind":"fiction","register":"historical_formal","discourse":"narrative","period":"early 19th century","summary":"A 19th-century English novel.","authorship":[]}',
+  },
+];
 
 async function hypothesizeDocument(text, opts = {}) {
   if (!isLLMReady()) return null;
@@ -6342,7 +6481,7 @@ async function hypothesizeDocument(text, opts = {}) {
     STATE.llmCallsThisIngest++;
     let raw;
     try {
-      raw = await callLLM(HYPOTHESIS_MINIMAL_SYSTEM, userMsg, 200, 'hypothesis-minimal');
+      raw = await callLLM(HYPOTHESIS_MINIMAL_SYSTEM, userMsg, 200, 'hypothesis-minimal', { fewShot: HYPOTHESIS_MINIMAL_FEW_SHOT });
     } catch (e) {
       console.warn('[anchorage] minimal hypothesis call failed:', e);
       return null;
@@ -6352,14 +6491,33 @@ async function hypothesizeDocument(text, opts = {}) {
       console.warn('Minimal hypothesis output unparseable:', (raw || '').slice(0, 200));
       return null;
     }
-    parsed.kind = String(parsed.kind || 'other');
-    parsed.register = String(parsed.register || 'other');
-    parsed.discourse = String(parsed.discourse || 'mixed');
-    parsed.period = String(parsed.period || 'unknown');
-    parsed.summary = String(parsed.summary || '').slice(0, 240);
+    // Defense against schema-leak: small local models sometimes copy the
+    // prompt's enumerated lists or angle-bracket placeholders verbatim
+    // into output. Treat any value containing "|" or "<...>" as a leak
+    // and fall back to the safe default.
+    const VALID_KIND = new Set(['news_article','opinion','essay','fiction','dialogue','transcript','academic','legal','memoir','letter','other']);
+    const VALID_REGISTER = new Set(['contemporary_informal','contemporary_formal','historical_formal','period_dialogue','vernacular','technical','other']);
+    const VALID_DISCOURSE = new Set(['reportage','argument','narrative','dialogue','exposition','mixed']);
+    const VALID_AUTHORSHIP_ROLE = new Set(['author','reporter','photographer','editor','publisher','other']);
+    const isLeak = v => typeof v !== 'string' || v.includes('|') || /<[^>]+>/.test(v);
+    const cleanEnum = (v, valid, fallback) => {
+      if (isLeak(v)) return fallback;
+      const s = String(v).trim().toLowerCase();
+      return valid.has(s) ? s : fallback;
+    };
+    const cleanFreeText = (v, fallback, max) => {
+      if (isLeak(v)) return fallback;
+      return String(v).trim().slice(0, max);
+    };
+    parsed.kind = cleanEnum(parsed.kind, VALID_KIND, 'other');
+    parsed.register = cleanEnum(parsed.register, VALID_REGISTER, 'other');
+    parsed.discourse = cleanEnum(parsed.discourse, VALID_DISCOURSE, 'mixed');
+    parsed.period = cleanFreeText(parsed.period, 'unknown', 64) || 'unknown';
+    parsed.summary = cleanFreeText(parsed.summary, '', 240);
     parsed.principals = [];                  // minimal mode: empty
-    parsed.authorship = Array.isArray(parsed.authorship) ? parsed.authorship.filter(a => a && a.name).map(a => ({
-      name: String(a.name).trim(), role: String(a.role || 'other').trim(),
+    parsed.authorship = Array.isArray(parsed.authorship) ? parsed.authorship.filter(a => a && a.name && !isLeak(a.name)).map(a => ({
+      name: String(a.name).trim(),
+      role: cleanEnum(a.role, VALID_AUTHORSHIP_ROLE, 'other'),
     })) : [];
     parsed.expects_pronoun_chains = false;   // minimal mode: no speculation
     parsed.expects_role_descriptions = false;
@@ -6503,8 +6661,32 @@ function assemblePrompt({
   const hp = safe(hypothesisProse).trim();
   const rs = safe(runningSummary).trim();
 
-  // The markdown carries the integral/delta split structurally. Two
-  // top-level sections beyond the task line:
+  // Cold-start: no priors of any kind. Small local models read empty
+  // "## Working Hypothesis" / "## Recent Reading" headings as a request
+  // to invent priors, and echo placeholder text back. On cold calls we
+  // suppress the # Context section entirely and tell the model directly
+  // that no prior context exists.
+  const isCold =
+    !hp && !rs &&
+    narrative.length === 0 &&
+    semantic.length === 0 &&
+    extras.length === 0;
+
+  const quoted = safe(content).split('\n').map(l => `> ${l}`).join('\n');
+
+  if (isCold) {
+    return [
+      '# Task',
+      safe(systemInstructions),
+      '',
+      '# Input',
+      'This is the first input from a fresh source. No prior context exists — work only from the text below.',
+      '',
+      quoted,
+    ].join('\n');
+  }
+
+  // Warm path: integral/delta split.
   //
   //   # Context       — everything integrated up to this point. The
   //                     hypothesis, the running summary, the recent and
@@ -6552,7 +6734,6 @@ function assemblePrompt({
   // Blockquote the delta so it reads as a distinct unit even before the
   // model parses the heading. Multi-line content keeps a leading "> " on
   // each line so the quote shape holds.
-  const quoted = safe(content).split('\n').map(l => `> ${l}`).join('\n');
   lines.push(quoted);
   return lines.join('\n');
 }
@@ -7757,32 +7938,61 @@ async function refreshHypothesis(source, sentenceIdx, reason, currentCosine, bas
     console.warn('[anchorage] hypothesis refresh unparseable:', (raw || '').slice(0, 200));
     return null;
   }
-  // Reuse the same normalization shape as the initial hypothesis
-  parsed.kind = String(parsed.kind || source.hypothesis?.kind || 'other');
-  parsed.register = String(parsed.register || source.hypothesis?.register || 'other');
-  parsed.discourse = String(parsed.discourse || 'mixed');
-  parsed.period = String(parsed.period || 'unknown');
-  parsed.summary = String(parsed.summary || '');
+  // Defense against schema-leak: small local models sometimes copy the
+  // prompt's enumerated lists ("news_article|opinion|...") or angle-bracket
+  // placeholders ("<canonical name from graph evidence>") verbatim into
+  // output. Treat any value containing "|" or "<...>" as a leak and fall
+  // back to the safe default. Same rule as the minimal-mode parser.
+  const REFRESH_VALID_KIND = new Set(['news_article','opinion','essay','fiction','dialogue','transcript','academic','legal','memoir','letter','other']);
+  const REFRESH_VALID_REGISTER = new Set(['contemporary_informal','contemporary_formal','historical_formal','period_dialogue','vernacular','technical','other']);
+  const REFRESH_VALID_DISCOURSE = new Set(['reportage','argument','narrative','dialogue','exposition','mixed']);
+  const refreshIsLeak = v => typeof v !== 'string' || v.includes('|') || /<[^>]+>/.test(v);
+  const refreshCleanEnum = (v, valid, fallback) => {
+    if (refreshIsLeak(v)) return fallback;
+    const s = String(v).trim().toLowerCase();
+    return valid.has(s) ? s : fallback;
+  };
+  const refreshCleanFreeText = (v, fallback, max) => {
+    if (refreshIsLeak(v)) return fallback;
+    return String(v).trim().slice(0, max);
+  };
+
+  parsed.kind = refreshCleanEnum(parsed.kind, REFRESH_VALID_KIND, source.hypothesis?.kind || 'other');
+  parsed.register = refreshCleanEnum(parsed.register, REFRESH_VALID_REGISTER, source.hypothesis?.register || 'other');
+  parsed.discourse = refreshCleanEnum(parsed.discourse, REFRESH_VALID_DISCOURSE, 'mixed');
+  parsed.period = refreshCleanFreeText(parsed.period, 'unknown', 64) || 'unknown';
+  parsed.summary = refreshCleanFreeText(parsed.summary, '', 240);
   parsed.expects_pronoun_chains = !!parsed.expects_pronoun_chains;
   parsed.expects_role_descriptions = !!parsed.expects_role_descriptions;
   const VALID_SITES = new Set(['Void','Entity','Kind','Field','Link','Network','Atmosphere','Lens','Paradigm']);
   if (!Array.isArray(parsed.principals)) parsed.principals = [];
-  parsed.principals = parsed.principals.filter(p => p && p.name).map(p => {
+  parsed.principals = parsed.principals.filter(p => p && p.name && !refreshIsLeak(p.name)).map(p => {
     let site = String(p.site || '').trim();
-    if (site) {
+    // Site values can include the pipe-separated enum string itself when
+    // the model leaks; refreshIsLeak catches that and we fall back to Entity.
+    if (refreshIsLeak(site)) {
+      site = 'Entity';
+    } else if (site) {
       const cap = site.charAt(0).toUpperCase() + site.slice(1).toLowerCase();
       site = VALID_SITES.has(cap) ? cap : 'Entity';
     } else {
       site = 'Entity';
     }
+    const aliases = Array.isArray(p.aliases)
+      ? p.aliases.map(s => String(s).trim()).filter(s => s && !refreshIsLeak(s))
+      : [];
     return {
       name: String(p.name).trim(),
-      aliases: Array.isArray(p.aliases) ? p.aliases.map(s => String(s).trim()).filter(Boolean) : [],
+      aliases,
       site,
-      evidence: p.evidence ? String(p.evidence).slice(0, 240) : null,
+      evidence: p.evidence && !refreshIsLeak(p.evidence) ? String(p.evidence).slice(0, 240) : null,
     };
   });
-  if (!Array.isArray(parsed.authorship)) parsed.authorship = source.hypothesis?.authorship || [];
+  if (!Array.isArray(parsed.authorship)) {
+    parsed.authorship = source.hypothesis?.authorship || [];
+  } else {
+    parsed.authorship = parsed.authorship.filter(a => a && a.name && !refreshIsLeak(a.name));
+  }
   parsed.timestamp = Date.now();
   parsed.refreshReason = reason;
   parsed.refreshAtSentence = sentenceIdx;
@@ -9824,6 +10034,41 @@ async function ingestSource(text, opts = {}) {
           spanText: clause, intakeTs: Date.now(),
           chromeSuspect: isChromeSuspect,
         });
+      }
+    }
+  }
+
+  // End-of-doc first-promotion fallback. The loop's per-sentence trigger
+  // only fires at sentence index >= hypothesisFirstPromotionAt (default 30).
+  // Documents shorter than that complete with the minimal hypothesis still
+  // in place — and the minimal hypothesis is the prompt-shaped fallback
+  // that small models can leak schema strings into. If the document ended
+  // before promotion fired and the graph has accumulated propositional
+  // evidence, fire one final first-promotion REC so finalHypothesis ships
+  // a grounded hypothesis instead of a schema-template artifact.
+  if (source.hypothesis && source.hypothesis.minimal && sentences.length > 0) {
+    const propositional = STATE.G.filter(
+      e => e.sourceId === source.id && (e.op === 'DEF' || e.op === 'CON')
+    ).length;
+    const MIN_EVIDENCE_FOR_END_PROMOTION = 8;
+    if (propositional >= MIN_EVIDENCE_FOR_END_PROMOTION) {
+      try {
+        await ensureHypothesisEmbedding(source);
+        const c = recentEventCentroid(30);
+        const cosAtTrigger = (STATE.hypothesisEmbedding && c) ? cosineInt8(STATE.hypothesisEmbedding, c) : null;
+        const refreshed = await refreshHypothesis(
+          source, sentences.length - 1, 'end-of-doc-promotion',
+          cosAtTrigger, STATE.hypothesisBaselineCosine
+        );
+        if (refreshed) {
+          preMintHypothesisPrincipals(refreshed, source.id, {
+            sentenceIdx: sentences.length - 1,
+            spanText: refreshed.summary || null,
+            authoredBy: 'hypothesis-refresh-end',
+          });
+        }
+      } catch (e) {
+        console.warn('[anchorage] end-of-doc promotion failed:', e);
       }
     }
   }
