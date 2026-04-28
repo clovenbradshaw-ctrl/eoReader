@@ -845,17 +845,77 @@ button.secondary.danger:hover { background: var(--accent); color: var(--paper); 
 }
 sup.citation {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 9px;
+  font-size: 10px;
   color: var(--cursor);
   cursor: pointer;
   margin-left: 1px;
   padding: 0 2px;
   border: 1px solid transparent;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
 }
 sup.citation:hover {
   background: var(--paper-soft);
   border-color: var(--cursor);
   color: var(--accent);
+}
+sup.citation[data-citation-kind="modal"] { color: var(--accent, var(--cursor)); }
+
+/* ── ANSWER FOOTNOTES BLOCK ─────────────────────────────────────── */
+/* Sits under every librarian answer that carries citations. Lists each
+   ⓢ marker once with source + sentence + span snippet. Clicking an
+   item opens the same source-span modal as the inline marker. */
+.answer-footnotes {
+  margin-top: 12px;
+  padding: 10px 12px 8px;
+  background: var(--paper-soft);
+  border-top: 1px dashed var(--rule);
+  border-left: 3px solid var(--rule);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+.answer-footnotes-label {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 6px;
+}
+.footnote-item {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  column-gap: 8px;
+  padding: 3px 0;
+  cursor: pointer;
+  border-bottom: 1px dotted transparent;
+  align-items: baseline;
+}
+.footnote-item:hover {
+  border-bottom-color: var(--cursor, var(--ink-soft));
+  color: var(--ink);
+}
+.footnote-item:focus {
+  outline: 1px dotted var(--cursor);
+  outline-offset: 2px;
+}
+.footnote-marker {
+  color: var(--cursor);
+  font-weight: 600;
+  min-width: 28px;
+}
+.footnote-meta {
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+.footnote-span {
+  color: var(--ink);
+  font-family: 'Newsreader', serif;
+  font-size: 12px;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── GRAMMAR POLISH LAYER ───────────────────────────────────────── */
@@ -10205,9 +10265,13 @@ function entityLink(entityIdOrCanonical) {
   return `<a class="entity-link" data-entity-id="${escapeHtml(id)}" href="#" title="Show this entity in the inspector">${escapeHtml(canonical)}</a>`;
 }
 
-// Citation marker — superscript bracketed number, click opens modal.
+// Citation marker — ⓢ followed by an index pointing at the footnotes
+// block under each answer. Click opens the source-span modal. The
+// data-citation-kind attribute is "source" today; future grounded-
+// librarian work will mint "modal" markers (ⓜ) for peer-gap and
+// hypothesis-expectation findings.
 function citationMarker(defId, groundingIdx, n) {
-  return `<sup class="citation" data-def-id="${escapeHtml(defId)}" data-grounding-idx="${groundingIdx}" tabindex="0" title="Show the cited source span">[${n}]</sup>`;
+  return `<sup class="citation" data-def-id="${escapeHtml(defId)}" data-grounding-idx="${groundingIdx}" data-citation-kind="source" data-citation-n="${n}" tabindex="0" title="Show the cited source span">ⓢ${n}</sup>`;
 }
 
 // Render a single value (scalar or entity) as inline HTML.
@@ -10511,15 +10575,22 @@ function renderLibrarianTranscript() {
       const mode = t.viewMode || globalMode;
       const haveEdits = !!(t.editedAnswer && t.edits && t.edits.length);
       let bodyHTML;
+      let footnoteSourceHtml;
       if (haveEdits && mode === 'diff') {
         bodyHTML = `<div class="answer-mode-diff">${t.editedAnswer}</div>`;
         bodyHTML += `<div class="answer-raw-companion"><span class="muted">raw:</span> ${t.answer}</div>`;
+        // In diff mode the polished version is the primary; cite from it
+        footnoteSourceHtml = t.editedAnswer;
       } else if (haveEdits && mode === 'polished') {
         bodyHTML = t.editedAnswer;
+        footnoteSourceHtml = t.editedAnswer;
       } else {
         // mode === 'raw', or no edits available yet
         bodyHTML = t.answer;
+        footnoteSourceHtml = t.answer;
       }
+      const footnotesHtml = renderAnswerFootnotes(collectCitationsFromHtml(footnoteSourceHtml));
+      bodyHTML += footnotesHtml;
 
       // Inline per-turn toggle. Only meaningful when a polish is
       // available (or pending / errored).
@@ -10584,10 +10655,23 @@ function renderLibrarianTranscript() {
   // Wire turn focus
   transcript.querySelectorAll('.chat-turn').forEach(el => {
     el.addEventListener('click', (e) => {
-      // Don't intercept clicks on entity links, citation markers, or the
-      // per-turn polish toggle (handled separately below).
-      if (e.target.closest('.entity-link') || e.target.closest('.citation') || e.target.closest('.polish-toggle')) return;
+      // Don't intercept clicks on entity links, citation markers,
+      // footnote items, or the per-turn polish toggle (handled
+      // separately below).
+      if (e.target.closest('.entity-link') ||
+          e.target.closest('.citation') ||
+          e.target.closest('.footnote-item') ||
+          e.target.closest('.polish-toggle')) return;
       focusLibrarianTurn(el.getAttribute('data-turn-id'));
+    });
+  });
+
+  // Wire footnote-item clicks → same source modal as inline ⓢ markers
+  transcript.querySelectorAll('.footnote-item').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openCitationFromMarker(el);
     });
   });
 
@@ -10640,12 +10724,116 @@ function renderLibrarianTranscript() {
 function openCitationFromMarker(el) {
   const defId = el.getAttribute('data-def-id');
   const gIdx = parseInt(el.getAttribute('data-grounding-idx'), 10);
-  let def = null;
+  const def = lookupDef(defId);
+  if (def && def.grounding[gIdx]) showSourceSpanModal(def.grounding[gIdx], { def });
+}
+
+// Resolve a def by id across STATE.defs (which is a Map of subject → defs[]).
+function lookupDef(defId) {
+  if (!defId) return null;
   for (const defs of STATE.defs.values()) {
     const f = defs.find(d => d.id === defId);
-    if (f) { def = f; break; }
+    if (f) return f;
   }
-  if (def && def.grounding[gIdx]) showSourceSpanModal(def.grounding[gIdx], { def });
+  return null;
+}
+
+// ─── Phase A: chunk shim + footnotes block ──────────────────────────
+// The grounded-streaming librarian (v25 spec) produces multi-chunk
+// responses with per-chunk metadata. Today's turns store a single
+// `answer` HTML string (and optionally an `editedAnswer` from polish).
+// synthesizeTurnChunks() exposes the chunk shape Phase B will write
+// directly, while remaining a no-op for callers that don't care.
+function synthesizeTurnChunks(turn) {
+  if (turn.chunks && turn.chunks.length) return turn.chunks;
+  const chunks = [];
+  if (turn.answer) {
+    chunks.push({
+      id: turn.turnId + ':templated',
+      kind: 'templated',
+      html: turn.answer,
+      generatedAt: turn.timestamp,
+      verifiedAt: turn.timestamp,  // templated answers are grounded by construction
+      regenerated: false,
+      disclosed: false,
+      citations: collectCitationsFromHtml(turn.answer),
+    });
+  }
+  if (turn.editedAnswer) {
+    chunks.push({
+      id: turn.turnId + ':polished',
+      kind: 'polished',
+      html: turn.editedAnswer,
+      generatedAt: turn.editsCompletedAt || turn.timestamp,
+      verifiedAt: null,  // polish is not yet grounding-verified — Phase B
+      regenerated: false,
+      disclosed: false,
+      citations: collectCitationsFromHtml(turn.editedAnswer),
+    });
+  }
+  return chunks;
+}
+
+// Walk a rendered answer's HTML for <sup class="citation"> markers in
+// document order. Returns the in-order list so the footnotes block
+// indices line up with the marker numbers (which are per-answer
+// monotonic counters set by the templater).
+function collectCitationsFromHtml(html) {
+  if (!html) return [];
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const nodes = tmp.querySelectorAll('sup.citation');
+  const out = [];
+  for (const node of nodes) {
+    const n = parseInt(node.getAttribute('data-citation-n'), 10);
+    out.push({
+      n: Number.isFinite(n) ? n : (out.length + 1),
+      defId: node.getAttribute('data-def-id'),
+      groundingIdx: parseInt(node.getAttribute('data-grounding-idx'), 10) || 0,
+      kind: node.getAttribute('data-citation-kind') || 'source',
+    });
+  }
+  // De-dup by (defId, groundingIdx) — the same span may be cited many
+  // times in one answer; the footnote should appear once.
+  const seen = new Set();
+  const deduped = [];
+  for (const c of out) {
+    const key = `${c.kind}|${c.defId}|${c.groundingIdx}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(c);
+  }
+  return deduped;
+}
+
+// Build the footnotes block that sits under the answer body. Each item
+// shows the marker, source name, sentence index, and a snippet of the
+// cited span. Click → showSourceSpanModal (same as the inline marker).
+function renderAnswerFootnotes(citations) {
+  if (!citations || citations.length === 0) return '';
+  const items = [];
+  for (const c of citations) {
+    if (c.kind !== 'source') continue;  // ⓜ markers will render here once Phase E lands
+    const def = lookupDef(c.defId);
+    const g = def?.grounding?.[c.groundingIdx];
+    if (!g) continue;
+    const srcName = STATE.sources.get(g.sourceId)?.name || g.sourceId || 'unknown source';
+    const locus = g.sentenceIdx != null ? `sentence ${g.sentenceIdx}` : '';
+    const span = (g.spanText || '').trim();
+    const snippet = span.length > 180 ? span.slice(0, 180) + '…' : span;
+    items.push(
+      `<div class="footnote-item" data-def-id="${escapeHtml(c.defId)}" data-grounding-idx="${c.groundingIdx}" tabindex="0" title="Open the cited span in context">` +
+        `<span class="footnote-marker">ⓢ${c.n}</span>` +
+        `<span class="footnote-meta">${escapeHtml(srcName)}${locus ? ' · ' + escapeHtml(locus) : ''}</span>` +
+        (snippet ? `<span class="footnote-span">"${escapeHtml(snippet)}"</span>` : '') +
+      `</div>`
+    );
+  }
+  if (items.length === 0) return '';
+  return `<div class="answer-footnotes" aria-label="Footnotes for cited spans">
+    <div class="answer-footnotes-label">footnotes · ${items.length} cited span${items.length === 1 ? '' : 's'}</div>
+    ${items.join('')}
+  </div>`;
 }
 
 function renderEvidencePane() {
@@ -10889,12 +11077,17 @@ function renderConstructionTrace(turn) {
 // re-inject after editing is captured in tokens[] for the applier.
 function answerToEditableText(html) {
   if (!html) return { plain: '', tokens: [] };
-  // Tokenize <a class="entity-link">…</a> and <sup class="citation">[N]</sup>
-  // into placeholders we can resurrect later.
+  // Tokenize <a class="entity-link">…</a> and <sup class="citation">…</sup>
+  // into placeholders we can resurrect later. The visible glyph inside
+  // citation markers is now ⓢN (Phase A), but the older [N] form is
+  // still tolerated so any pre-Phase-A turn HTML kept in memory keeps
+  // working through a polish round-trip. The interchange format with
+  // the LLM stays [N] — the polish system prompt and validator are
+  // both written in that format.
   const tokens = [];
   let plain = '';
   let pos = 0;
-  const re = /<(a class="entity-link"[^>]*>[\s\S]*?<\/a>|sup class="citation"[^>]*>\[(\d+)\]<\/sup>)/g;
+  const re = /<(a class="entity-link"[^>]*>[\s\S]*?<\/a>|sup class="citation"[^>]*>(?:ⓢ|\[)(\d+)\]?<\/sup>)/g;
   let m;
   while ((m = re.exec(html)) !== null) {
     plain += decodeHtmlEntities(html.slice(pos, m.index).replace(/<[^>]+>/g, ''));
@@ -11076,7 +11269,7 @@ function applyPolishToTemplatedHTML(originalHTML, polishedPlain) {
     if (bestKind === 'entity') {
       html += entityHTMLByName.get(bestKey);
     } else {
-      html += citationHTMLByN.get(parseInt(bestKey, 10)) || `<sup class="citation">[${bestKey}]</sup>`;
+      html += citationHTMLByN.get(parseInt(bestKey, 10)) || `<sup class="citation" data-citation-kind="source" data-citation-n="${bestKey}">ⓢ${bestKey}</sup>`;
     }
     rest = rest.slice(bestIdx + bestLen);
   }
