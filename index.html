@@ -845,17 +845,77 @@ button.secondary.danger:hover { background: var(--accent); color: var(--paper); 
 }
 sup.citation {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 9px;
+  font-size: 10px;
   color: var(--cursor);
   cursor: pointer;
   margin-left: 1px;
   padding: 0 2px;
   border: 1px solid transparent;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
 }
 sup.citation:hover {
   background: var(--paper-soft);
   border-color: var(--cursor);
   color: var(--accent);
+}
+sup.citation[data-citation-kind="modal"] { color: var(--accent, var(--cursor)); }
+
+/* ── ANSWER FOOTNOTES BLOCK ─────────────────────────────────────── */
+/* Sits under every librarian answer that carries citations. Lists each
+   ⓢ marker once with source + sentence + span snippet. Clicking an
+   item opens the same source-span modal as the inline marker. */
+.answer-footnotes {
+  margin-top: 12px;
+  padding: 10px 12px 8px;
+  background: var(--paper-soft);
+  border-top: 1px dashed var(--rule);
+  border-left: 3px solid var(--rule);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+.answer-footnotes-label {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 6px;
+}
+.footnote-item {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  column-gap: 8px;
+  padding: 3px 0;
+  cursor: pointer;
+  border-bottom: 1px dotted transparent;
+  align-items: baseline;
+}
+.footnote-item:hover {
+  border-bottom-color: var(--cursor, var(--ink-soft));
+  color: var(--ink);
+}
+.footnote-item:focus {
+  outline: 1px dotted var(--cursor);
+  outline-offset: 2px;
+}
+.footnote-marker {
+  color: var(--cursor);
+  font-weight: 600;
+  min-width: 28px;
+}
+.footnote-meta {
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+.footnote-span {
+  color: var(--ink);
+  font-family: 'Newsreader', serif;
+  font-size: 12px;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── GRAMMAR POLISH LAYER ───────────────────────────────────────── */
@@ -2134,7 +2194,70 @@ code {
   overflow-y: auto;
 }
 .detail-content.response { color: var(--ink-soft); }
+.detail-content.response.streaming {
+  border-color: var(--cursor, var(--ink-soft));
+  color: var(--ink);
+}
+.detail-content.response.streaming::after {
+  content: '▋';
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--cursor, var(--ink-soft));
+  animation: streamPulse 0.9s ease-in-out infinite;
+}
 .detail-content.error { color: var(--accent); border-color: var(--accent-soft); }
+.status.streaming { color: var(--cursor, var(--ink-soft)); }
+@keyframes streamPulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+.stream-pill {
+  display: inline-flex;
+  align-items: center;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cursor, var(--ink-soft));
+  margin-left: 6px;
+}
+.stream-pill .live-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--cursor, var(--ink-soft));
+  margin-right: 5px;
+  animation: streamPulse 0.9s ease-in-out infinite;
+}
+.prompt-stream-preview {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--paper);
+  border-top: 1px dashed var(--rule);
+  padding: 8px 14px 10px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.prompt-stream-preview::after {
+  content: '▋';
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--cursor, var(--ink-soft));
+  animation: streamPulse 0.9s ease-in-out infinite;
+}
+.prompt-stream-preview .stream-meta {
+  display: block;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 4px;
+}
 
 </style>
 </head>
@@ -3027,6 +3150,12 @@ const STATE = {
   // Prompt log — every LLM call recorded for inspection
   promptLog: [],
   expandedPromptIds: new Set(),
+
+  // Live stream marker: when a backend is mid-generation, this carries
+  // the in-flight entry id, role, char count, and last-chunk timestamp
+  // so the header pill, the prompts pane, and the in-process panel can
+  // all show "▋ generating <role> · NNNc" without recomputing.
+  activeStream: null,
 
   // Reading cursor — which sentence ingest is currently working on
   currentlyProcessing: null,  // {sourceId, sentenceIdx, escalationDepth}
@@ -5401,7 +5530,49 @@ function approxTokens(s) {
   return Math.ceil(String(s).length / 4);
 }
 
-// Dispatch entry point — every LLM call goes through this and is logged
+// Human label for an LLM call's role. Internal role tags ('per-clause',
+// 'librarian-polish', etc.) are accurate but jargon-y. The header pill,
+// in-process panel, and prompt cards all use the friendlier label so a
+// reader sees "reading clause" / "polishing answer" / "dreaming" at a
+// glance instead of internal pipeline names.
+const ROLE_LABELS = {
+  'per-clause':              'reading clause',
+  'phasepost':               'classifying source',
+  'hypothesis-minimal':      'forming early hypothesis',
+  'hypothesis':              'updating hypothesis',
+  'hypothesis-refresh':      'refreshing hypothesis',
+  'running-summary':         'updating running summary',
+  'commentary':              'commenting',
+  'librarian-compiler':      'composing answer',
+  'librarian-compiler-retry': 'retrying answer',
+  'librarian-polish':        'polishing answer',
+  'dream-prose':             'dreaming',
+  'unknown':                 'thinking',
+};
+function humanRole(r) { return ROLE_LABELS[r] || (r || 'thinking').replace(/[-_]/g, ' '); }
+
+// Throttled re-render while a stream is actively dripping in deltas.
+// Without this, sub-character chunks from local backends (Ollama emits
+// one token at a time) would rebuild the prompts pane dozens of times
+// per second. ~120ms ≈ 8fps — fast enough to feel live, slow enough not
+// to thrash the DOM.
+let _streamRenderPending = false;
+function scheduleStreamRender() {
+  if (_streamRenderPending) return;
+  _streamRenderPending = true;
+  setTimeout(() => {
+    _streamRenderPending = false;
+    try { if (STATE.activeView === 'prompts') renderPromptsView(); } catch {}
+    try { renderHeaderStatus(); } catch {}
+  }, 120);
+}
+
+// Dispatch entry point — every LLM call goes through this and is logged.
+// All four backends honor opts.onChunk; callLLM itself wraps that
+// callback so every chunk also (a) appends to entry.streamBuffer,
+// (b) updates STATE.activeStream so the header pill and prompts pane
+// can show live progress, and (c) preserves the caller's onChunk if
+// one was passed (Dream uses it to flush sentences into the journal).
 async function callLLM(systemPrompt, userMsg, maxTokens = 800, role = 'unknown', opts = null) {
   const startTime = Date.now();
   const entry = {
@@ -5421,23 +5592,53 @@ async function callLLM(systemPrompt, userMsg, maxTokens = 800, role = 'unknown',
     approxOutputTokens: 0,
     error: null,
     durationMs: null,
+    streaming: false,
+    streamBuffer: '',
+    firstChunkAt: null,
   };
   STATE.promptLog.push(entry);
   if (STATE.activeView === 'prompts') renderPromptsView();
 
+  const callerOnChunk = typeof opts?.onChunk === 'function' ? opts.onChunk : null;
+  const wrappedOnChunk = (delta) => {
+    if (!delta) return;
+    if (entry.firstChunkAt == null) entry.firstChunkAt = Date.now();
+    entry.streaming = true;
+    entry.streamBuffer += delta;
+    entry.responseChars = entry.streamBuffer.length;
+    entry.approxOutputTokens = approxTokens(entry.streamBuffer);
+    STATE.activeStream = {
+      entryId: entry.id,
+      role: entry.role,
+      humanRole: humanRole(entry.role),
+      backend: entry.backend,
+      chars: entry.responseChars,
+      startedAt: entry.timestamp,
+      firstChunkAt: entry.firstChunkAt,
+      lastChunkAt: Date.now(),
+    };
+    scheduleStreamRender();
+    if (callerOnChunk) { try { callerOnChunk(delta); } catch {} }
+  };
+  const callOpts = { ...(opts || {}), onChunk: wrappedOnChunk };
+
   try {
     let result;
     switch (STATE.llmBackend) {
-      case 'anthropic': result = await callAnthropic(systemPrompt, userMsg, maxTokens, opts); break;
-      case 'webllm':    result = await callWebLLM(systemPrompt, userMsg, maxTokens, opts); break;
-      case 'ollama':    result = await callOllama(systemPrompt, userMsg, maxTokens, opts); break;
-      case 'lmstudio':  result = await callLMStudio(systemPrompt, userMsg, maxTokens, opts); break;
+      case 'anthropic': result = await callAnthropic(systemPrompt, userMsg, maxTokens, callOpts); break;
+      case 'webllm':    result = await callWebLLM(systemPrompt, userMsg, maxTokens, callOpts); break;
+      case 'ollama':    result = await callOllama(systemPrompt, userMsg, maxTokens, callOpts); break;
+      case 'lmstudio':  result = await callLMStudio(systemPrompt, userMsg, maxTokens, callOpts); break;
       default: throw new Error(`Unknown LLM backend: ${STATE.llmBackend}`);
     }
     entry.response = result;
     entry.responseChars = (result || '').length;
     entry.approxOutputTokens = approxTokens(result);
     entry.durationMs = Date.now() - startTime;
+    entry.streaming = false;
+    if (STATE.activeStream && STATE.activeStream.entryId === entry.id) {
+      STATE.activeStream = null;
+    }
     // Capture Anthropic cache stats if the call set them
     if (STATE.llmBackend === 'anthropic' && STATE.lastAnthropicUsage) {
       entry.cacheCreate = STATE.lastAnthropicUsage.cacheCreate;
@@ -5447,11 +5648,17 @@ async function callLLM(systemPrompt, userMsg, maxTokens = 800, role = 'unknown',
       STATE.lastAnthropicUsage = null;
     }
     if (STATE.activeView === 'prompts') renderPromptsView();
+    try { renderHeaderStatus(); } catch {}
     return result;
   } catch (e) {
     entry.error = e.message;
     entry.durationMs = Date.now() - startTime;
+    entry.streaming = false;
+    if (STATE.activeStream && STATE.activeStream.entryId === entry.id) {
+      STATE.activeStream = null;
+    }
     if (STATE.activeView === 'prompts') renderPromptsView();
+    try { renderHeaderStatus(); } catch {}
     throw e;
   }
 }
@@ -5633,6 +5840,7 @@ async function callWebLLM(systemPrompt, userMsg, maxTokens = 800, opts = null) {
   const temperature = opts?.temperature ?? 0.2;
   const top_p       = opts?.top_p ?? 1.0;
   const stop        = opts?.stop !== undefined ? opts.stop : COMMENTARY_STOP_SEQUENCES;
+  const stream      = typeof opts?.onChunk === 'function';
   const req = {
     messages: [
       { role: 'system', content: systemPrompt },
@@ -5641,10 +5849,26 @@ async function callWebLLM(systemPrompt, userMsg, maxTokens = 800, opts = null) {
     max_tokens: maxTokens,
     temperature,
     top_p,
+    ...(stream ? { stream: true } : {}),
   };
   if (stop) req.stop = stop;
-  const result = await engine.chat.completions.create(req);
-  return result.choices[0]?.message?.content || '';
+
+  if (!stream) {
+    const result = await engine.chat.completions.create(req);
+    return result.choices[0]?.message?.content || '';
+  }
+
+  // Streaming: WebLLM returns an async iterable of OpenAI-style chunks.
+  const iter = await engine.chat.completions.create(req);
+  let full = '';
+  for await (const chunk of iter) {
+    const delta = chunk?.choices?.[0]?.delta?.content || '';
+    if (delta) {
+      full += delta;
+      try { opts.onChunk(delta); } catch {}
+    }
+  }
+  return full;
 }
 
 // ─── Ollama backend ──────────────────────────────────────────────────
@@ -5657,6 +5881,7 @@ async function callOllama(systemPrompt, userMsg, maxTokens = 800, opts = null) {
   const stop = opts?.stop !== undefined ? (opts.stop || []) : COMMENTARY_STOP_SEQUENCES;
   const ollamaOpts = { num_predict: maxTokens, temperature, stop };
   if (opts?.top_p != null) ollamaOpts.top_p = opts.top_p;
+  const stream = typeof opts?.onChunk === 'function';
   const res = await fetch(`${url}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -5666,7 +5891,7 @@ async function callOllama(systemPrompt, userMsg, maxTokens = 800, opts = null) {
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMsg },
       ],
-      stream: false,
+      stream,
       options: ollamaOpts,
     }),
   });
@@ -5674,8 +5899,43 @@ async function callOllama(systemPrompt, userMsg, maxTokens = 800, opts = null) {
     const errText = await res.text();
     throw new Error(`Ollama ${res.status}: ${errText.slice(0, 200)}`);
   }
-  const data = await res.json();
-  return data.message?.content || '';
+
+  if (!stream) {
+    const data = await res.json();
+    return data.message?.content || '';
+  }
+
+  // Streaming: Ollama emits NDJSON — one JSON object per line. Each
+  // mid-stream object has { message: { content: <delta> }, done: false };
+  // the terminal object has { done: true } (and may also carry the final
+  // message). We accumulate deltas and fire opts.onChunk(delta).
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let full = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let evt;
+      try { evt = JSON.parse(line); } catch { continue; }
+      if (evt.error) {
+        throw new Error(`Ollama stream error: ${String(evt.error).slice(0, 200)}`);
+      }
+      const delta = evt?.message?.content || '';
+      if (delta) {
+        full += delta;
+        try { opts.onChunk(delta); } catch {}
+      }
+      if (evt.done) break;
+    }
+  }
+  return full;
 }
 
 async function testOllamaConnection() {
@@ -5694,6 +5954,7 @@ async function testOllamaConnection() {
 // ─── LM Studio backend (OpenAI-compatible) ───────────────────────────
 async function callLMStudio(systemPrompt, userMsg, maxTokens = 800, opts = null) {
   const url = (STATE.lmstudioUrl || 'http://localhost:1234').replace(/\/$/, '');
+  const stream = typeof opts?.onChunk === 'function';
   const body = {
     model: STATE.lmstudioModel || 'auto',
     messages: [
@@ -5703,6 +5964,7 @@ async function callLMStudio(systemPrompt, userMsg, maxTokens = 800, opts = null)
     max_tokens: maxTokens,
     temperature: opts?.temperature ?? 0.2,
     stop: opts?.stop !== undefined ? (opts.stop || []) : COMMENTARY_STOP_SEQUENCES,
+    ...(stream ? { stream: true } : {}),
   };
   if (opts?.top_p != null) body.top_p = opts.top_p;
   const res = await fetch(`${url}/v1/chat/completions`, {
@@ -5714,8 +5976,44 @@ async function callLMStudio(systemPrompt, userMsg, maxTokens = 800, opts = null)
     const errText = await res.text();
     throw new Error(`LM Studio ${res.status}: ${errText.slice(0, 200)}`);
   }
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content || '';
+
+  if (!stream) {
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || '';
+  }
+
+  // Streaming: OpenAI-compatible SSE. Lines look like
+  //   data: {"choices":[{"delta":{"content":"..."},"index":0}]}
+  // terminated by a literal `data: [DONE]`. We parse blocks separated
+  // by blank lines, decode the data payload, and fire opts.onChunk.
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let full = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n\n')) >= 0) {
+      const block = buf.slice(0, nl);
+      buf = buf.slice(nl + 2);
+      let dataLine = '';
+      for (const line of block.split('\n')) {
+        if (line.startsWith('data:')) dataLine = line.slice(5).trim();
+      }
+      if (!dataLine) continue;
+      if (dataLine === '[DONE]') return full;
+      let evt;
+      try { evt = JSON.parse(dataLine); } catch { continue; }
+      const delta = evt?.choices?.[0]?.delta?.content || '';
+      if (delta) {
+        full += delta;
+        try { opts.onChunk(delta); } catch {}
+      }
+    }
+  }
+  return full;
 }
 
 async function testLMStudioConnection() {
@@ -11364,9 +11662,13 @@ function entityLink(entityIdOrCanonical) {
   return `<a class="entity-link" data-entity-id="${escapeHtml(id)}" href="#" title="Show this entity in the inspector">${escapeHtml(canonical)}</a>`;
 }
 
-// Citation marker — superscript bracketed number, click opens modal.
+// Citation marker — ⓢ followed by an index pointing at the footnotes
+// block under each answer. Click opens the source-span modal. The
+// data-citation-kind attribute is "source" today; future grounded-
+// librarian work will mint "modal" markers (ⓜ) for peer-gap and
+// hypothesis-expectation findings.
 function citationMarker(defId, groundingIdx, n) {
-  return `<sup class="citation" data-def-id="${escapeHtml(defId)}" data-grounding-idx="${groundingIdx}" tabindex="0" title="Show the cited source span">[${n}]</sup>`;
+  return `<sup class="citation" data-def-id="${escapeHtml(defId)}" data-grounding-idx="${groundingIdx}" data-citation-kind="source" data-citation-n="${n}" tabindex="0" title="Show the cited source span">ⓢ${n}</sup>`;
 }
 
 // Render a single value (scalar or entity) as inline HTML.
@@ -11670,15 +11972,22 @@ function renderLibrarianTranscript() {
       const mode = t.viewMode || globalMode;
       const haveEdits = !!(t.editedAnswer && t.edits && t.edits.length);
       let bodyHTML;
+      let footnoteSourceHtml;
       if (haveEdits && mode === 'diff') {
         bodyHTML = `<div class="answer-mode-diff">${t.editedAnswer}</div>`;
         bodyHTML += `<div class="answer-raw-companion"><span class="muted">raw:</span> ${t.answer}</div>`;
+        // In diff mode the polished version is the primary; cite from it
+        footnoteSourceHtml = t.editedAnswer;
       } else if (haveEdits && mode === 'polished') {
         bodyHTML = t.editedAnswer;
+        footnoteSourceHtml = t.editedAnswer;
       } else {
         // mode === 'raw', or no edits available yet
         bodyHTML = t.answer;
+        footnoteSourceHtml = t.answer;
       }
+      const footnotesHtml = renderAnswerFootnotes(collectCitationsFromHtml(footnoteSourceHtml));
+      bodyHTML += footnotesHtml;
 
       // Inline per-turn toggle. Only meaningful when a polish is
       // available (or pending / errored).
@@ -11743,10 +12052,23 @@ function renderLibrarianTranscript() {
   // Wire turn focus
   transcript.querySelectorAll('.chat-turn').forEach(el => {
     el.addEventListener('click', (e) => {
-      // Don't intercept clicks on entity links, citation markers, or the
-      // per-turn polish toggle (handled separately below).
-      if (e.target.closest('.entity-link') || e.target.closest('.citation') || e.target.closest('.polish-toggle')) return;
+      // Don't intercept clicks on entity links, citation markers,
+      // footnote items, or the per-turn polish toggle (handled
+      // separately below).
+      if (e.target.closest('.entity-link') ||
+          e.target.closest('.citation') ||
+          e.target.closest('.footnote-item') ||
+          e.target.closest('.polish-toggle')) return;
       focusLibrarianTurn(el.getAttribute('data-turn-id'));
+    });
+  });
+
+  // Wire footnote-item clicks → same source modal as inline ⓢ markers
+  transcript.querySelectorAll('.footnote-item').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openCitationFromMarker(el);
     });
   });
 
@@ -11799,12 +12121,116 @@ function renderLibrarianTranscript() {
 function openCitationFromMarker(el) {
   const defId = el.getAttribute('data-def-id');
   const gIdx = parseInt(el.getAttribute('data-grounding-idx'), 10);
-  let def = null;
+  const def = lookupDef(defId);
+  if (def && def.grounding[gIdx]) showSourceSpanModal(def.grounding[gIdx], { def });
+}
+
+// Resolve a def by id across STATE.defs (which is a Map of subject → defs[]).
+function lookupDef(defId) {
+  if (!defId) return null;
   for (const defs of STATE.defs.values()) {
     const f = defs.find(d => d.id === defId);
-    if (f) { def = f; break; }
+    if (f) return f;
   }
-  if (def && def.grounding[gIdx]) showSourceSpanModal(def.grounding[gIdx], { def });
+  return null;
+}
+
+// ─── Phase A: chunk shim + footnotes block ──────────────────────────
+// The grounded-streaming librarian (v25 spec) produces multi-chunk
+// responses with per-chunk metadata. Today's turns store a single
+// `answer` HTML string (and optionally an `editedAnswer` from polish).
+// synthesizeTurnChunks() exposes the chunk shape Phase B will write
+// directly, while remaining a no-op for callers that don't care.
+function synthesizeTurnChunks(turn) {
+  if (turn.chunks && turn.chunks.length) return turn.chunks;
+  const chunks = [];
+  if (turn.answer) {
+    chunks.push({
+      id: turn.turnId + ':templated',
+      kind: 'templated',
+      html: turn.answer,
+      generatedAt: turn.timestamp,
+      verifiedAt: turn.timestamp,  // templated answers are grounded by construction
+      regenerated: false,
+      disclosed: false,
+      citations: collectCitationsFromHtml(turn.answer),
+    });
+  }
+  if (turn.editedAnswer) {
+    chunks.push({
+      id: turn.turnId + ':polished',
+      kind: 'polished',
+      html: turn.editedAnswer,
+      generatedAt: turn.editsCompletedAt || turn.timestamp,
+      verifiedAt: null,  // polish is not yet grounding-verified — Phase B
+      regenerated: false,
+      disclosed: false,
+      citations: collectCitationsFromHtml(turn.editedAnswer),
+    });
+  }
+  return chunks;
+}
+
+// Walk a rendered answer's HTML for <sup class="citation"> markers in
+// document order. Returns the in-order list so the footnotes block
+// indices line up with the marker numbers (which are per-answer
+// monotonic counters set by the templater).
+function collectCitationsFromHtml(html) {
+  if (!html) return [];
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const nodes = tmp.querySelectorAll('sup.citation');
+  const out = [];
+  for (const node of nodes) {
+    const n = parseInt(node.getAttribute('data-citation-n'), 10);
+    out.push({
+      n: Number.isFinite(n) ? n : (out.length + 1),
+      defId: node.getAttribute('data-def-id'),
+      groundingIdx: parseInt(node.getAttribute('data-grounding-idx'), 10) || 0,
+      kind: node.getAttribute('data-citation-kind') || 'source',
+    });
+  }
+  // De-dup by (defId, groundingIdx) — the same span may be cited many
+  // times in one answer; the footnote should appear once.
+  const seen = new Set();
+  const deduped = [];
+  for (const c of out) {
+    const key = `${c.kind}|${c.defId}|${c.groundingIdx}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(c);
+  }
+  return deduped;
+}
+
+// Build the footnotes block that sits under the answer body. Each item
+// shows the marker, source name, sentence index, and a snippet of the
+// cited span. Click → showSourceSpanModal (same as the inline marker).
+function renderAnswerFootnotes(citations) {
+  if (!citations || citations.length === 0) return '';
+  const items = [];
+  for (const c of citations) {
+    if (c.kind !== 'source') continue;  // ⓜ markers will render here once Phase E lands
+    const def = lookupDef(c.defId);
+    const g = def?.grounding?.[c.groundingIdx];
+    if (!g) continue;
+    const srcName = STATE.sources.get(g.sourceId)?.name || g.sourceId || 'unknown source';
+    const locus = g.sentenceIdx != null ? `sentence ${g.sentenceIdx}` : '';
+    const span = (g.spanText || '').trim();
+    const snippet = span.length > 180 ? span.slice(0, 180) + '…' : span;
+    items.push(
+      `<div class="footnote-item" data-def-id="${escapeHtml(c.defId)}" data-grounding-idx="${c.groundingIdx}" tabindex="0" title="Open the cited span in context">` +
+        `<span class="footnote-marker">ⓢ${c.n}</span>` +
+        `<span class="footnote-meta">${escapeHtml(srcName)}${locus ? ' · ' + escapeHtml(locus) : ''}</span>` +
+        (snippet ? `<span class="footnote-span">"${escapeHtml(snippet)}"</span>` : '') +
+      `</div>`
+    );
+  }
+  if (items.length === 0) return '';
+  return `<div class="answer-footnotes" aria-label="Footnotes for cited spans">
+    <div class="answer-footnotes-label">footnotes · ${items.length} cited span${items.length === 1 ? '' : 's'}</div>
+    ${items.join('')}
+  </div>`;
 }
 
 function renderEvidencePane() {
@@ -12048,12 +12474,17 @@ function renderConstructionTrace(turn) {
 // re-inject after editing is captured in tokens[] for the applier.
 function answerToEditableText(html) {
   if (!html) return { plain: '', tokens: [] };
-  // Tokenize <a class="entity-link">…</a> and <sup class="citation">[N]</sup>
-  // into placeholders we can resurrect later.
+  // Tokenize <a class="entity-link">…</a> and <sup class="citation">…</sup>
+  // into placeholders we can resurrect later. The visible glyph inside
+  // citation markers is now ⓢN (Phase A), but the older [N] form is
+  // still tolerated so any pre-Phase-A turn HTML kept in memory keeps
+  // working through a polish round-trip. The interchange format with
+  // the LLM stays [N] — the polish system prompt and validator are
+  // both written in that format.
   const tokens = [];
   let plain = '';
   let pos = 0;
-  const re = /<(a class="entity-link"[^>]*>[\s\S]*?<\/a>|sup class="citation"[^>]*>\[(\d+)\]<\/sup>)/g;
+  const re = /<(a class="entity-link"[^>]*>[\s\S]*?<\/a>|sup class="citation"[^>]*>(?:ⓢ|\[)(\d+)\]?<\/sup>)/g;
   let m;
   while ((m = re.exec(html)) !== null) {
     plain += decodeHtmlEntities(html.slice(pos, m.index).replace(/<[^>]+>/g, ''));
@@ -12235,7 +12666,7 @@ function applyPolishToTemplatedHTML(originalHTML, polishedPlain) {
     if (bestKind === 'entity') {
       html += entityHTMLByName.get(bestKey);
     } else {
-      html += citationHTMLByN.get(parseInt(bestKey, 10)) || `<sup class="citation">[${bestKey}]</sup>`;
+      html += citationHTMLByN.get(parseInt(bestKey, 10)) || `<sup class="citation" data-citation-kind="source" data-citation-n="${bestKey}">ⓢ${bestKey}</sup>`;
     }
     rest = rest.slice(bestIdx + bestLen);
   }
@@ -13855,7 +14286,12 @@ function renderPromptsContextPanels() {
     const now = Date.now();
     for (const p of pending.slice(-3)) {
       const elapsed = now - (p.timestamp || now);
-      procHtml += `<div class="proc-pending-item alive">${escapeHtml(p.role || 'unknown')} · ${elapsed}ms</div>`;
+      // When mid-stream, show the live char count so the reader can
+      // watch tokens drip in without expanding the prompts view.
+      const live = p.streaming
+        ? ` <span class="stream-pill"><span class="live-dot"></span>${(p.streamBuffer || '').length}c · ${escapeHtml(humanRole(p.role))}</span>`
+        : '';
+      procHtml += `<div class="proc-pending-item alive">${escapeHtml(humanRole(p.role))} · ${elapsed}ms${live}</div>`;
     }
   }
 
@@ -13949,23 +14385,33 @@ function renderPromptsView() {
     const time = new Date(entry.timestamp).toLocaleTimeString([], {hour12: false}) + '.' + String(entry.timestamp % 1000).padStart(3, '0');
     const status = entry.error ? `<span class="status err">error</span>` :
                    entry.response != null ? `<span class="status ok">ok</span>` :
+                   entry.streaming ? `<span class="status streaming">streaming…</span>` :
                    `<span class="status pending">pending…</span>`;
-    const dur = entry.durationMs != null ? `${entry.durationMs}ms` : '—';
+    const dur = entry.durationMs != null ? `${entry.durationMs}ms` :
+                entry.streaming ? `${Date.now() - entry.timestamp}ms` : '—';
     let cacheBadge = '';
     if (entry.cacheRead != null && entry.cacheRead > 0) {
       cacheBadge = ` <span class="cache-badge hit" title="Prompt cache HIT — ${entry.cacheRead} tokens read from cache">cache hit · ${entry.cacheRead}</span>`;
     } else if (entry.cacheCreate != null && entry.cacheCreate > 0) {
       cacheBadge = ` <span class="cache-badge create" title="Cache created — ${entry.cacheCreate} tokens cached for next call">cache create · ${entry.cacheCreate}</span>`;
     }
-    html += `<div class="prompt-card${expanded ? ' expanded' : ''}${entry.error ? ' has-error' : ''}" data-id="${entry.id}">
+    const humanRoleLabel = humanRole(entry.role);
+    html += `<div class="prompt-card${expanded ? ' expanded' : ''}${entry.error ? ' has-error' : ''}${entry.streaming ? ' is-streaming' : ''}" data-id="${entry.id}">
       <div class="prompt-summary">
         <div class="prompt-time">${escapeHtml(time)}</div>
-        <div class="prompt-role role-${entry.role}">${escapeHtml(entry.role)}</div>
+        <div class="prompt-role role-${entry.role}" title="${escapeHtml(entry.role)}">${escapeHtml(humanRoleLabel)}</div>
         <div class="prompt-backend">${escapeHtml(entry.backend)} · ${escapeHtml(entry.backendModel || '')}${cacheBadge}</div>
         <div class="prompt-tokens">in <strong>${entry.approxInputTokens}</strong>↓ <strong>${entry.approxOutputTokens}</strong>↑ tok</div>
         <div class="prompt-dur">${escapeHtml(dur)}</div>
         ${status}
       </div>`;
+    // Live preview while streaming, even when collapsed — so the reader
+    // can see what the model is producing without expanding the card.
+    if (entry.streaming && entry.streamBuffer && !expanded) {
+      const buf = entry.streamBuffer;
+      const tail = buf.length > 600 ? '…' + buf.slice(-600) : buf;
+      html += `<div class="prompt-stream-preview"><span class="stream-meta">live · ${buf.length} chars · ${escapeHtml(humanRoleLabel)}</span>${escapeHtml(tail)}</div>`;
+    }
     if (expanded) {
       html += `<div class="prompt-detail">`;
       html += `<div class="detail-section">
@@ -13976,7 +14422,13 @@ function renderPromptsView() {
         <div class="detail-label">user message · ${entry.userChars} chars · ~${approxTokens(entry.userMsg)} tokens</div>
         <pre class="detail-content">${escapeHtml(entry.userMsg)}</pre>
       </div>`;
-      if (entry.response != null) {
+      if (entry.streaming && entry.response == null) {
+        const buf = entry.streamBuffer || '';
+        html += `<div class="detail-section">
+          <div class="detail-label">streaming · ${buf.length} chars · ~${approxTokens(buf)} tokens · live</div>
+          <pre class="detail-content response streaming">${escapeHtml(buf)}</pre>
+        </div>`;
+      } else if (entry.response != null) {
         html += `<div class="detail-section">
           <div class="detail-label">response · ${entry.responseChars} chars · ~${entry.approxOutputTokens} tokens · ${entry.durationMs}ms</div>
           <pre class="detail-content response">${escapeHtml(entry.response)}</pre>
@@ -15562,6 +16014,20 @@ function renderHeaderStatus() {
     apiStatus.innerHTML = `<strong>LOCAL LLM</strong> <span class="backend-detail">lm-studio · ${escapeHtml(STATE.lmstudioModel)}</span>`;
   }
 
+  // Live stream indicator — sits next to the backend pill so the user
+  // can tell at a glance not just "local llama is selected" but
+  // "local llama is, right now, generating <role> · NNNc". Updates on
+  // every chunk via scheduleStreamRender.
+  if (STATE.activeStream) {
+    const s = STATE.activeStream;
+    const detail = apiStatus.querySelector('.backend-detail');
+    if (detail) {
+      detail.insertAdjacentHTML('beforeend',
+        ` <span class="stream-pill" title="${escapeHtml(s.role)} (${s.chars} chars streamed)">` +
+        `<span class="live-dot"></span>generating ${escapeHtml(s.humanRole || s.role)} · ${s.chars}c</span>`);
+    }
+  }
+
   if (STATE.G.length === 0) {
     ingestDot.className = 'dot';
     ingestStatus.textContent = 'no corpus';
@@ -16877,7 +17343,12 @@ async function _dreamGenerateProse(session, injection) {
   }
   const userMsg = _dreamBuildProseUserMsg(injection);
 
-  const supportsStream = STATE.llmBackend === 'anthropic';
+  // Every backend now honors opts.onChunk (Anthropic SSE, Ollama NDJSON,
+  // LM Studio SSE, WebLLM async iterator) so the Dreamer can stream
+  // sentence-by-sentence into the journal regardless of which model is
+  // running. Local llama via Ollama gets the same live-prose UX that
+  // used to be Anthropic-only.
+  const supportsStream = true;
   if (supportsStream && journal) {
     let buffer = '';
     let cursor = 0;
