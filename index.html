@@ -1987,6 +1987,114 @@ code {
 .cache-badge.hit { background: var(--confirm-soft, #d4e8d4); color: var(--confirm, #4a7c59); border: 1px solid var(--confirm, #4a7c59); }
 .cache-badge.create { background: var(--paper-deep); color: var(--ink-soft); border: 1px solid var(--rule); }
 .prompt-dur { color: var(--ink-faint); font-size: 10px; text-align: right; }
+
+/* Three-panel context display at the top of the Prompts view: gist (evolving
+   hypothesis), active memory (textbase ring + prior sentence), and what's
+   currently being processed. Always rendered — the panels surface the state
+   of the model's reading even before the first LLM call returns. */
+.prompts-context {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.prompts-panel {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  min-height: 110px;
+  overflow: hidden;
+}
+.panel-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 8px;
+  border-bottom: 1px dashed var(--rule);
+  padding-bottom: 6px;
+}
+.panel-body {
+  flex: 1;
+  font-size: 11px;
+  color: var(--ink-soft);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  max-height: 220px;
+  line-height: 1.5;
+}
+.gist-current {
+  font-family: 'Newsreader', serif;
+  font-size: 12.5px;
+  color: var(--ink);
+  font-style: italic;
+  line-height: 1.55;
+}
+.gist-empty, .mem-empty, .proc-idle {
+  color: var(--ink-faint);
+  font-style: italic;
+}
+.panel-sub-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 10px 0 4px;
+}
+.gist-summary {
+  font-family: 'Newsreader', serif;
+  font-size: 12px;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+.gist-history-item {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--ink-faint);
+  padding: 2px 0;
+}
+.mem-ring {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--ink);
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mem-prior {
+  font-family: 'Newsreader', serif;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  font-style: italic;
+  line-height: 1.5;
+}
+.proc-current {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--ink);
+}
+.proc-pending-item {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--ink-soft);
+  padding: 2px 0;
+}
+.proc-pending-item.alive::before {
+  content: '● ';
+  color: var(--accent);
+  animation: proc-blink 1.2s ease-in-out infinite;
+}
+@keyframes proc-blink {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+@media (max-width: 920px) {
+  .prompts-context { grid-template-columns: 1fr; }
+}
 .status {
   font-size: 9px;
   letter-spacing: 0.1em;
@@ -12156,14 +12264,112 @@ function renderInspectView() {
   renderEmbedStatus();
 }
 
+// Three-panel context display for the Prompts view.
+//
+//   Gist           — the evolving document hypothesis + running summary +
+//                    a tail of prior hypothesis revisions. Frame.
+//   Active memory  — the textbase ring (last N classified EO events) plus
+//                    the verbatim prior sentence. The model's working set.
+//   In process     — what sentence is currently being classified, plus any
+//                    in-flight LLM calls (no response yet, no error).
+//
+// Always rendered; each sub-section falls back to a faint placeholder when
+// empty so the panels read as informative even before the first ingest.
+function renderPromptsContextPanels() {
+  // ── Gist: latest source's hypothesis + running summary + history ──
+  const sources = [...STATE.sources.values()];
+  const latestSource = sources.length ? sources[sources.length - 1] : null;
+  let gistHtml = '';
+  if (latestSource && latestSource.hypothesis) {
+    const line = formatHypothesisForClause(latestSource.hypothesis) || '';
+    gistHtml += `<div class="gist-current">${escapeHtml(line)}</div>`;
+  } else {
+    gistHtml += `<div class="gist-empty">No document hypothesis yet — ingest a source to populate.</div>`;
+  }
+  if (STATE.runningSummary && STATE.runningSummary.trim()) {
+    gistHtml += `<div class="panel-sub-label">running summary</div>`;
+    gistHtml += `<div class="gist-summary">${escapeHtml(STATE.runningSummary.trim())}</div>`;
+  }
+  const history = STATE.hypothesisHistory || [];
+  if (history.length > 1) {
+    const priorCount = history.length - 1;
+    gistHtml += `<div class="panel-sub-label">${priorCount} prior revision${priorCount === 1 ? '' : 's'}</div>`;
+    const recent = history.slice(0, -1).slice(-3).reverse();
+    for (const h of recent) {
+      const fromIdx = h.activeFromSentenceIdx;
+      const toIdx = h.activeToSentenceIdx;
+      const span = (fromIdx != null && toIdx != null)
+        ? `s${fromIdx}–s${toIdx}`
+        : (fromIdx != null ? `from s${fromIdx}` : '');
+      const reason = h.reason ? ` · ${h.reason}` : '';
+      const label = (span + reason).trim() || 'earlier hypothesis';
+      gistHtml += `<div class="gist-history-item">${escapeHtml(label)}</div>`;
+    }
+  }
+
+  // ── Active memory: textbase ring + prior sentence ──
+  const ring = STATE.textbaseRing || [];
+  const ringMax = STATE.textbaseRingMax || 5;
+  let memHtml = '';
+  if (ring.length === 0) {
+    memHtml += `<div class="mem-empty">Textbase ring is empty — no events landed yet.</div>`;
+  } else {
+    memHtml += `<div class="panel-sub-label">textbase ring · last ${ring.length} of ${ringMax}</div>`;
+    memHtml += `<pre class="mem-ring">${escapeHtml(renderTextbaseRing())}</pre>`;
+  }
+  if (STATE.priorSentenceText && STATE.priorSentenceText.trim()) {
+    const prior = STATE.priorSentenceText.trim();
+    const trimmed = prior.length > 240 ? prior.slice(0, 240) + '…' : prior;
+    memHtml += `<div class="panel-sub-label">prior sentence</div>`;
+    memHtml += `<div class="mem-prior">"${escapeHtml(trimmed)}"</div>`;
+  }
+
+  // ── In process: currentlyProcessing + pending prompt calls ──
+  const cp = STATE.currentlyProcessing;
+  let procHtml = '';
+  if (cp) {
+    const srcName = STATE.sources.get(cp.sourceId)?.name || cp.sourceId || '?';
+    const sentence = cp.sentenceIdx != null ? `sentence ${cp.sentenceIdx}` : 'sentence ?';
+    const depth = cp.escalationDepth ? ` · escalation ${cp.escalationDepth}` : '';
+    procHtml += `<div class="proc-current">${escapeHtml(srcName)} · ${escapeHtml(sentence)}${escapeHtml(depth)}</div>`;
+  } else {
+    procHtml += `<div class="proc-idle">Idle — nothing being processed.</div>`;
+  }
+  const pending = (STATE.promptLog || []).filter(e => e.response == null && !e.error);
+  if (pending.length > 0) {
+    procHtml += `<div class="panel-sub-label">${pending.length} call${pending.length === 1 ? '' : 's'} in flight</div>`;
+    const now = Date.now();
+    for (const p of pending.slice(-3)) {
+      const elapsed = now - (p.timestamp || now);
+      procHtml += `<div class="proc-pending-item alive">${escapeHtml(p.role || 'unknown')} · ${elapsed}ms</div>`;
+    }
+  }
+
+  return `<div class="prompts-context">
+    <section class="prompts-panel panel-gist">
+      <div class="panel-label">Gist · evolving hypothesis</div>
+      <div class="panel-body">${gistHtml}</div>
+    </section>
+    <section class="prompts-panel panel-mem">
+      <div class="panel-label">Active memory</div>
+      <div class="panel-body">${memHtml}</div>
+    </section>
+    <section class="prompts-panel panel-proc">
+      <div class="panel-label">In process</div>
+      <div class="panel-body">${procHtml}</div>
+    </section>
+  </div>`;
+}
+
 function renderPromptsView() {
   const el = document.getElementById('prompts-body');
   const meta = document.getElementById('prompts-meta');
   if (!el) return;
 
   const log = STATE.promptLog;
+  const contextHtml = renderPromptsContextPanels();
   if (log.length === 0) {
-    el.innerHTML = `<div class="empty-state">LLM calls will appear here as they're made — system prompt, user message, response, timing, token estimates. Click any call to expand.</div>`;
+    el.innerHTML = contextHtml + `<div class="empty-state" style="margin-top: 14px;">No LLM calls logged yet — the panels above will populate as the model reads. Each call here will show system prompt, user message, response, timing, and token estimates. Click any call to expand.</div>`;
     meta.textContent = 'no calls yet';
     return;
   }
@@ -12190,8 +12396,13 @@ function renderPromptsView() {
     : '';
   meta.innerHTML = `${log.length} call${log.length === 1 ? '' : 's'} · <strong>${totalIn.toLocaleString()}</strong> input tokens · <strong>${totalOut.toLocaleString()}</strong> output tokens · avg ${avgDur}ms · ${errors} error${errors === 1 ? '' : 's'}${pending ? ` · ${pending} pending` : ''}${cacheLabel}`;
 
+  // Context panels (gist · active memory · in process) sit above the
+  // call stats so the reader sees what the model is *thinking* before
+  // they see the catalogue of what it asked.
+  let html = contextHtml;
+
   // Header / actions
-  let html = `<div class="prompts-header">
+  html += `<div class="prompts-header">
     <div class="prompts-stats">
       <div class="stat-block">
         <div class="stat-label">total calls</div>
@@ -13399,6 +13610,7 @@ const LOG_FILTER = {
   op: null,        // 'CON' | 'SYN' | ... or null for all
   sourceId: null,  // source ID or null for all
   search: '',      // free text on subject/predicate/value
+  sort: 'newest',  // 'newest' (most recent at top, default) | 'oldest'
 };
 
 // Decompose an event into its EO-notation components — useful for both
@@ -13465,7 +13677,7 @@ const LOG_RENDER = {
 };
 
 function logFilterFingerprint() {
-  return `${LOG_FILTER.op || ''}|${LOG_FILTER.sourceId || ''}|${LOG_FILTER.search || ''}`;
+  return `${LOG_FILTER.op || ''}|${LOG_FILTER.sourceId || ''}|${LOG_FILTER.search || ''}|${LOG_FILTER.sort}`;
 }
 
 function logEventPasses(ev, offsets) {
@@ -13569,12 +13781,16 @@ function renderLogView() {
       html += `<button class="log-filter-pill${active}" data-source="${escapeHtml(id)}">${escapeHtml(src.name)}</button>`;
     }
   }
+  html += `<span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-left:12px;margin-right:6px;">sort:</span>`;
+  html += `<button class="log-filter-pill log-sort-pill${LOG_FILTER.sort === 'newest' ? ' active' : ''}" data-sort="newest" title="Most recent at top">newest first</button>`;
+  html += `<button class="log-filter-pill log-sort-pill${LOG_FILTER.sort === 'oldest' ? ' active' : ''}" data-sort="oldest" title="Oldest at top">oldest first</button>`;
   html += `<input type="text" id="log-search" placeholder="search subject/predicate/value…" value="${escapeHtml(LOG_FILTER.search)}" style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 8px;border:1px solid var(--rule);background:var(--paper);min-width:220px;" />`;
   html += `</div>`;
 
   // Cap rows for performance — show the most recent.
   const cap = LOG_RENDER.cap;
   const showing = filtered.slice(-cap);
+  const ordered = LOG_FILTER.sort === 'newest' ? [...showing].reverse() : showing;
   if (filtered.length > cap) {
     html += `<div style="color: var(--ink-faint); font-style: italic; margin-bottom: 8px;font-family:'IBM Plex Mono',monospace;font-size:10px;">showing latest ${cap} of ${filtered.length} matching events</div>`;
   }
@@ -13592,7 +13808,7 @@ function renderLogView() {
         <th class="col-source">source</th>
       </tr></thead>
       <tbody id="log-tbody">`;
-  for (const ev of showing) html += logRowHtml(ev, offsets, opColor);
+  for (const ev of ordered) html += logRowHtml(ev, offsets, opColor);
   html += `</tbody></table></div>`;
 
   el.innerHTML = html;
@@ -13608,6 +13824,12 @@ function renderLogView() {
   el.querySelectorAll('.log-filter-pill[data-source]').forEach(b => {
     b.addEventListener('click', () => {
       LOG_FILTER.sourceId = b.getAttribute('data-source') || null;
+      renderLogView();
+    });
+  });
+  el.querySelectorAll('.log-sort-pill').forEach(b => {
+    b.addEventListener('click', () => {
+      LOG_FILTER.sort = b.getAttribute('data-sort') || 'newest';
       renderLogView();
     });
   });
@@ -13658,9 +13880,15 @@ function appendLogRowLive(ev) {
   }
   const opColor = op => phasepostColor(op + '(_)') || '#6a6358';
   LOG_RENDER.flashIds.add(ev.id);
-  tbody.insertAdjacentHTML('beforeend', logRowHtml(ev, offsets, opColor));
-  // Cap the table — drop the oldest row if we exceed the cap.
-  while (tbody.children.length > LOG_RENDER.cap) tbody.removeChild(tbody.firstChild);
+  if (LOG_FILTER.sort === 'newest') {
+    tbody.insertAdjacentHTML('afterbegin', logRowHtml(ev, offsets, opColor));
+    // Cap the table — drop the oldest (now at the bottom) row if we exceed the cap.
+    while (tbody.children.length > LOG_RENDER.cap) tbody.removeChild(tbody.lastChild);
+  } else {
+    tbody.insertAdjacentHTML('beforeend', logRowHtml(ev, offsets, opColor));
+    // Cap the table — drop the oldest (at the top) row if we exceed the cap.
+    while (tbody.children.length > LOG_RENDER.cap) tbody.removeChild(tbody.firstChild);
+  }
   wireLogTable(document.getElementById('log-body'));
   // Update meta counter
   const visibleCount = STATE.G.filter(eventVisibleInLog).length;
@@ -13669,9 +13897,12 @@ function appendLogRowLive(ev) {
     ? visibleCount
     : STATE.G.filter(e => logEventPasses(e, offsets)).length;
   updateLogMeta(filteredCount, visibleCount);
-  // Auto-scroll to bottom so the latest event is visible.
+  // Auto-scroll so the latest event stays in view, depending on sort direction.
   const body = document.getElementById('log-body');
-  if (body) body.scrollTop = body.scrollHeight;
+  if (body) {
+    if (LOG_FILTER.sort === 'newest') body.scrollTop = 0;
+    else body.scrollTop = body.scrollHeight;
+  }
   // Clear the flash class after the animation ends so future re-renders
   // don't keep replaying it.
   setTimeout(() => { LOG_RENDER.flashIds.delete(ev.id); }, 1300);
