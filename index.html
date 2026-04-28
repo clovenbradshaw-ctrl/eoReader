@@ -3071,7 +3071,7 @@ const STATE = {
   lastDecayPassAt: 0,                     // sentence count when the decay pass last ran
   outcomeDecayEveryN: 50,                 // sentences between decay passes
   recBaseDelta: 0.15,                     // base hypothesisDivergenceDelta; modulated by hypothesis.precision
-  hypothesisHistory: new Map(),           // Map<sourceId, [{hypothesis, activeFromSentenceIdx, activeToSentenceIdx, reason, ts}]>; per-source REC epochs
+  hypothesisHistory: new Map(),           // Map<sourceId, [{ts, sentenceIdx, hypothesis, reason, ...}]>; per-source promotion-event log (oldest first; reasons: 'minimal_fallback' | 'first_promotion' | 'divergence_check' | 'end_of_doc_promotion')
   hypothesisBaselineCosine: null,         // cosine at last refresh, for threshold compare
   hypothesisEmbedding: null,              // cached Int8Array; recompute only on hypothesis refresh
   lastSummaryUpdateAt: 0,                 // global sentence idx of last summary regeneration
@@ -5094,6 +5094,28 @@ function mintEntity(canonical, aliases = [], kind = null, opts = {}) {
   // Trust the LLM's separation when it told us they're distinct.
   const bypassMatcher = !!opts.bypassMatcher;
 
+  // Discourse-marker gate. Even if the per-clause LLM proposes "Consequently"
+  // or "Therefore" as an entity reference, refuse to mint. These tokens
+  // never name a referent. Skipped only for the bypassMatcher path used by
+  // preMintHypothesisPrincipals, where the input is a hypothesis-declared
+  // proper name.
+  if (!bypassMatcher) {
+    const c = String(canonical || '').trim();
+    if (c && !c.includes(' ') && DISCOURSE_MARKERS.has(c.toLowerCase())) return null;
+  }
+
+  // Chrome-suspect gate. Section headers, page numbers, running heads,
+  // captions, and footnotes flagged as chrome must not produce entities.
+  // Read the parent sentence's flag from the source record; defense-in-depth
+  // against any path that didn't already filter at surface extraction.
+  const _np = opts.narrativePos;
+  if (_np && _np.sourceId != null && _np.sentenceIdx != null) {
+    const _src = STATE.sources.get(_np.sourceId);
+    const _sent = _src && Array.isArray(_src.sentences)
+      ? _src.sentences.find(s => s.idx === _np.sentenceIdx) : null;
+    if (_sent && _sent.chromeSuspect) return null;
+  }
+
   // Span-grounding context (optional). When supplied, alias additions and
   // the INS event get tied to the source sentence where the determination
   // was made. This is what makes the "epithet evolution" auditable —
@@ -5222,6 +5244,19 @@ const COMMON_INITIAL_CAPS = new Set([
   'mr','mrs','ms','dr','sir','lord','lady','madam','miss',
 ]);
 
+// Discourse markers — sentence-initial connectives that get capitalized but
+// never name a referent. The mint path checks this set BEFORE INS so a
+// sentence-opening "Consequently the mental attitude…" doesn't fabricate an
+// entity called "Consequently". Same set short-circuits coref resolution
+// (a later "Consequently" should not match the earlier mint either).
+const DISCOURSE_MARKERS = new Set([
+  'consequently','therefore','thus','however','hence','furthermore','moreover',
+  'nevertheless','nonetheless','additionally','likewise','similarly',
+  'meanwhile','otherwise','subsequently','conversely','accordingly','besides',
+  'indeed','instead','then','yet','still','so','now','first','second','third',
+  'finally','lastly','also','further',
+]);
+
 // Sentence-initial filler words that get capitalized but aren't part of names.
 // "By Annie Karni", "When I look at my party", "Now Democrats argue" → strip the leading word.
 const NAME_FILLER_PREFIXES = new Set([
@@ -5260,10 +5295,13 @@ function stripLeadingWord(surface, wordSet) {
 }
 
 // Iteratively strip leading filler words (handles "When I look", "By the way", etc.)
+// Also strips leading discourse markers so a sentence like "Consequently John
+// argues…" extracts "John" as the entity, not "Consequently John".
 function stripLeadingFillers(surface) {
   let cur = surface;
-  for (let i = 0; i < 4; i++) {  // bounded
-    const next = stripLeadingWord(cur, NAME_FILLER_PREFIXES);
+  for (let i = 0; i < 6; i++) {  // bounded
+    let next = stripLeadingWord(cur, NAME_FILLER_PREFIXES);
+    if (next === cur) next = stripLeadingWord(cur, DISCOURSE_MARKERS);
     if (next === cur) break;
     cur = next;
   }
@@ -5326,6 +5364,10 @@ function detectMentions(clauseText) {
     // Single-word common-cap filter (sentence starters, fillers like "Listen", "All")
     const firstWord = surface.split(/\s+/)[0].toLowerCase().replace(/'.*$/, '');
     if (!surface.includes(' ') && (COMMON_INITIAL_CAPS.has(firstWord) || NAME_FILLER_PREFIXES.has(firstWord))) continue;
+    // Discourse-marker gate: a single capitalized connective ("Consequently",
+    // "Therefore") never names an entity. Skip surface-extraction so neither
+    // INS nor coref resolution can attach to it.
+    if (!surface.includes(' ') && DISCOURSE_MARKERS.has(firstWord)) continue;
 
     // Strip leading filler words and titles for the canonical form.
     // Original surface kept as alias so later mentions in either form resolve.
@@ -5336,6 +5378,8 @@ function detectMentions(clauseText) {
     // And must not collapse to a single common-cap or filler word
     const cleanFirst = canonical.split(/\s+/)[0].toLowerCase().replace(/'.*$/, '');
     if (!canonical.includes(' ') && (COMMON_INITIAL_CAPS.has(cleanFirst) || NAME_FILLER_PREFIXES.has(cleanFirst))) continue;
+    // Same discourse-marker gate against the cleaned canonical.
+    if (!canonical.includes(' ') && DISCOURSE_MARKERS.has(cleanFirst)) continue;
 
     out.push({
       surface: canonical,
@@ -7711,14 +7755,18 @@ function recentEventCentroid(n = 30) {
 // The regeneration is a small LLM call. Anti-invention: every claim must
 // be supported by events between lastSummaryEventIdx and now.
 
-const SUMMARY_REGEN_SYSTEM = `You write a short reading summary that describes ONLY what's established by sentences drawn from a document.
+const SUMMARY_REGEN_SYSTEM = `You paraphrase content. You do NOT narrate the act of reading.
+
+TASK: Produce a flat third-person paraphrase of the claims made in the supplied content.
 
 ABSOLUTE RULES:
-- Use ONLY information present in the working hypothesis, prior summary, and the verbatim sentences provided. Do NOT invent details, names, or backstory.
-- If the prior summary contained details that are NOT supported by the sentences below, drop them.
-- Maximum 4 sentences. Tighter is better. The summary is gist, not transcript.
-- The first sentence should locate the read inside the document's frame (drawing on the working hypothesis); subsequent sentences describe what just happened.
-- Output ONLY the summary text. No preamble, no markdown, no quotes.`;
+- Summarize ONLY the substantive claims present in the supplied content. Do not invent details, names, or backstory not stated.
+- Do NOT describe the act of reading, summarizing, encountering, noting, observing, examining, or discovering. You are not a narrator of your own process.
+- Do NOT reference sentence numbers, paragraph marks, glyphs, or any internal buffer state.
+- Do NOT use phrases like "this document," "the text," "the author," "the passage," "the reader," "upon examination," "it is discovered," "has been noted," "has been encountered," "has not yet been," "so far," "thus far," "prior to this point."
+- Output a flat third-person description of what is claimed in the content. No framing. No meta-commentary.
+- Maximum 4 sentences. Tighter is better.
+- Output ONLY the paraphrase text. No preamble, no markdown, no quotes.`;
 
 async function regenerateRunningSummary(source, sentenceIdx, reason) {
   if (!isLLMReady()) return null;
@@ -7731,15 +7779,20 @@ async function regenerateRunningSummary(source, sentenceIdx, reason) {
     .slice(-12)
     .map(s => s.text);
   if (sentenceTexts.length === 0) return null;
+  // Substantive-content gate. If the textbase ring contains very little
+  // material, the LLM has nothing to paraphrase and tends to fabricate
+  // meta-narration about its own buffer state. Bail out and leave the
+  // running summary as-is.
+  const SUMMARY_MIN_CHARS = 200;
+  const totalChars = sentenceTexts.join(' ').replace(/\s+/g, ' ').trim().length;
+  if (totalChars < SUMMARY_MIN_CHARS) return null;
 
   const contentParts = [];
-  contentParts.push(`Prior summary: ${STATE.runningSummary || '(none yet)'}`);
-  contentParts.push('');
-  contentParts.push('Sentences since prior summary (verbatim):');
+  contentParts.push('Content to paraphrase (verbatim sentences):');
   contentParts.push(sentenceTexts.join('\n'));
 
   const userMsg = assemblePrompt({
-    systemInstructions: 'Regenerate the running summary so it covers what the sentences below establish, framed inside the working hypothesis. 2-4 sentences. Do not invent. Output the summary text only.',
+    systemInstructions: 'Paraphrase the substantive claims in the content below as a flat third-person description. 2-4 sentences. Do not invent details. Do not narrate the act of reading, summarizing, or encountering. Do not reference sentence numbers, glyphs, or internal state. Output the paraphrase only.',
     hypothesisProse: STATE.hypothesisProse || '',
     runningSummary: STATE.runningSummary || '',
     recentSentences: STATE.recentSentences || [],
@@ -7759,6 +7812,14 @@ async function regenerateRunningSummary(source, sentenceIdx, reason) {
   summary = summary.replace(/^```[a-z]*\n?|```$/gi, '').trim();
   summary = summary.replace(/^["']|["']$/g, '').trim();
   if (!summary) return null;
+  // Meta-narration filter. If the model leaked process-talk despite the
+  // prompt, discard the output — better no summary than one describing the
+  // act of reading. Targets phrases unlikely to appear in content prose.
+  const metaPattern = /\b(this document|the text|the passage|the reader|the author|prior to this point|so far(?:[,.]|$)|thus far|upon (?:further )?examin\w*|it is (?:discovered|noted|observed)|been (?:noted|encountered|summariz\w*|observed)|has (?:not )?been summariz\w*|specific sentence|sentence has been|since then,? (?:a |an |the |that ))/i;
+  if (metaPattern.test(summary)) {
+    console.warn('[anchorage] dropping meta-narration summary:', summary.slice(0, 160));
+    return null;
+  }
   // Truncate to four sentences max — anti-transcript discipline.
   const sentSplit = summary.match(/[^.!?]+[.!?]+(\s|$)/g);
   if (sentSplit && sentSplit.length > 4) {
@@ -7810,6 +7871,53 @@ async function maybeRegenerateRunningSummary(source, sentenceIdx, sentenceText, 
   const reason = triggers.join('+');
   await regenerateRunningSummary(source, sentenceIdx, reason);
   return true;
+}
+
+// ─── HYPOTHESIS HISTORY ───────────────────────────────────────────────
+// Per-source, per-promotion event log. Schema (v25 spec):
+//   STATE.hypothesisHistory.get(sourceId) = [
+//     { ts, sentenceIdx, hypothesis, reason, ... }, ...   // oldest first
+//   ]
+// Reasons: 'minimal_fallback' | 'first_promotion' | 'divergence_check'
+//          | 'end_of_doc_promotion'
+// Each entry's `hypothesis` is the hypothesis that became active at
+// `sentenceIdx`. The minimal_fallback entry is written at intake so the
+// reader can see when the system was running on the stub. Legacy fields
+// (activeFromSentenceIdx, activeToSentenceIdx) are stamped for the
+// timeline UI: when a new entry is appended, the previous one's
+// activeToSentenceIdx is closed off to (newSentenceIdx - 1).
+const HYPOTHESIS_REASON_MAP = {
+  'first-promotion': 'first_promotion',
+  'divergence': 'divergence_check',
+  'end-of-doc-promotion': 'end_of_doc_promotion',
+  'minimal_fallback': 'minimal_fallback',
+};
+function appendHypothesisHistoryEntry(source, sentenceIdx, hypothesis, rawReason, opts = {}) {
+  if (!source || !source.id) return null;
+  const reason = HYPOTHESIS_REASON_MAP[rawReason] || rawReason || 'unspecified';
+  if (!STATE.hypothesisHistory.has(source.id)) {
+    STATE.hypothesisHistory.set(source.id, []);
+  }
+  const epochs = STATE.hypothesisHistory.get(source.id);
+  // Close off the previous entry's active span at sentenceIdx - 1
+  // (defaults to its own sentenceIdx when sentenceIdx is 0 / unknown).
+  if (epochs.length > 0) {
+    const prev = epochs[epochs.length - 1];
+    prev.activeToSentenceIdx = Math.max(prev.activeFromSentenceIdx ?? 0, sentenceIdx - 1);
+  }
+  const entry = {
+    ts: Date.now(),
+    sentenceIdx,
+    hypothesis,
+    reason,
+    sourceId: source.id,
+    activeFromSentenceIdx: sentenceIdx,
+    activeToSentenceIdx: sentenceIdx,
+    cosineAtTrigger: opts.cosineAtTrigger ?? null,
+    baseline: opts.baseline ?? null,
+  };
+  epochs.push(entry);
+  return entry;
 }
 
 // ─── HYPOTHESIS REFRESH (REC at document scope) ───────────────────────
@@ -7997,29 +8105,17 @@ async function refreshHypothesis(source, sentenceIdx, reason, currentCosine, bas
   parsed.refreshReason = reason;
   parsed.refreshAtSentence = sentenceIdx;
 
-  // Push the old hypothesis to this source's history (REC supersedes; it
-  // does not erase). hypothesisHistory is a Map<sourceId, [epochs]> — each
-  // source carries its own ordered list of supersession events.
-  const old = source.hypothesis || null;
-  if (old) {
-    if (!STATE.hypothesisHistory.has(source.id)) {
-      STATE.hypothesisHistory.set(source.id, []);
-    }
-    const epochs = STATE.hypothesisHistory.get(source.id);
-    const activeFrom = epochs.length > 0
-      ? (epochs[epochs.length - 1].activeToSentenceIdx + 1)
-      : 0;
-    epochs.push({
-      hypothesis: old,
-      sourceId: source.id,
-      activeFromSentenceIdx: activeFrom,
-      activeToSentenceIdx: sentenceIdx,
-      reason: reason,
-      cosineAtTrigger: currentCosine,
-      baseline: baselineCosine,
-      ts: Date.now(),
-    });
-  }
+  // Append a promotion entry to this source's history. Schema (per v25
+  // spec): { ts, sentenceIdx, hypothesis, reason, ... }. Each entry
+  // represents one promotion event; `hypothesis` is the newly-adopted
+  // hypothesis at that point. We also stamp legacy span fields
+  // (activeFromSentenceIdx / activeToSentenceIdx) for the timeline UI —
+  // the previous entry's activeToSentenceIdx is closed off when we push
+  // a new one.
+  appendHypothesisHistoryEntry(source, sentenceIdx, parsed, reason, {
+    cosineAtTrigger: currentCosine,
+    baseline: baselineCosine,
+  });
   source.hypothesis = parsed;
 
   // Regenerate the plain-language prose layer the assembler uses for the
@@ -8172,7 +8268,7 @@ function preMintHypothesisPrincipals(h, sourceId, opts = {}) {
       // separately from any computed site (which folds over evidence).
       ent.hypothesisSite = p.site;
     }
-    minted.push(ent);
+    if (ent) minted.push(ent);
   }
   return minted;
 }
@@ -9653,6 +9749,10 @@ async function ingestSource(text, opts = {}) {
   // a thin frame for the first ~30 events. The first grounded hypothesis
   // arrives via REC (refreshHypothesis) at the first-promotion sentence,
   // grounded in accumulated graph evidence rather than guess.
+  // Storage discipline: source.hypothesis is ALWAYS set on the source — at
+  // worst we install a stub-minimal hypothesis so finalHypothesis ships an
+  // entry per source (additive, never displaces other sources' entries).
+  let installedHyp = null;
   if (isLLMReady() && !opts.rawMode) {
     if (progressEl) progressEl.innerHTML = `forming minimal hypothesis (genre cues only)…`;
     try {
@@ -9665,33 +9765,67 @@ async function ingestSource(text, opts = {}) {
         },
       });
       if (hyp) {
-        source.hypothesis = hyp;
-        // Cache the hypothesis embedding eagerly so the divergence monitor
-        // has a baseline as soon as event embeddings start arriving.
-        try {
-          const f = await embedText(serializeHypothesisForEmbed(hyp));
-          if (f) STATE.hypothesisEmbedding = quantizeFloat32(f);
-        } catch (e) { /* embedder may not be ready yet — divergence monitor lazily catches up */ }
-        // Generate the plain-language prose layer that the assembler uses
-        // for the # Working Hypothesis section. Cached on STATE; refreshes
-        // run only when the hypothesis itself changes.
-        try { await regenerateHypothesisProse(hyp); } catch (e) { /* non-fatal */ }
-        // NOTE: minimal hypothesis has NO principals — so we deliberately
-        // skip preMintHypothesisPrincipals and emitHypothesisDEFs. The
-        // grounded hypothesis (with principals) is produced later by REC.
+        installedHyp = hyp;
         if (progressEl) {
           progressEl.innerHTML = `hypothesis (minimal): ${escapeHtml(hyp.summary || hyp.kind)} · beginning extraction (grounded refresh at sentence ${(STATE.hypothesisFirstPromotionAt || 30) + 1})…`;
         }
         console.log('[anchorage] minimal document hypothesis:', hyp);
-        renderActiveViewNow();
       } else if (progressEl) {
-        progressEl.innerHTML = `hypothesis call returned no result; proceeding without it…`;
+        progressEl.innerHTML = `hypothesis call returned no result; installing stub minimal and proceeding…`;
       }
     } catch (e) {
-      console.warn('Hypothesis call failed, proceeding without it:', e);
-      if (progressEl) progressEl.innerHTML = `hypothesis failed: ${escapeHtml(e.message)} · proceeding without it…`;
+      console.warn('Hypothesis call failed, installing stub minimal:', e);
+      if (progressEl) progressEl.innerHTML = `hypothesis failed: ${escapeHtml(e.message)} · installing stub minimal and proceeding…`;
     }
   }
+  // Stub-minimal fallback: build a hypothesis from source metadata only
+  // when the LLM call was unavailable, failed, or returned null. The stub
+  // is flagged so downstream code (and the export) can tell the difference
+  // between an LLM-derived minimal and a stub.
+  if (!installedHyp) {
+    installedHyp = {
+      kind: 'other',
+      register: 'other',
+      discourse: 'mixed',
+      period: 'unknown',
+      summary: '',
+      principals: [],
+      authorship: [],
+      expects_pronoun_chains: false,
+      expects_role_descriptions: false,
+      source_metadata: {
+        title: source.name || null,
+        name: (source.fileMetadata && source.fileMetadata.name) || null,
+        publicationDate: source.publicationDate || null,
+      },
+      minimal: true,
+      stub: true,
+      timestamp: Date.now(),
+      sampleChars: 0,
+      totalChars: processedText.length,
+    };
+  }
+  source.hypothesis = installedHyp;
+  // Record the minimal_fallback entry in hypothesisHistory so the reader
+  // can see when the system was running on the stub. This is the first
+  // entry for this source; subsequent promotions append to the same list.
+  appendHypothesisHistoryEntry(source, 0, installedHyp, 'minimal_fallback', {});
+  // Cache the hypothesis embedding eagerly so the divergence monitor
+  // has a baseline as soon as event embeddings start arriving.
+  try {
+    const f = await embedText(serializeHypothesisForEmbed(installedHyp));
+    if (f) STATE.hypothesisEmbedding = quantizeFloat32(f);
+  } catch (e) { /* embedder may not be ready yet — divergence monitor lazily catches up */ }
+  // Generate the plain-language prose layer that the assembler uses for
+  // the # Working Hypothesis section. Cached on STATE; refreshes run only
+  // when the hypothesis itself changes. Skipped when LLM isn't ready.
+  if (isLLMReady() && !opts.rawMode) {
+    try { await regenerateHypothesisProse(installedHyp); } catch (e) { /* non-fatal */ }
+  }
+  // NOTE: minimal hypothesis has NO principals — we deliberately skip
+  // preMintHypothesisPrincipals and emitHypothesisDEFs. The grounded
+  // hypothesis (with principals) is produced later by REC.
+  renderActiveViewNow();
 
   for (let i = 0; i < sentences.length; i++) {
     const clause = sentences[i];
@@ -9730,7 +9864,10 @@ async function ingestSource(text, opts = {}) {
     // For unmatched capitalized phrases, propose new entities so LLM can refer to them
     // Surface here is the cleaned canonical (titles/fillers stripped); the original
     // surface from the regex is preserved on the mention object.
-    const newCandidates = mentions
+    // Chrome-suspect gate: skip the entire mint pass for sentences flagged as
+    // page chrome (section headers, page numbers, captions, footnotes). The
+    // referent will be re-detected from a non-chrome sentence later.
+    const newCandidates = isChromeSuspect ? [] : mentions
       .filter(m => m.isCapitalized && !m.matchedEntity && !m.isPronoun);
 
     const seenCanonicals = new Set();
@@ -9752,10 +9889,11 @@ async function ingestSource(text, opts = {}) {
         firstSurface: original,
         authoredBy: 'matcher',
       });
-      provisional.push(ent);
+      if (ent) provisional.push(ent);
     }
 
     const allMentioned = [...existingMentioned, ...provisional]
+      .filter(Boolean)
       .filter((v, i, a) => a.findIndex(x => x.id === v.id) === i);
 
     // Salience window: last 5 unique entities seen
@@ -13309,27 +13447,26 @@ function renderSourcesView() {
       {
         const allEpochs = [];
         const totalSentences = Math.max(1, src.sentences.length);
-        // Reconstruct epochs for THIS source from history + current.
-        // hypothesisHistory is now Map<sourceId, [epochs]>; lookup is direct.
+        // Reconstruct epochs from the v25 promotion-event history. Each
+        // entry's `hypothesis` became active at `sentenceIdx`; its span
+        // runs to (next.sentenceIdx - 1), with the LAST entry extending
+        // to the current cursor (or end of source).
         const histForSrc = STATE.hypothesisHistory.get(src.id) || [];
-        for (const h of histForSrc) {
+        const cursorIdx = (proc && proc.sourceId === src.id)
+          ? proc.sentenceIdx : (totalSentences - 1);
+        for (let hi = 0; hi < histForSrc.length; hi++) {
+          const h = histForSrc[hi];
+          const next = histForSrc[hi + 1];
+          const from = h.sentenceIdx ?? h.activeFromSentenceIdx ?? 0;
+          const to = next
+            ? Math.max(from, (next.sentenceIdx ?? next.activeFromSentenceIdx ?? from) - 1)
+            : Math.max(from, cursorIdx);
+          const isCurrent = !next;
           allEpochs.push({
-            from: h.activeFromSentenceIdx,
-            to: h.activeToSentenceIdx,
+            from, to,
             hypothesis: h.hypothesis,
             reason: h.reason,
-            historic: true,
-          });
-        }
-        // Active epoch — from end of last historic, or 0, to current cursor.
-        const lastHistoricTo = histForSrc.length > 0 ? histForSrc[histForSrc.length - 1].activeToSentenceIdx : -1;
-        if (src.hypothesis) {
-          allEpochs.push({
-            from: lastHistoricTo + 1,
-            to: (proc && proc.sourceId === src.id) ? proc.sentenceIdx : (totalSentences - 1),
-            hypothesis: src.hypothesis,
-            reason: 'current',
-            historic: false,
+            historic: !isCurrent,
           });
         }
         if (allEpochs.length > 0) {
@@ -13345,11 +13482,16 @@ function renderSourcesView() {
             const stripe = isMin ? `background-image: repeating-linear-gradient(45deg, ${color}, ${color} 4px, ${color}cc 4px, ${color}cc 8px);` : `background: ${color};`;
             return `<div class="hyp-strip-seg" data-epoch="${idx}" title="${escapeHtml(tip)}" style="width:${widthPct}%;${stripe};opacity:${opacity};"></div>`;
           }).join('');
-          // REC tick marks at refresh sentence positions
+          // REC tick marks at promotion sentence positions. The first
+          // entry (minimal_fallback) at sentence 0 is the intake mark, not
+          // a refresh; subsequent entries are first_promotion / divergence.
           const recTicks = histForSrc.map(h => {
-            const left = ((h.activeToSentenceIdx + 0.5) / totalSentences) * 100;
-            const reasonLabel = h.reason === 'first-promotion' ? '★' : h.reason === 'divergence' ? '◆' : '·';
-            const tip = `REC at sentence ${h.activeToSentenceIdx + 1} · ${h.reason}`;
+            const at = h.sentenceIdx ?? h.activeFromSentenceIdx ?? 0;
+            const left = ((at + 0.5) / totalSentences) * 100;
+            const reasonLabel = h.reason === 'first_promotion' || h.reason === 'first-promotion' ? '★'
+              : h.reason === 'divergence_check' || h.reason === 'divergence' ? '◆'
+              : h.reason === 'minimal_fallback' ? '○' : '·';
+            const tip = `${h.reason} at sentence ${at + 1}`;
             return `<div class="hyp-strip-rec" title="${escapeHtml(tip)}" style="left:${left}%;">${reasonLabel}</div>`;
           }).join('');
           html += `<div style="margin-bottom:14px;">
@@ -13821,17 +13963,18 @@ function renderInspectView() {
     allEpochs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
     if (allEpochs.length > 0) {
       html += `<div style="margin-top:10px;">
-        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:6px;">historical hypotheses (REC supersedes; nothing erased)</div>
-        <table class="inspect-table"><thead><tr><th>source</th><th>active span</th><th>reason</th><th>cosine→baseline</th><th>summary</th></tr></thead><tbody>`;
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:6px;">hypothesis history (oldest first; one entry per promotion)</div>
+        <table class="inspect-table"><thead><tr><th>source</th><th>at</th><th>reason</th><th>cosine→baseline</th><th>summary</th></tr></thead><tbody>`;
       for (const h of allEpochs) {
         const srcName = STATE.sources.get(h.sourceId)?.name || h.sourceId;
         const cosLine = h.cosineAtTrigger != null && h.baseline != null
           ? `${h.cosineAtTrigger.toFixed(3)} → ${h.baseline.toFixed(3)}`
           : '—';
         const summary = h.hypothesis?.summary || h.hypothesis?.kind || '?';
+        const at = (h.sentenceIdx ?? h.activeFromSentenceIdx ?? 0) + 1;
         html += `<tr>
           <td>${escapeHtml(srcName)}</td>
-          <td style="font-family:'IBM Plex Mono',monospace;">${h.activeFromSentenceIdx + 1}–${h.activeToSentenceIdx + 1}</td>
+          <td style="font-family:'IBM Plex Mono',monospace;">@${at}</td>
           <td style="font-family:'IBM Plex Mono',monospace;">${escapeHtml(h.reason || '?')}</td>
           <td style="font-family:'IBM Plex Mono',monospace;">${cosLine}</td>
           <td><span style="font-style:italic;">${escapeHtml(summary)}</span></td>
@@ -14051,15 +14194,12 @@ function renderPromptsContextPanels() {
         return all.sort((a, b) => (a.ts || 0) - (b.ts || 0));
       })();
   if (historyForLatest.length > 0) {
-    const priorCount = historyForLatest.length;
-    gistHtml += `<div class="panel-sub-label">${priorCount} prior revision${priorCount === 1 ? '' : 's'}</div>`;
+    const promotionCount = historyForLatest.length;
+    gistHtml += `<div class="panel-sub-label">${promotionCount} promotion${promotionCount === 1 ? '' : 's'}</div>`;
     const recent = historyForLatest.slice(-3).reverse();
     for (const h of recent) {
-      const fromIdx = h.activeFromSentenceIdx;
-      const toIdx = h.activeToSentenceIdx;
-      const span = (fromIdx != null && toIdx != null)
-        ? `s${fromIdx}–s${toIdx}`
-        : (fromIdx != null ? `from s${fromIdx}` : '');
+      const at = h.sentenceIdx ?? h.activeFromSentenceIdx;
+      const span = at != null ? `@s${at + 1}` : '';
       const reason = h.reason ? ` · ${h.reason}` : '';
       const label = (span + reason).trim() || 'earlier hypothesis';
       gistHtml += `<div class="gist-history-item">${escapeHtml(label)}</div>`;
