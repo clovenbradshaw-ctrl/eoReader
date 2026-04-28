@@ -5947,9 +5947,9 @@ function buildCorefCandidates(rawMentions, alreadyMatchedIds) {
 
 async function llmProcessClause(clauseText, mentionedEntities, salienceWindow, additionalContext = [], rawMentions = [], source = null) {
   // Operational context (prose strings only — canonical entity names and
-  // verb stems). The assembler bundles these inside "Content to Parse";
-  // the architectural boundary holds because nothing here is an operator
-  // label, axis token, or event payload.
+  // verb stems). The assembler bundles these inside the "# To Process"
+  // section; the architectural boundary holds because nothing here is an
+  // operator label, axis token, or event payload.
   const entLines = mentionedEntities.length
     ? mentionedEntities.map(e => e.canonical).join(', ')
     : null;
@@ -5977,7 +5977,7 @@ async function llmProcessClause(clauseText, mentionedEntities, salienceWindow, a
   const content = contentParts.join('\n');
 
   const userMsg = assemblePrompt({
-    systemInstructions: 'Extract structured events (SIG / CON / DEF) from the clause in "Content to Parse". Output a single JSON object as described in the system prompt — no preamble, no markdown fences.',
+    systemInstructions: 'Extract structured events (SIG / CON / DEF) from the clause under "To Process". Output a single JSON object as described in the system prompt — no preamble, no markdown fences.',
     hypothesisProse: STATE.hypothesisProse || '',
     hypothesisExtras: collectTopEntityDescriptions(),
     runningSummary: STATE.runningSummary || '',
@@ -6448,11 +6448,16 @@ function formatHypothesisForClause(h) {
 // this function and synthesizes itself from STATE.G or operator-named
 // helpers is a bug.
 //
-// Output: a single Markdown string with four fixed sections
-//   # System Instructions   (role-specific request)
-//   # Working Hypothesis    (STATE.hypothesisProse, verbatim)
-//   # Recent Context        (STATE.runningSummary + recentSentences, verbatim)
-//   # Content to Parse      (the single input being acted on)
+// Output: a single Markdown document whose top-level structure encodes
+// the integral/delta split — context (everything integrated up to this
+// point) versus the new input being acted on. The headings carry the
+// distinction; nothing in prose explains it to the model.
+//
+//   # Task            (role-specific request)
+//   # Context         (the integral)
+//     ## Working Hypothesis    — hypothesisProse + cached entity descriptions
+//     ## Recent Reading        — runningSummary + recent + semantic sentences
+//   # To Process      (the delta — the single input as a markdown blockquote)
 //
 // Caller passes the Markdown as the user message and a static role
 // system prompt (which can carry taxonomy/schema details and is
@@ -6460,7 +6465,7 @@ function formatHypothesisForClause(h) {
 function assemblePrompt({
   systemInstructions,    // role-specific request, plain prose
   hypothesisProse,       // STATE.hypothesisProse, verbatim
-  hypothesisExtras,      // optional array of extra prose lines (entity descriptions, etc.) appended to # Working Hypothesis
+  hypothesisExtras,      // optional array of extra prose lines (entity descriptions, etc.) appended under ## Working Hypothesis
   runningSummary,        // STATE.runningSummary, verbatim
   recentSentences,       // narratively-recent source sentences (verbatim, last N)
   semanticSentences,     // semantically-targeted source sentences (verbatim, top entities by cosine)
@@ -6476,13 +6481,31 @@ function assemblePrompt({
   const narrative = cleanArr(recentSentences).slice(-5);
   const semantic = cleanArr(semanticSentences).slice(0, 6);
   const extras = cleanArr(hypothesisExtras);
+  const hp = safe(hypothesisProse).trim();
+  const rs = safe(runningSummary).trim();
+
+  // The markdown carries the integral/delta split structurally. Two
+  // top-level sections beyond the task line:
+  //
+  //   # Context       — everything integrated up to this point. The
+  //                     hypothesis, the running summary, the recent and
+  //                     semantically-primed sentences. Nested H2 layers
+  //                     so the model can see what kind of context each
+  //                     piece is, but the H1 says "this is the integral."
+  //
+  //   # To Process    — the single new input the call is about. Quoted
+  //                     as a markdown blockquote so it's visually and
+  //                     structurally distinct from the integral above.
+  //
+  // The split is not explained in prose. The headings do the work.
 
   const lines = [];
-  lines.push('# System Instructions');
+  lines.push('# Task');
   lines.push(safe(systemInstructions));
   lines.push('');
-  lines.push('# Working Hypothesis');
-  const hp = safe(hypothesisProse).trim();
+  lines.push('# Context');
+  lines.push('');
+  lines.push('## Working Hypothesis');
   lines.push(hp || '(no hypothesis prose yet — operating with thin frame)');
   if (extras.length > 0) {
     lines.push('');
@@ -6491,8 +6514,7 @@ function assemblePrompt({
     lines.push(extras.join('\n'));
   }
   lines.push('');
-  lines.push('# Recent Context');
-  const rs = safe(runningSummary).trim();
+  lines.push('## Recent Reading');
   lines.push(rs || '(no running summary yet)');
   if (narrative.length > 0) {
     lines.push('');
@@ -6506,8 +6528,13 @@ function assemblePrompt({
     lines.push(semantic.join('\n'));
   }
   lines.push('');
-  lines.push('# Content to Parse');
-  lines.push(`"${safe(content)}"`);
+  lines.push('# To Process');
+  lines.push('');
+  // Blockquote the delta so it reads as a distinct unit even before the
+  // model parses the heading. Multi-line content keeps a leading "> " on
+  // each line so the quote shape holds.
+  const quoted = safe(content).split('\n').map(l => `> ${l}`).join('\n');
+  lines.push(quoted);
   return lines.join('\n');
 }
 
@@ -6698,7 +6725,7 @@ async function regenerateHypothesisProse(hyp) {
   if (facts.length === 0) return null;
 
   const userMsg = assemblePrompt({
-    systemInstructions: 'Rewrite the hypothesis facts in "Content to Parse" as a 2-4 sentence plain-language paragraph. Use ordinary English. Do not list fields. Do not invent. Output the paragraph only.',
+    systemInstructions: 'Rewrite the hypothesis facts under "To Process" as a 2-4 sentence plain-language paragraph. Use ordinary English. Do not list fields. Do not invent. Output the paragraph only.',
     hypothesisProse: '',          // we are CREATING this layer; do not feed it back in
     runningSummary: '',
     recentSentences: [],
@@ -6775,7 +6802,7 @@ async function regenerateEntityDescription(entity, opts = {}) {
   ];
 
   const userMsg = assemblePrompt({
-    systemInstructions: `Given the source sentences in "Content to Parse" where ${entity.canonical} appears, write one plain-language sentence describing how the document positions it. Use plain language. Do not name analytic categories. Output the sentence only.`,
+    systemInstructions: `Given the source sentences under "To Process" where ${entity.canonical} appears, write one plain-language sentence describing how the document positions it. Use plain language. Do not name analytic categories. Output the sentence only.`,
     hypothesisProse: STATE.hypothesisProse || '',
     runningSummary: STATE.runningSummary || '',
     recentSentences: [],
@@ -6914,121 +6941,80 @@ function applyDependencyFlags(sentenceEventIds) {
   }
 }
 
-// ─── PREDICTION + COMPARISON (Edit C, active inference) ─────────────
-// Two single-output prompts that bracket the classifier:
-//   1. Prediction — runs BEFORE classification, with no awareness of the
-//      current sentence. Output: one-sentence plain-language expectation.
-//   2. Comparison — runs AFTER classification. Output: matched | partial |
-//      surprise, plus a one-sentence delta. Stored on each event of the
-//      sentence so a reader can scan to moments of structural surprise.
+// ─── PRIMING FIT (predictive processing as schema activation) ────────
+// "Prediction" here is priming, not explicit-guess prediction. The
+// retrieval at the top of each iteration (pickSemanticContextForSentence)
+// queries the graph for which entities are about to be relevant — it
+// pre-activates the structure the incoming sentence is most likely to
+// draw on. The classifier then reads the sentence inside that activated
+// context.
 //
-// The prediction is NEVER fed into the classifier's prompt — that would
-// lead the witness. The two paths are independent; the comparison is the
-// only place they meet.
+// The priming-fit signal is the cosine between an extracted event's
+// embedding and the centroids of the entities the priming retrieved. It
+// is computed mechanically — no LLM call required:
+//   - High fit  → the structure was already there. The graph barely
+//     moves; we log a NUL "priming-confirmation" so the non-transformation
+//     is auditable.
+//   - Low fit   → the priming missed. The new event represents structure
+//     the graph hadn't anticipated; the existing DEF/CON does that work
+//     and gets a primingMiss marker for surface-able review.
 
-const PREDICTION_SYSTEM = `You read the document context below and predict what move the next sentence will make. One sentence in plain language. Do not classify, do not name categories — just describe in ordinary English what kind of work you'd expect the next sentence to do (introducing someone? reporting an action? offering an evaluation? changing topic?).
+const PRIMING_FIT_FLOOR = 0.5;
 
-Output ONLY the one sentence — no preamble, no markdown, no quotes.`;
-
-async function predictNextMove() {
-  if (!isLLMReady()) return null;
-  const ring = STATE.recentSentences || [];
-  const prev = ring.length > 0 ? ring[ring.length - 1] : '';
-  if (!prev) return null;  // no prediction for the very first sentence
-
-  const userMsg = assemblePrompt({
-    systemInstructions: 'Given the document context, what kind of structural move would you expect the next sentence to make? Answer in one short sentence in plain language. Do not classify; just predict.',
-    hypothesisProse: STATE.hypothesisProse || '',
-    hypothesisExtras: collectTopEntityDescriptions(),
-    runningSummary: STATE.runningSummary || '',
-    recentSentences: STATE.recentSentences || [],
-    semanticSentences: STATE.semanticSentences || [],
-    content: `The previous sentence was: "${prev}"`,
-  });
-
-  STATE.llmCallsThisIngest++;
-  let raw;
-  try {
-    raw = await callLLM(PREDICTION_SYSTEM, userMsg, 100, 'prediction');
-  } catch (e) {
-    return null;
+function computePrimingFit(eventId, retrievedEntityIds) {
+  if (!eventId || !Array.isArray(retrievedEntityIds) || retrievedEntityIds.length === 0) return null;
+  const eventVec = EMBEDDING_STORE.byEventId.get(eventId);
+  if (!eventVec) return null;
+  let best = -Infinity;
+  let bestEntityId = null;
+  for (const id of retrievedEntityIds) {
+    const ent = STATE.entities.get(id);
+    if (!ent || !ent._centroid) continue;
+    const sim = cosineInt8(eventVec, ent._centroid);
+    if (sim > best) { best = sim; bestEntityId = id; }
   }
-  let pred = String(raw || '').trim();
-  pred = pred.replace(/^```[a-z]*\n?|```$/gi, '').trim();
-  pred = pred.replace(/^["']|["']$/g, '').trim();
-  if (!pred) return null;
-  const m = pred.match(/[^.!?]+[.!?]/);
-  if (m) pred = m[0].trim();
-  return pred || null;
+  if (best === -Infinity) return null;
+  return { fit: best, bestEntityId };
 }
 
-const COMPARISON_SYSTEM = `You compare a prediction to what a sentence actually did. The comparison output is a JSON object with exactly two fields.
-
-Output JSON ONLY — no preamble, no markdown fences:
-{"match":"matched|partial|surprise","delta":"<one short sentence saying what was different, or 'none' if matched>"}
-
-- "matched": the sentence did the kind of move predicted.
-- "partial": the sentence did some of what was predicted, plus other work.
-- "surprise": the sentence did something the prediction did not anticipate.
-
-Use exact lowercase tokens for "match". Pick exactly one.`;
-
-// Render a sentence's per-event extractions as a plain-language line —
-// "<subject> <predicate> <value>; …" — with no operator names, no axis
-// tokens, no internal vocabulary. Truncated to keep the comparison call
-// small.
-function actualMoveLine(events) {
-  const parts = [];
-  for (const ev of events) {
+// Walk a sentence's just-classified events, score priming fit per event,
+// and log NUL confirmations for the ones the priming caught. Mechanical
+// only — no LLM call is made by this function.
+function applyPrimingFit(sentenceEventIds, retrievedEntityIds) {
+  if (!Array.isArray(sentenceEventIds) || sentenceEventIds.length === 0) return;
+  if (!Array.isArray(retrievedEntityIds) || retrievedEntityIds.length === 0) return;
+  for (const eid of sentenceEventIds) {
+    const ev = STATE.G.find(e => e.id === eid);
     if (!ev) continue;
     if (ev.op !== 'DEF' && ev.op !== 'CON') continue;
-    const p = ev.payload || {};
-    const subj = ev.op === 'DEF'
-      ? (STATE.entities.get(p.subject)?.canonical || p.subject || '')
-      : (STATE.entities.get(p.from)?.canonical || p.from || '');
-    const pred = ev.op === 'DEF' ? (p.predicate || '') : (p.relation || '');
-    const val = ev.op === 'DEF'
-      ? (p.valueIsEntity ? (STATE.entities.get(p.value)?.canonical || p.value || '') : (p.value || ''))
-      : (p.toIsEntity ? (STATE.entities.get(p.to)?.canonical || p.to || '') : (p.to || ''));
-    const line = [subj, pred, val].filter(Boolean).join(' ').trim();
-    if (line) parts.push(line);
-    if (parts.length >= 6) break;
+    const score = computePrimingFit(eid, retrievedEntityIds);
+    if (!score) continue;
+    ev.primingFit = score.fit;
+    ev.primingMiss = score.fit < PRIMING_FIT_FLOOR;
+    if (!ev.primingMiss) {
+      // Priming caught it — log a NUL "non-transformation" so the
+      // confirmation is in G alongside the DEF/CON. The NUL carries
+      // back-references so a reader can trace what was confirmed and
+      // by which primed entities.
+      try {
+        appendEvent({
+          op: 'NUL',
+          payload: {
+            kind: 'priming-confirmation',
+            targetEventId: eid,
+            primingFit: score.fit,
+            bestPrimedEntityId: score.bestEntityId,
+            primedEntityIds: [...retrievedEntityIds],
+          },
+          sourceId: ev.sourceId,
+          narrativePos: ev.narrativePos,
+          authoredBy: 'system',
+          spanText: ev.spanText || null,
+          intakeTs: Date.now(),
+        });
+      } catch (e) { /* non-fatal */ }
+    }
   }
-  return parts.join('; ') || '(no propositional content)';
-}
-
-async function compareSentenceToPrediction(prediction, sentenceText, sentenceEvents) {
-  if (!prediction || !isLLMReady()) return null;
-  const actualLine = actualMoveLine(sentenceEvents);
-  const content = [
-    `Predicted: "${prediction}"`,
-    '',
-    `The sentence: "${sentenceText}"`,
-    '',
-    `What the sentence actually did: ${actualLine}`,
-  ].join('\n');
-
-  const userMsg = assemblePrompt({
-    systemInstructions: 'Compare the prediction in "Content to Parse" to what the sentence actually did. Output the JSON described in the system prompt — no preamble, no markdown.',
-    hypothesisProse: STATE.hypothesisProse || '',
-    runningSummary: '',
-    recentSentences: [],
-    content,
-  });
-
-  STATE.llmCallsThisIngest++;
-  let raw;
-  try {
-    raw = await callLLM(COMPARISON_SYSTEM, userMsg, 140, 'prediction-compare');
-  } catch (e) {
-    return null;
-  }
-  const parsed = extractJSON(raw);
-  if (!parsed || typeof parsed !== 'object') return null;
-  const match = String(parsed.match || '').toLowerCase().trim();
-  if (!['matched', 'partial', 'surprise'].includes(match)) return null;
-  const delta = String(parsed.delta || '').trim().slice(0, 240);
-  return { match, delta };
 }
 
 // Re-run cached entity descriptions for entities that gained evidence in
@@ -9173,19 +9159,6 @@ async function ingestSource(text, opts = {}) {
       STATE.topSemanticEntityIds = [];
     }
 
-    // ── PREDICTION (Edit C, active inference) ──
-    // Predict what kind of move the next sentence will make BEFORE the
-    // classifier sees the actual sentence. The prediction never enters
-    // the classifier prompt — it's compared post-hoc.
-    let predictedMove = null;
-    if (!opts.rawMode && isLLMReady()) {
-      try {
-        predictedMove = await predictNextMove();
-      } catch (e) {
-        predictedMove = null;
-      }
-    }
-
     let llmResult;
     if (!opts.rawMode && isLLMReady() && isProseClause(clause)) {
       STATE.clausesProcessed++;
@@ -9322,30 +9295,18 @@ async function ingestSource(text, opts = {}) {
         await maybeRefreshEntityDescriptions(sentenceEventIds);
       } catch (e) { /* non-fatal */ }
 
-      // ── PREDICTION COMPARISON (Edit C) ──
-      // Compare the prediction we made BEFORE classification against what
-      // the classifier actually extracted. Result is stamped on every
-      // propositional event from this sentence so reading-by-surprise can
-      // scan to moments where the document did unexpected work.
-      if (predictedMove) {
-        const sentenceEvents = sentenceEventIds
-          .map(eid => STATE.G.find(e => e.id === eid))
-          .filter(Boolean);
-        const propositional = sentenceEvents.filter(e => e.op === 'DEF' || e.op === 'CON');
-        if (propositional.length > 0) {
-          let cmp = null;
-          try {
-            cmp = await compareSentenceToPrediction(predictedMove, clause, propositional);
-          } catch (e) { /* non-fatal */ }
-          for (const ev of sentenceEvents) {
-            ev.prediction = predictedMove;
-            if (cmp) {
-              ev.predictionMatch = cmp.match;
-              ev.predictionDelta = cmp.delta;
-            }
-          }
-        }
-      }
+      // ── PRIMING FIT (mechanical, no LLM) ──
+      // The retrieval at the top of this iteration was the prediction in
+      // the schema-activation sense: it pre-activated the entities the
+      // sentence was likely to draw on. Now that events have been embedded,
+      // measure how well the priming caught what the classifier extracted.
+      // High fit → log a NUL "priming-confirmation" (the structure was
+      // already there); low fit → mark the event so the surface can flag
+      // moments where the priming missed and the graph had to absorb new
+      // structure.
+      try {
+        applyPrimingFit(sentenceEventIds, STATE.topSemanticEntityIds || []);
+      } catch (e) { /* non-fatal */ }
 
       // Clear per-iteration semantic context. The next sentence will
       // recompute these at the top of its iteration.
@@ -14785,13 +14746,15 @@ function logRowHtml(ev, offsets, opColor) {
   const value = comp.value ? escapeHtml(comp.value) : empty;
   const flashCls = LOG_RENDER.flashIds.has(ev.id) ? ' flash' : '';
 
-  // Marker pills: prediction surprise (Edit C), dependency-chain warning
-  // (Edit D), comprehension SIG (defer reason / low-confidence). All
-  // light-touch — small inline indicators that hover-tooltip the detail.
+  // Marker pills: priming miss (event embedding diverged from the
+  // entities the retrieval primed), dependency-chain warning, comprehension
+  // SIG. NUL "priming-confirmation" events are not marked — they ARE the
+  // marker: a non-transformation logged because the priming caught it.
   const markers = [];
-  if (ev.predictionMatch === 'surprise') {
-    const tip = ev.predictionDelta ? `surprise · ${ev.predictionDelta}` : 'classification surprise';
-    markers.push(`<span title="${escapeHtml(tip)}" style="display:inline-block;margin-left:4px;padding:0 4px;border:1px solid var(--gap, #b07a3a);color:var(--gap, #b07a3a);font-size:9px;font-family:'IBM Plex Mono',monospace;letter-spacing:0.04em;">surprise</span>`);
+  if (ev.primingMiss) {
+    const fit = typeof ev.primingFit === 'number' ? ev.primingFit.toFixed(2) : '—';
+    const tip = `priming miss — event embedding diverged from retrieved entity centroids (cosine ${fit})`;
+    markers.push(`<span title="${escapeHtml(tip)}" style="display:inline-block;margin-left:4px;padding:0 4px;border:1px solid var(--gap, #b07a3a);color:var(--gap, #b07a3a);font-size:9px;font-family:'IBM Plex Mono',monospace;letter-spacing:0.04em;">miss</span>`);
   }
   if (ev.dependencyFlag === 'missing-prerequisites') {
     markers.push(`<span title="entity has prior events but no INS — possible dependency violation" style="display:inline-block;margin-left:4px;padding:0 4px;border:1px solid #b04a4a;color:#b04a4a;font-size:9px;font-family:'IBM Plex Mono',monospace;letter-spacing:0.04em;">⚑ deps</span>`);
