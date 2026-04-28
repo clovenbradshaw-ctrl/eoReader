@@ -6098,6 +6098,93 @@ async function llmProcessClause(clauseText, mentionedEntities, salienceWindow, a
   });
   if (droppedCount > 0) console.log(`Dropped ${droppedCount} garbage events from LLM output`);
 
+  // 1.5. SIG-downgrade rule: drop DEF/CON events whose entity participants
+  //      and non-entity values can't be anchored to literal spanText. The
+  //      principle is "don't assert what isn't in the text" — under-claim
+  //      rather than confabulate. Predicates are exempt because they're
+  //      normalized vocabulary, not extracted surface forms ("serve-as"
+  //      derives from "is a", "married-to" from "the wife of").
+  //
+  //      Two anchor sources:
+  //        (a) Same-response SIG: a SIG event whose `surface` appears in
+  //            clauseText. The SIG's entityRef anchors any DEF/CON
+  //            reference to that entityRef. This is the path that lets
+  //            coref resolution survive: clause says "his lady", model
+  //            emits SIG with surface="his lady", entityRef="Mrs. Bennet";
+  //            DEF subject="Mrs. Bennet" anchors via the SIG.
+  //        (b) Direct substring: the ref/value itself appears in clauseText.
+  //
+  //      Non-entity values also accept token-AND: every token of length > 3
+  //      in the value must appear in the clause (any order). Catches
+  //      "congressional correspondent" / "correspondent at The Times"
+  //      where the value paraphrases but every content word is grounded.
+  //
+  //      Unanchored DEFs and CONs are dropped, not converted. The model
+  //      almost always emits SIGs alongside its DEFs/CONs, so the
+  //      anchorable participants already have SIG records — dropping
+  //      the assertion preserves the entity trace through those SIGs.
+  const clauseLower = String(clauseText || '').toLowerCase();
+  const directInClause = (s) => {
+    if (typeof s !== 'string') return false;
+    const t = s.trim().toLowerCase();
+    if (!t) return false;
+    return clauseLower.includes(t);
+  };
+  const tokenAndInClause = (s) => {
+    if (typeof s !== 'string') return false;
+    const tokens = s.toLowerCase().split(/\s+/).filter(t => t.length > 3);
+    if (tokens.length === 0) return directInClause(s);
+    return tokens.every(t => clauseLower.includes(t));
+  };
+  const valueAnchored = (s) => directInClause(s) || tokenAndInClause(s);
+
+  // First pass: filter SIGs whose surface isn't in clauseText. SIGs
+  // without an anchored surface are themselves hallucinations (the model
+  // claiming something appeared that didn't).
+  let downgradeDrops = 0;
+  const declaredSigRefs = new Set();
+  events = events.filter(ev => {
+    if (ev.op !== 'SIG') return true;
+    const surface = String(ev.surface || ev.entityRef || '').trim();
+    if (!directInClause(surface)) { downgradeDrops++; return false; }
+    if (typeof ev.entityRef === 'string') {
+      declaredSigRefs.add(ev.entityRef.trim().toLowerCase());
+    }
+    return true;
+  });
+  const refAnchored = (s) => {
+    if (typeof s !== 'string') return false;
+    if (declaredSigRefs.has(s.trim().toLowerCase())) return true;
+    return directInClause(s);
+  };
+
+  // Second pass: drop DEF/CON whose entity participants or non-entity
+  // values aren't anchored.
+  events = events.filter(ev => {
+    if (ev.op === 'DEF') {
+      if (!refAnchored(ev.subject)) { downgradeDrops++; return false; }
+      if (ev.valueIsEntity) {
+        if (!refAnchored(ev.value)) { downgradeDrops++; return false; }
+      } else {
+        if (!valueAnchored(ev.value)) { downgradeDrops++; return false; }
+      }
+      return true;
+    }
+    if (ev.op === 'CON') {
+      if (!refAnchored(ev.from)) { downgradeDrops++; return false; }
+      if (ev.toIsEntity) {
+        if (!refAnchored(ev.to)) { downgradeDrops++; return false; }
+      } else {
+        if (!valueAnchored(ev.to)) { downgradeDrops++; return false; }
+      }
+      return true;
+    }
+    return true;
+  });
+  if (downgradeDrops > 0) {
+    console.log(`SIG-downgrade: dropped ${downgradeDrops} unanchored DEF/CON/SIG events`);
+  }
+
   // 2. Reroute and validate needs
   const NEED_PREFIX = /^\s*(integral|edges|history)\s*:\s*\S/i;  // require something AFTER the colon
   const rawUnresolved = Array.isArray(parsed.unresolved) ? parsed.unresolved : [];
