@@ -3052,6 +3052,25 @@ const STATE = {
   entityDescriptionEventCounts: new Map(),// Map<entityId, lastEventCountWhenDescriptionRefreshed> — drives re-run on threshold crossings (Edit B)
   entityDescriptionTopCells: new Map(),   // Map<entityId, "act|site|res string"> — re-run trigger on role-profile shift (Edit B)
   topSemanticEntityIds: [],               // ordered list of entity IDs picked as top-N for current iteration (Edit B feeds descriptions into prompt)
+
+  // ─── OUTCOME-DISPATCHED FOLD (3×3 precision-weighted updates) ─────
+  // Two centroid registries that the dispatched fold updates incrementally
+  // alongside per-entity centroids. Each entry: {centroid: Int8Array,
+  // precision: number 0-1, count: number}. Operators: NUL/SIG/INS/SEG/...
+  // Cells: full "OPERATOR(Resolution, Site)" labels.
+  operatorCentroids: new Map(),
+  cellCentroids: new Map(),
+  // Per-source comprehension-difficulty counters incremented by the fold
+  // when fit-deferred / miss-deferred / void-deferred land. Map<sourceId,
+  // {fitDeferred, missDeferred, voidDeferred}>.
+  sourceDifficulty: new Map(),
+  // Embedding-region quality flags (sparse). Set when miss-deferred or
+  // void-deferred lands in a region; retrieval can choose to deprioritize
+  // these, but evidence still accumulates.
+  unreadableRegions: [],                  // [{centroid: Int8Array, deprioritize: true, ts}]
+  lastDecayPassAt: 0,                     // sentence count when the decay pass last ran
+  outcomeDecayEveryN: 50,                 // sentences between decay passes
+  recBaseDelta: 0.15,                     // base hypothesisDivergenceDelta; modulated by hypothesis.precision
   hypothesisHistory: new Map(),           // Map<sourceId, [{hypothesis, activeFromSentenceIdx, activeToSentenceIdx, reason, ts}]>; per-source REC epochs
   hypothesisBaselineCosine: null,         // cosine at last refresh, for threshold compare
   hypothesisEmbedding: null,              // cached Int8Array; recompute only on hypothesis refresh
@@ -6583,12 +6602,18 @@ async function pickSemanticContextForSentence(candidateText, opts = {}) {
   const candidateInt8 = quantizeFloat32(candidateF);
   if (!candidateInt8) return { sentences: [], entityIds: [] };
 
+  // Precision-weighted scoring: low-precision centroids contribute less
+  // to retrieval, but the floor (0.3) keeps new entities reachable when
+  // they're cosine-near. Constants chosen so a precision-1.0 entity is
+  // weighted 1.0× and a precision-0.0 entity is weighted 0.3×.
   const ranked = [];
   for (const [id, ent] of STATE.entities) {
     if (!ent || !ent._centroid) continue;
     const sim = cosineInt8(candidateInt8, ent._centroid);
     if (sim < minSim) continue;
-    ranked.push({ id, sim });
+    const precision = clampPrecision(ent.precision || 0);
+    const weighted = sim * (0.3 + 0.7 * precision);
+    ranked.push({ id, sim: weighted, rawSim: sim });
   }
   ranked.sort((a, b) => b.sim - a.sim);
   const top = ranked.slice(0, k);
@@ -6977,44 +7002,360 @@ function computePrimingFit(eventId, retrievedEntityIds) {
   return { fit: best, bestEntityId };
 }
 
-// Walk a sentence's just-classified events, score priming fit per event,
-// and log NUL confirmations for the ones the priming caught. Mechanical
-// only — no LLM call is made by this function.
+// Walk a sentence's just-classified events and stamp primingState +
+// primingFitCosine per event. Determination only — the outcome-
+// dispatched fold (below) is what acts on the result.
 function applyPrimingFit(sentenceEventIds, retrievedEntityIds) {
   if (!Array.isArray(sentenceEventIds) || sentenceEventIds.length === 0) return;
-  if (!Array.isArray(retrievedEntityIds) || retrievedEntityIds.length === 0) return;
+  const haveRetrieval = Array.isArray(retrievedEntityIds) && retrievedEntityIds.length > 0;
   for (const eid of sentenceEventIds) {
     const ev = STATE.G.find(e => e.id === eid);
     if (!ev) continue;
     if (ev.op !== 'DEF' && ev.op !== 'CON') continue;
+    if (!haveRetrieval) {
+      // Nothing was retrieved — the sentence sits in a region of the
+      // graph the system hadn't seen yet.
+      ev.primingState = 'void';
+      ev.primingFitCosine = null;
+      continue;
+    }
     const score = computePrimingFit(eid, retrievedEntityIds);
-    if (!score) continue;
-    ev.primingFit = score.fit;
-    ev.primingMiss = score.fit < PRIMING_FIT_FLOOR;
-    if (!ev.primingMiss) {
-      // Priming caught it — log a NUL "non-transformation" so the
-      // confirmation is in G alongside the DEF/CON. The NUL carries
-      // back-references so a reader can trace what was confirmed and
-      // by which primed entities.
-      try {
-        appendEvent({
-          op: 'NUL',
-          payload: {
-            kind: 'priming-confirmation',
-            targetEventId: eid,
-            primingFit: score.fit,
-            bestPrimedEntityId: score.bestEntityId,
-            primedEntityIds: [...retrievedEntityIds],
-          },
-          sourceId: ev.sourceId,
-          narrativePos: ev.narrativePos,
-          authoredBy: 'system',
-          spanText: ev.spanText || null,
-          intakeTs: Date.now(),
-        });
-      } catch (e) { /* non-fatal */ }
+    if (!score) {
+      // Retrieval ran but this event isn't embedded yet; treat as void
+      // for the dispatch (no centroids to compare against either way).
+      ev.primingState = 'void';
+      ev.primingFitCosine = null;
+      continue;
+    }
+    ev.primingFitCosine = score.fit;
+    ev.primingFit = score.fit;            // legacy alias for Log marker
+    ev.bestPrimedEntityId = score.bestEntityId;
+    if (score.fit >= PRIMING_FIT_FLOOR) {
+      ev.primingState = 'fit';
+      ev.primingMiss = false;
+    } else {
+      ev.primingState = 'miss';
+      ev.primingMiss = true;
     }
   }
+}
+
+// ─── OUTCOME-DISPATCHED FOLD (3×3 precision-weighted updates) ──────
+//
+// Two axes determine each event's outcome cell:
+//   priming   ∈ {fit, miss, void}     — was retrieval predictive?
+//   commit    ∈ {committed, provisional, deferred} — did the classifier commit?
+//
+// Each of the nine cells has its own update rule. The dispatch table is
+// the single source of truth; the dispatcher reads it and applies the
+// effects mechanically.
+//
+// Constraints:
+//   - No outcome cell exposes precision values to the LLM (precision
+//     modulates retrieval weighting and update thresholds, never the
+//     prompt content)
+//   - Deferred rows do not update centroids
+//   - Void rows create centroids rather than updating existing ones
+//   - Miss rows penalize the wrongly-retrieved entities as well as
+//     updating the classified one
+//   - Every event's outcome cell is auditable on the event record
+
+const OUTCOME_FOLD = {
+  // priming-fit row — retrieval predicted correctly
+  'fit-committed': {
+    classifiedLerp: 0.05, classifiedPrecision: +0.03,
+    opLerp: 0.05, opPrecision: +0.02,
+    cellLerp: 0.05, cellPrecision: +0.02,
+    retrievedPenalty: 0,
+    roleWeight: 1.0,
+    integralContribution: 1.0,
+    rereadPriority: 0,
+  },
+  'fit-provisional': {
+    classifiedLerp: 0.025, classifiedPrecision: +0.015,
+    opLerp: 0.025, opPrecision: +0.01,
+    cellLerp: 0.025, cellPrecision: +0.01,
+    retrievedPenalty: 0,
+    roleWeight: 0.5,
+    integralContribution: 0.5,
+    rereadPriority: 1,
+  },
+  'fit-deferred': {
+    classifiedLerp: 0, classifiedPrecision: 0,
+    opLerp: 0, opPrecision: 0,
+    cellLerp: 0, cellPrecision: 0,
+    retrievedPenalty: 0,
+    roleWeight: 0,
+    integralContribution: 0,
+    rereadPriority: 0,
+    deferralCountInc: true,
+    sourceDifficultyKey: 'fitDeferred',
+  },
+  // miss row — retrieval was wrong
+  'miss-committed': {
+    classifiedLerp: 0.15, classifiedPrecision: +0.04,
+    opLerp: 0.10, opPrecision: +0.03,
+    cellLerp: 0.10, cellPrecision: +0.03,
+    retrievedPenalty: -0.02,
+    roleWeight: 1.0,
+    integralContribution: 1.0,
+    rereadPriority: 0,
+    surpriseMarker: true,
+  },
+  'miss-provisional': {
+    classifiedLerp: 0.04, classifiedPrecision: +0.01,
+    opLerp: 0.04, opPrecision: +0.005,
+    cellLerp: 0.04, cellPrecision: +0.005,
+    retrievedPenalty: -0.01,
+    roleWeight: 0.25,
+    integralContribution: 0.25,
+    rereadPriority: 1,
+    surpriseMarker: true,
+  },
+  'miss-deferred': {
+    classifiedLerp: 0, classifiedPrecision: 0,
+    opLerp: 0, opPrecision: 0,
+    cellLerp: 0, cellPrecision: 0,
+    retrievedPenalty: -0.02,
+    roleWeight: 0,
+    integralContribution: 0,
+    rereadPriority: 0,
+    sourceDifficultyKey: 'missDeferred',
+    markRegionUnreadable: false,
+  },
+  // void row — nothing to retrieve
+  'void-committed': {
+    classifiedLerp: null, classifiedPrecision: 0.10,    // null means "adopt event embedding as centroid"
+    opLerp: null, opPrecision: 0.05,
+    cellLerp: null, cellPrecision: 0.05,
+    retrievedPenalty: 0,
+    roleWeight: 1.0,
+    integralContribution: 1.0,
+    rereadPriority: 0,
+    structuralGrowth: true,
+  },
+  'void-provisional': {
+    classifiedLerp: null, classifiedPrecision: 0.05,
+    opLerp: null, opPrecision: 0.02,
+    cellLerp: null, cellPrecision: 0.02,
+    retrievedPenalty: 0,
+    roleWeight: 0.5,
+    integralContribution: 0.5,
+    rereadPriority: 1,
+    structuralGrowth: true,
+  },
+  'void-deferred': {
+    classifiedLerp: 0, classifiedPrecision: 0,
+    opLerp: 0, opPrecision: 0,
+    cellLerp: 0, cellPrecision: 0,
+    retrievedPenalty: 0,
+    roleWeight: 0,
+    integralContribution: 0,
+    rereadPriority: 0,
+    sourceDifficultyKey: 'voidDeferred',
+    markRegionUnreadable: true,
+  },
+};
+
+function determineCommitState(ev) {
+  // Comprehension-monitoring path stamped these on the event during
+  // classification: ev.deferAttempts, ev.lowConfidence, ev.deferReason.
+  if ((ev.deferAttempts || 0) >= 2) return 'deferred';
+  if (ev.lowConfidence) return 'provisional';
+  return 'committed';
+}
+
+function determineOutcomeCell(ev) {
+  if (!ev) return null;
+  const priming = ev.primingState || 'void';
+  const commit = determineCommitState(ev);
+  return `${priming}-${commit}`;
+}
+
+function clampPrecision(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(1, v));
+}
+
+function bumpEntityPrecision(entity, delta) {
+  if (!entity) return;
+  entity.precision = clampPrecision((entity.precision || 0) + delta);
+}
+
+function updateCentroidRegistry(map, key, eventVec, lerp, precisionDelta) {
+  if (!map || !key) return;
+  let entry = map.get(key);
+  if (!entry) {
+    entry = { centroid: null, precision: 0, count: 0 };
+    map.set(key, entry);
+  }
+  if (lerp === null) {
+    // Void/structural-growth path: adopt the event embedding directly
+    // when this is the registry's first evidence; otherwise small lerp.
+    entry.centroid = entry.centroid
+      ? lerpCentroidInt8(entry.centroid, eventVec, 0.05)
+      : (eventVec ? new Int8Array(eventVec) : entry.centroid);
+  } else if (lerp > 0 && eventVec) {
+    entry.centroid = lerpCentroidInt8(entry.centroid, eventVec, lerp);
+  }
+  entry.precision = clampPrecision(entry.precision + precisionDelta);
+  entry.count += 1;
+}
+
+// Apply the dispatch rule for one event. Reads ev.outcomeCell, walks the
+// table, mutates centroids/precisions on the relevant entities, op, cell
+// registries. No LLM calls. No graph mutations beyond stamping on ev.
+function applyOutcomeWeightedFoldForEvent(ev, retrievedEntityIds) {
+  if (!ev) return;
+  if (ev.op !== 'DEF' && ev.op !== 'CON') return;
+  const cell = determineOutcomeCell(ev);
+  ev.outcomeCell = cell;
+  ev.commitState = determineCommitState(ev);
+  const rule = OUTCOME_FOLD[cell];
+  if (!rule) return;
+
+  // Per-event role-profile weight (read by entityRoleCounts).
+  ev.roleWeight = rule.roleWeight;
+  if (rule.surpriseMarker) ev.surpriseMarker = true;
+
+  // The classified entity for centroid update purposes is the subject of
+  // a DEF, or the from-end of a CON. (Targets aren't moved by this fold —
+  // role-profile aggregation already covers their target-side stats.)
+  const p = ev.payload || {};
+  const classifiedEntityId = p.subject || p.from || null;
+  const classifiedEntity = classifiedEntityId ? STATE.entities.get(classifiedEntityId) : null;
+  const eventVec = EMBEDDING_STORE.byEventId.get(ev.id) || null;
+
+  // Classified entity centroid + precision
+  if (classifiedEntity) {
+    if (rule.classifiedLerp === null) {
+      // Void path: adopt embedding as initial centroid (or small lerp if
+      // somehow already present).
+      classifiedEntity._centroid = classifiedEntity._centroid
+        ? lerpCentroidInt8(classifiedEntity._centroid, eventVec, 0.05)
+        : (eventVec ? new Int8Array(eventVec) : classifiedEntity._centroid);
+    } else if (rule.classifiedLerp > 0 && eventVec) {
+      classifiedEntity._centroid = lerpCentroidInt8(classifiedEntity._centroid, eventVec, rule.classifiedLerp);
+    }
+    if (rule.classifiedPrecision) {
+      bumpEntityPrecision(classifiedEntity, rule.classifiedPrecision);
+    }
+    // Surprise also dampens running surpriseRate (the moving fraction
+    // of recent miss outcomes for this entity).
+    if (cell.startsWith('miss-')) {
+      classifiedEntity.surpriseRate = clampPrecision((classifiedEntity.surpriseRate || 0) * 0.9 + 0.1);
+    } else if (cell.startsWith('fit-')) {
+      classifiedEntity.surpriseRate = clampPrecision((classifiedEntity.surpriseRate || 0) * 0.9);
+    }
+  }
+
+  // Operator and cell centroid updates
+  const op = ev.op;
+  if (op && rule.opPrecision !== undefined) {
+    updateCentroidRegistry(STATE.operatorCentroids, op, eventVec, rule.opLerp, rule.opPrecision);
+  }
+  const cellLabel = ev.llmCell || (ev.empiricalCells?.[0]?.cell);
+  if (cellLabel && rule.cellPrecision !== undefined) {
+    updateCentroidRegistry(STATE.cellCentroids, cellLabel, eventVec, rule.cellLerp, rule.cellPrecision);
+  }
+
+  // Penalize retrieved-but-not-classified entities on miss rows. Their
+  // centroid was misleading for this sentence; precision reflects that.
+  if (rule.retrievedPenalty < 0 && Array.isArray(retrievedEntityIds)) {
+    for (const id of retrievedEntityIds) {
+      if (id === classifiedEntityId) continue;
+      const ent = STATE.entities.get(id);
+      if (!ent) continue;
+      bumpEntityPrecision(ent, rule.retrievedPenalty);
+    }
+  }
+
+  // Defer rows: increment per-entity deferralCount on retrieved-top
+  // entities, and bump the per-source difficulty counter.
+  if (rule.deferralCountInc && Array.isArray(retrievedEntityIds)) {
+    for (const id of retrievedEntityIds) {
+      const ent = STATE.entities.get(id);
+      if (!ent) continue;
+      ent.deferralCount = (ent.deferralCount || 0) + 1;
+    }
+  }
+  if (rule.sourceDifficultyKey && ev.sourceId) {
+    let sd = STATE.sourceDifficulty.get(ev.sourceId);
+    if (!sd) { sd = { fitDeferred: 0, missDeferred: 0, voidDeferred: 0 }; STATE.sourceDifficulty.set(ev.sourceId, sd); }
+    sd[rule.sourceDifficultyKey] = (sd[rule.sourceDifficultyKey] || 0) + 1;
+  }
+
+  // Mark the embedding region as poorly mapped (void-deferred case). The
+  // flag deprioritizes retrieval there but does not exclude future
+  // accumulation.
+  if (rule.markRegionUnreadable && eventVec) {
+    STATE.unreadableRegions.push({
+      centroid: new Int8Array(eventVec),
+      deprioritize: true,
+      ts: Date.now(),
+    });
+    // Cap the list — older entries stay but we don't grow unbounded.
+    if (STATE.unreadableRegions.length > 256) {
+      STATE.unreadableRegions.shift();
+    }
+  }
+
+  // Log NUL "priming-confirmation" for fit-committed events so the non-
+  // transformation is auditable in G next to the DEF/CON. Other cells
+  // either do their own marking (surprise, defer SIG) or are silent.
+  if (cell === 'fit-committed') {
+    try {
+      appendEvent({
+        op: 'NUL',
+        payload: {
+          kind: 'priming-confirmation',
+          targetEventId: ev.id,
+          primingFit: ev.primingFitCosine,
+          bestPrimedEntityId: ev.bestPrimedEntityId || null,
+          primedEntityIds: Array.isArray(retrievedEntityIds) ? [...retrievedEntityIds] : [],
+          outcomeCell: cell,
+        },
+        sourceId: ev.sourceId,
+        narrativePos: ev.narrativePos,
+        authoredBy: 'system',
+        spanText: ev.spanText || null,
+        intakeTs: Date.now(),
+      });
+    } catch (e) { /* non-fatal */ }
+  }
+}
+
+// Walk a sentence's just-classified events and apply the outcome-
+// dispatched fold to each. Called once per sentence after classification
+// + priming-fit determination + embedding.
+function applyOutcomeWeightedFold(sentenceEventIds, retrievedEntityIds) {
+  if (!Array.isArray(sentenceEventIds) || sentenceEventIds.length === 0) return;
+  for (const eid of sentenceEventIds) {
+    const ev = STATE.G.find(e => e.id === eid);
+    if (!ev) continue;
+    applyOutcomeWeightedFoldForEvent(ev, retrievedEntityIds || []);
+  }
+}
+
+// Periodic decay pass — keeps stale centroids and precisions from
+// dominating retrieval indefinitely. Runs every outcomeDecayEveryN
+// sentences (default 50).
+function maybeRunDecayPass() {
+  const n = STATE.outcomeDecayEveryN || 50;
+  const since = (STATE.globalSentencesProcessed || 0) - (STATE.lastDecayPassAt || 0);
+  if (since < n) return false;
+  STATE.lastDecayPassAt = STATE.globalSentencesProcessed || 0;
+  for (const ent of STATE.entities.values()) {
+    if (ent.precision != null) ent.precision = clampPrecision(ent.precision * 0.98);
+    if (ent.surpriseRate != null) ent.surpriseRate = clampPrecision(ent.surpriseRate * 0.95);
+  }
+  for (const entry of STATE.operatorCentroids.values()) {
+    entry.precision = clampPrecision(entry.precision * 0.98);
+  }
+  for (const entry of STATE.cellCentroids.values()) {
+    entry.precision = clampPrecision(entry.precision * 0.98);
+  }
+  return true;
 }
 
 // Re-run cached entity descriptions for entities that gained evidence in
@@ -7517,6 +7858,31 @@ async function refreshHypothesis(source, sentenceIdx, reason, currentCosine, bas
 
 // Embedding-divergence monitor — fires every divergenceCheckEveryN events.
 // Returns a reason string when refresh should fire, or null.
+// Compute the hypothesis's running precision as the mean of its
+// principals' precisions. A freshly-promoted hypothesis with sparse
+// evidence has low precision; a well-confirmed one tracks high.
+function computeHypothesisPrecision(source) {
+  if (!source || !source.hypothesis) return 0;
+  const principals = source.hypothesis.principals || [];
+  if (principals.length === 0) return 0;
+  let sum = 0, n = 0;
+  for (const p of principals) {
+    // The hypothesis lists names; preminted entities live in STATE.entities
+    // by id. Match by canonical name as a fallback when no id is stored.
+    let entity = null;
+    if (p.entityId) entity = STATE.entities.get(p.entityId);
+    if (!entity && p.name) {
+      for (const ent of STATE.entities.values()) {
+        if (ent.canonical === p.name) { entity = ent; break; }
+      }
+    }
+    if (!entity) continue;
+    sum += clampPrecision(entity.precision || 0);
+    n++;
+  }
+  return n > 0 ? sum / n : 0;
+}
+
 function checkHypothesisDivergence(source) {
   if (!source || !source.hypothesis) return null;
   const since = STATE.G.length - (STATE.lastDivergenceCheckEventIdx || 0);
@@ -7534,11 +7900,20 @@ function checkHypothesisDivergence(source) {
     STATE.hypothesisBaselineCosine = cur;
     return null;
   }
-  const delta = (STATE.hypothesisDivergenceDelta != null) ? STATE.hypothesisDivergenceDelta : 0.15;
+  // Precision-modulated REC threshold: a low-precision hypothesis is
+  // easy to revise (smaller drop fires REC); a high-precision hypothesis
+  // resists superficial drift (larger drop required).
+  //   threshold = baseDelta * (0.5 + precision)
+  // precision 0 → 0.5×base, precision 1 → 1.5×base.
+  const base = STATE.recBaseDelta != null ? STATE.recBaseDelta
+             : (STATE.hypothesisDivergenceDelta != null ? STATE.hypothesisDivergenceDelta : 0.15);
+  const precision = computeHypothesisPrecision(source);
+  source.hypothesis.precision = precision;
+  const delta = base * (0.5 + precision);
   if (cur < STATE.hypothesisBaselineCosine - delta) {
-    return { reason: 'divergence', currentCosine: cur, baseline: STATE.hypothesisBaselineCosine };
+    return { reason: 'divergence', currentCosine: cur, baseline: STATE.hypothesisBaselineCosine, threshold: delta, precision };
   }
-  return { reason: null, currentCosine: cur, baseline: STATE.hypothesisBaselineCosine };
+  return { reason: null, currentCosine: cur, baseline: STATE.hypothesisBaselineCosine, threshold: delta, precision };
 }
 
 // Lazily embed the current hypothesis if it isn't cached yet — used by
@@ -7807,6 +8182,28 @@ function dequantizeInt8(v) {
   const out = new Float32Array(v.length);
   for (let i = 0; i < v.length; i++) out[i] = v[i] / QUANT_SCALE;
   return out;
+}
+
+// Linear interpolation of an Int8Array centroid toward a new vector by
+// a small alpha. Used by the outcome-dispatched fold to do incremental
+// precision-weighted updates: high-fit confirmations move centroids
+// only slightly (small alpha), miss/refine events move them more
+// (larger alpha), defer events do not call this at all.
+function lerpCentroidInt8(centroid, newVec, alpha) {
+  if (!newVec) return centroid;
+  if (!centroid) {
+    // First evidence — adopt the new vector as the centroid.
+    return new Int8Array(newVec);
+  }
+  if (centroid.length !== newVec.length) return centroid;
+  const a = Math.max(0, Math.min(1, alpha));
+  const f = new Float32Array(centroid.length);
+  for (let i = 0; i < centroid.length; i++) {
+    const c = centroid[i] / QUANT_SCALE;
+    const n = newVec[i] / QUANT_SCALE;
+    f[i] = (1 - a) * c + a * n;
+  }
+  return quantizeFloat32(f);
 }
 
 // Cosine similarity for two Int8Array unit vectors. Computes dot
@@ -8179,10 +8576,16 @@ function entityRoleCounts(entityId, position /* 'subject' | 'target' */) {
     if (!matches) continue;
     const faces = eventFaces(ev);
     if (!faces) continue;
-    if (faces.operator) actCounts[faces.operator] = (actCounts[faces.operator] || 0) + 1;
-    if (faces.site) siteCounts[faces.site] = (siteCounts[faces.site] || 0) + 1;
-    if (faces.resolution) resolutionCounts[faces.resolution] = (resolutionCounts[faces.resolution] || 0) + 1;
-    total++;
+    // Per-event role weight: stamped by the outcome-dispatched fold
+    // (1.0 for committed, 0.5 for fit-provisional, 0.25 for miss-
+    // provisional, 0 for any deferred row). Defaults to 1.0 for events
+    // that pre-date the fold layer or were authored outside it.
+    const w = (typeof ev.roleWeight === 'number') ? ev.roleWeight : 1.0;
+    if (w <= 0) continue;
+    if (faces.operator) actCounts[faces.operator] = (actCounts[faces.operator] || 0) + w;
+    if (faces.site) siteCounts[faces.site] = (siteCounts[faces.site] || 0) + w;
+    if (faces.resolution) resolutionCounts[faces.resolution] = (resolutionCounts[faces.resolution] || 0) + w;
+    total += w;
   }
   return { actCounts, siteCounts, resolutionCounts, total };
 }
@@ -8453,10 +8856,13 @@ function snapshotTrajectoriesForSentence(source, sentenceIdx, sentenceEventIds) 
     // Role profile (the structural reading)
     const profile = computeRoleProfile(entityId);
 
-    // Gestalt centroid (the semantic reading) — only if embeddings exist
-    const gestalt = computeEntityGestalt(entityId);
-    if (gestalt) ent._centroid = gestalt.centroid;
-    const neighbors = gestalt ? topKNeighborsForGestalt(entityId, gestalt.centroid) : [];
+    // Centroid is now maintained incrementally by the outcome-dispatched
+    // fold (precision-weighted lerp). We no longer recompute as a flat
+    // mean — the fold's per-event update rule is what keeps the centroid
+    // current. We still want neighbor diagnostics, so just read the
+    // current centroid for that.
+    const neighbors = ent._centroid ? topKNeighborsForGestalt(entityId, ent._centroid) : [];
+    const gestaltCount = ent._centroid ? 1 : 0;  // legacy field retained for export shape
 
     if (!ent.roleTrajectory) ent.roleTrajectory = [];
     ent.roleTrajectory.push({
@@ -8472,7 +8878,10 @@ function snapshotTrajectoriesForSentence(source, sentenceIdx, sentenceEventIds) 
       targetAct: topProfileCells(profile.targetAct, OPERATOR_NAMES, 3),
       targetSite: topProfileCells(profile.targetSite, SITE_NAMES, 3),
       targetResolution: topProfileCells(profile.targetResolution, RESOLUTION_NAMES, 3),
-      gestaltCount: gestalt?.count || 0,
+      gestaltCount,
+      precision: clampPrecision(ent.precision || 0),
+      surpriseRate: clampPrecision(ent.surpriseRate || 0),
+      deferralCount: ent.deferralCount || 0,
       topK: neighbors.map(n => ({ id: n.entityId, sim: Math.round(n.sim * 1000) / 1000 })),
     });
   }
@@ -9295,23 +9704,30 @@ async function ingestSource(text, opts = {}) {
         await maybeRefreshEntityDescriptions(sentenceEventIds);
       } catch (e) { /* non-fatal */ }
 
-      // ── PRIMING FIT (mechanical, no LLM) ──
-      // The retrieval at the top of this iteration was the prediction in
-      // the schema-activation sense: it pre-activated the entities the
-      // sentence was likely to draw on. Now that events have been embedded,
-      // measure how well the priming caught what the classifier extracted.
-      // High fit → log a NUL "priming-confirmation" (the structure was
-      // already there); low fit → mark the event so the surface can flag
-      // moments where the priming missed and the graph had to absorb new
-      // structure.
+      // ── PRIMING FIT + OUTCOME-DISPATCHED FOLD ──
+      // Two mechanical passes:
+      //   1. Determine each event's primingState (fit / miss / void) by
+      //      comparing its embedding against the centroids of the entities
+      //      retrieval picked at the top of the iteration.
+      //   2. Apply the 3×3 outcome-dispatched fold: each event's
+      //      <priming, commit> cell selects an update rule for the
+      //      classified entity centroid + precision, the operator centroid,
+      //      the cell centroid, role-profile weight, and (for fit-committed)
+      //      a NUL "priming-confirmation" log.
       try {
         applyPrimingFit(sentenceEventIds, STATE.topSemanticEntityIds || []);
+        applyOutcomeWeightedFold(sentenceEventIds, STATE.topSemanticEntityIds || []);
       } catch (e) { /* non-fatal */ }
 
       // Clear per-iteration semantic context. The next sentence will
       // recompute these at the top of its iteration.
       STATE.semanticSentences = [];
       STATE.topSemanticEntityIds = [];
+
+      // Periodic decay pass. Stale precisions and surprise rates fade so
+      // entities not mentioned for many sentences become less confidently
+      // positioned in retrieval.
+      try { maybeRunDecayPass(); } catch (e) { /* non-fatal */ }
 
       // ── HYPOTHESIS REC TRIGGERS ──
       // First-promotion: at sentence (default) 30, unconditionally
@@ -13226,6 +13642,65 @@ function renderInspectView() {
           <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);">permanently unresolved</td><td style="font-family:'IBM Plex Mono',monospace;font-size:11px;">${counts.permanent}</td></tr>
           <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);">total comprehension SIGs</td><td style="font-family:'IBM Plex Mono',monospace;font-size:11px;">${counts.total}</td></tr>
         </tbody></table>`;
+      }
+      html += `</div>`;
+    }
+
+    // ── OUTCOME DISTRIBUTION (3×3 fold) ──
+    // Each propositional event lands in one of nine cells determined by
+    // <priming, commit>. The grid is the system's running account of
+    // where reading is efficient (fit-committed), where the model is
+    // refining (miss-committed), where structure is growing (void-
+    // committed), and where comprehension is stalling (any deferred row).
+    {
+      const cells = [
+        ['fit-committed', 'fit-provisional', 'fit-deferred'],
+        ['miss-committed', 'miss-provisional', 'miss-deferred'],
+        ['void-committed', 'void-provisional', 'void-deferred'],
+      ];
+      const counts = {};
+      for (const row of cells) for (const c of row) counts[c] = 0;
+      let total = 0;
+      for (const ev of STATE.G) {
+        if (!ev || !ev.outcomeCell) continue;
+        if (counts[ev.outcomeCell] != null) {
+          counts[ev.outcomeCell]++;
+          total++;
+        }
+      }
+      html += `<div style="margin-top:14px;">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:6px;">outcome distribution — 3×3 precision-weighted fold</div>`;
+      if (total === 0) {
+        html += `<div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-faint);">no events with outcome cells yet — fold runs as classification lands.</div>`;
+      } else {
+        const cellTip = c => {
+          switch (c) {
+            case 'fit-committed':   return 'efficient reading — priming caught it, classifier committed';
+            case 'fit-provisional': return 'partial confirm — priming caught it, low confidence';
+            case 'fit-deferred':    return 'opaque despite good context — sentence itself is hard';
+            case 'miss-committed':  return 'refining the model — priming missed, classifier committed (centroid shifts)';
+            case 'miss-provisional':return 'tentative refinement — priming missed, low confidence';
+            case 'miss-deferred':   return 'deepest signal of poor regional mapping';
+            case 'void-committed':  return 'structural growth — new entity / new region of the graph';
+            case 'void-provisional':return 'tentative new structure';
+            case 'void-deferred':   return 'unreadable region — graph couldn\'t even prime';
+          }
+          return '';
+        };
+        html += `<table class="inspect-table" style="max-width:520px;"><thead><tr><th></th><th>committed</th><th>provisional</th><th>deferred</th></tr></thead><tbody>`;
+        for (const row of cells) {
+          const head = row[0].split('-')[0];
+          html += `<tr><td style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.06em;">${head}</td>`;
+          for (const c of row) {
+            const n = counts[c];
+            const intensity = total > 0 ? Math.min(1, n / Math.max(1, total / 4)) : 0;
+            const bg = n > 0 ? `background:rgba(74,124,89,${0.08 + 0.18 * intensity});` : '';
+            html += `<td style="font-family:'IBM Plex Mono',monospace;font-size:11px;${bg}" title="${escapeHtml(cellTip(c))}">${n}</td>`;
+          }
+          html += `</tr>`;
+        }
+        html += `</tbody></table>`;
+        html += `<div style="margin-top:6px;font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-faint);">${total} events with outcome cells · centroid + precision updates dispatched per cell</div>`;
       }
       html += `</div>`;
     }
