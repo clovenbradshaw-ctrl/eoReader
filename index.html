@@ -562,6 +562,10 @@ button.secondary.danger:hover { background: var(--accent); color: var(--paper); 
 .log-table td.col-cell    { width: 90px;  font-size: 10px; color: var(--ink-faint); }
 .log-table td.col-author  { width: 80px;  font-size: 9px;  color: var(--ink-faint); }
 .log-table td.col-source  { width: 14%;   font-size: 10px; color: var(--ink-faint); }
+.log-table td.col-chain   { width: 90px;  font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); white-space: nowrap; }
+.log-table td.col-chain .chain-stable { color: var(--ink-soft); }
+.log-table td.col-chain .chain-historical { color: var(--ink-faint); }
+.log-table td.col-chain .chain-corrects { color: var(--gap, #b07a3a); margin-left: 4px; }
 .log-table td.col-subject { font-family: 'Newsreader', serif; font-size: 13px; color: var(--ink); }
 .log-table td.col-value   { font-family: 'Newsreader', serif; font-size: 13px; color: var(--ink); }
 .log-table .empty-cell { color: var(--ink-faint); font-style: italic; }
@@ -2628,6 +2632,164 @@ function uid(prefix) {
   return `${prefix}_${t}${c}${r}`;
 }
 
+// ─── IDENTITY HASHES ──────────────────────────────────────────────────
+// Two kinds of hash on every object:
+//
+//   stableHash      — over content alone. Reproducible: the same content
+//                     always produces the same stableHash. Re-ingesting
+//                     an identical source yields identical stable IDs.
+//
+//   historicalHash  — over content + the prior object's historicalHash
+//                     in the Given-Log. Every event in G is a link in a
+//                     hash chain. Reordering or tampering invalidates
+//                     every downstream object visibly.
+//
+// SHA-256 implemented synchronously so appendEvent stays atomic — async
+// hashing would race with the rest of the ingest pipeline. The chain is
+// integrity-evidence, not adversarial-cryptographic; a sync sha256 with
+// the standard rounds is sufficient.
+
+const GENESIS_HASH = '0'.repeat(64);
+
+const sha256 = (function () {
+  const K = new Uint32Array([
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  ]);
+  function rotr(x, n) { return (x >>> n) | (x << (32 - n)); }
+  return function (str) {
+    const utf8 = unescape(encodeURIComponent(String(str)));
+    const len = utf8.length;
+    const bitLen = len * 8;
+    const padLen = ((len + 9 + 63) >> 6) << 6;
+    const padded = new Uint8Array(padLen);
+    for (let i = 0; i < len; i++) padded[i] = utf8.charCodeAt(i);
+    padded[len] = 0x80;
+    const dv = new DataView(padded.buffer);
+    dv.setUint32(padLen - 8, Math.floor(bitLen / 0x100000000), false);
+    dv.setUint32(padLen - 4, bitLen >>> 0, false);
+    const H = new Uint32Array([
+      0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+      0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    ]);
+    const W = new Uint32Array(64);
+    for (let chunk = 0; chunk < padLen; chunk += 64) {
+      for (let i = 0; i < 16; i++) W[i] = dv.getUint32(chunk + i * 4, false);
+      for (let i = 16; i < 64; i++) {
+        const s0 = rotr(W[i - 15], 7) ^ rotr(W[i - 15], 18) ^ (W[i - 15] >>> 3);
+        const s1 = rotr(W[i - 2], 17) ^ rotr(W[i - 2], 19) ^ (W[i - 2] >>> 10);
+        W[i] = (W[i - 16] + s0 + W[i - 7] + s1) >>> 0;
+      }
+      let a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+      for (let i = 0; i < 64; i++) {
+        const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+        const ch = (e & f) ^ (~e & g);
+        const T1 = (h + S1 + ch + K[i] + W[i]) >>> 0;
+        const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+        const maj = (a & b) ^ (a & c) ^ (b & c);
+        const T2 = (S0 + maj) >>> 0;
+        h = g; g = f; f = e; e = (d + T1) >>> 0;
+        d = c; c = b; b = a; a = (T1 + T2) >>> 0;
+      }
+      H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0;
+      H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0;
+      H[4] = (H[4] + e) >>> 0; H[5] = (H[5] + f) >>> 0;
+      H[6] = (H[6] + g) >>> 0; H[7] = (H[7] + h) >>> 0;
+    }
+    let hex = '';
+    for (let i = 0; i < 8; i++) hex += H[i].toString(16).padStart(8, '0');
+    return hex;
+  };
+})();
+
+// Deterministic JSON canonicalization — sorts object keys recursively so
+// re-serializing equivalent content produces the byte-identical string.
+// Required for stableHash to be reproducible across runs and platforms.
+function canonicalize(v) {
+  if (v === undefined) return 'null';
+  if (v === null) return 'null';
+  if (typeof v === 'number') return Number.isFinite(v) ? JSON.stringify(v) : 'null';
+  if (typeof v === 'string' || typeof v === 'boolean') return JSON.stringify(v);
+  if (Array.isArray(v)) return '[' + v.map(canonicalize).join(',') + ']';
+  if (typeof v === 'object') {
+    const keys = Object.keys(v).sort();
+    return '{' + keys.map(k => JSON.stringify(k) + ':' + canonicalize(v[k])).join(',') + '}';
+  }
+  return 'null';
+}
+
+// Compute a stable hash for an event from its content alone — operator,
+// payload, source/narrative anchors, span text, author. Excludes wall-clock
+// timestamps and the freshly-minted uid, both of which break reproducibility.
+function eventStableHash(ev) {
+  return sha256(canonicalize({
+    op: ev.op,
+    payload: ev.payload || {},
+    sourceId: ev.sourceId || null,
+    narrativePos: ev.narrativePos || null,
+    spanText: ev.spanText || null,
+    authoredBy: ev.authoredBy || 'system',
+  }));
+}
+
+// Compute the historical hash for the next event given the chain head.
+// historicalHash = sha256(stableHash || prevHistoricalHash). Genesis hash
+// stands in for the empty prefix.
+function chainNext(stableHash, prevHistoricalHash) {
+  return sha256(stableHash + '|' + (prevHistoricalHash || GENESIS_HASH));
+}
+
+// Cache for entity historical hashes — invalidated whenever G grows.
+// Entity historical IDs are the hash of all events involving the entity,
+// in order. Recomputing on every read is O(G); cache keyed on G.length.
+const _entityHistCache = new Map(); // entityId -> { gLen, hash }
+
+function entityInvolvedInEvent(entityId, ev) {
+  const p = ev?.payload;
+  if (!p) return false;
+  if (p.entity === entityId) return true;
+  if (p.subject === entityId) return true;
+  if (p.from === entityId || p.to === entityId) return true;
+  if (p.valueIsEntity && p.value === entityId) return true;
+  if (p.toIsEntity && p.to === entityId) return true;
+  return false;
+}
+
+function entityHistoricalHash(entityId) {
+  if (typeof STATE === 'undefined' || !STATE.G) return GENESIS_HASH;
+  const cached = _entityHistCache.get(entityId);
+  if (cached && cached.gLen === STATE.G.length) return cached.hash;
+  let h = GENESIS_HASH;
+  for (const ev of STATE.G) {
+    if (entityInvolvedInEvent(entityId, ev)) {
+      h = sha256((ev.historicalHash || ev.stableHash || ev.id) + '|' + h);
+    }
+  }
+  _entityHistCache.set(entityId, { gLen: STATE.G.length, hash: h });
+  return h;
+}
+
+// Findings are produced by query walks. Their stable hash is over the
+// query plan, cursor, framing, and the row identities returned. Their
+// historical hash threads in the head of G at query time so identical
+// queries against the same Given-Log reproduce; against an extended log,
+// the hash advances visibly.
+function findingStableHash(plan, cursor, framing, rows) {
+  const rowIds = (rows || []).map(r => r.def_id || r.id || canonicalize(r));
+  return sha256(canonicalize({ plan, cursor, framing, rowIds }));
+}
+
+function logHeadHistoricalHash() {
+  if (typeof STATE === 'undefined' || !STATE.G || !STATE.G.length) return GENESIS_HASH;
+  return STATE.G[STATE.G.length - 1].historicalHash || GENESIS_HASH;
+}
+
 function escapeHtml(s) {
   if (s == null) return '';
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -4515,6 +4677,13 @@ function appendEvent(ev) {
     chromeSuspect: ev.chromeSuspect ?? false,
     eoCoord: assignEoCoord(ev.op, ev.payload),
   };
+  // Stable hash over content; historical hash chains over the prior
+  // event's historical hash. Together they give every event a content
+  // identity AND a place-in-history identity. Tampering with any prior
+  // event in G invalidates every downstream historicalHash visibly.
+  event.stableHash = eventStableHash(event);
+  const prev = STATE.G.length ? STATE.G[STATE.G.length - 1] : null;
+  event.historicalHash = chainNext(event.stableHash, prev ? prev.historicalHash : GENESIS_HASH);
   STATE.G.push(event);
   // Classify into the 27 cells. If the index isn't ready yet, the event
   // gets queued and will be classified by flushPendingClassifications()
@@ -4894,7 +5063,7 @@ function mintEntity(canonical, aliases = [], kind = null, opts = {}) {
     mintedAtSourceId: sourceId,
   };
   STATE.entities.set(id, ent);
-  appendEvent({
+  const insEv = appendEvent({
     op: 'INS',
     payload: { entity: id, canonical, aliases, firstSurface: opts.firstSurface || canonical },
     sourceId,
@@ -4903,6 +5072,14 @@ function mintEntity(canonical, aliases = [], kind = null, opts = {}) {
     authoredBy,
     intakeTs: Date.now(),
   });
+  // Stable identity: hash of the first INS event's payload + canonical
+  // name. Reproducible — re-ingesting an identical source under the same
+  // INS payload yields the same stable hash. The historical hash is
+  // computed lazily via entityHistoricalHash(id) since it folds in every
+  // subsequent event involving this entity.
+  ent.firstInsEventId = insEv.id;
+  ent.firstInsHistoricalHash = insEv.historicalHash;
+  ent.stableHash = sha256(canonicalize(insEv.payload) + '|' + canonical);
   return ent;
 }
 
@@ -6544,28 +6721,13 @@ async function refreshHypothesis(source, sentenceIdx, reason, currentCosine, bas
   parsed.refreshReason = reason;
   parsed.refreshAtSentence = sentenceIdx;
 
-  // Push the old hypothesis to history (REC supersedes; it does not erase).
+  // The old hypothesis is what gets archived as an epoch; the new one
+  // becomes the live hypothesis. Order matters for the chain: the REC
+  // event is appended first so its historicalHash is available to thread
+  // into the epoch record. Without that link, an epoch could exist with
+  // no event in G that minted it — which is exactly the kind of silent
+  // transformation the architecture is meant to make impossible.
   const old = source.hypothesis || null;
-  if (old) {
-    // Find the previous activeFrom for this source
-    let activeFrom = 0;
-    for (let i = STATE.hypothesisHistory.length - 1; i >= 0; i--) {
-      if (STATE.hypothesisHistory[i].sourceId === source.id) {
-        activeFrom = STATE.hypothesisHistory[i].activeToSentenceIdx + 1;
-        break;
-      }
-    }
-    STATE.hypothesisHistory.push({
-      hypothesis: old,
-      sourceId: source.id,
-      activeFromSentenceIdx: activeFrom,
-      activeToSentenceIdx: sentenceIdx,
-      reason: reason,
-      cosineAtTrigger: currentCosine,
-      baseline: baselineCosine,
-      ts: Date.now(),
-    });
-  }
   source.hypothesis = parsed;
 
   // Recompute hypothesis embedding + reset baseline
@@ -6581,8 +6743,9 @@ async function refreshHypothesis(source, sentenceIdx, reason, currentCosine, bas
   }
 
   // Append a REC event with full provenance. The REC is the auditable
-  // record — never silent, always logged.
-  appendEvent({
+  // record — never silent, always logged. Its historicalHash is the
+  // anchor the new hypothesis epoch will chain through.
+  const recEv = appendEvent({
     op: 'REC',
     payload: {
       kind: 'hypothesis',
@@ -6598,6 +6761,39 @@ async function refreshHypothesis(source, sentenceIdx, reason, currentCosine, bas
     spanText: parsed.summary || null,
     intakeTs: Date.now(),
   });
+
+  // Push the old hypothesis to history (REC supersedes; it does not
+  // erase). Stable hash is over the hypothesis structure alone, so the
+  // same epoch content always hashes the same. Historical hash chains
+  // through the REC event that closed the epoch and the prior epoch on
+  // this source — every transition is auditable end-to-end.
+  if (old) {
+    let activeFrom = 0;
+    let prevEpochHist = GENESIS_HASH;
+    for (let i = STATE.hypothesisHistory.length - 1; i >= 0; i--) {
+      if (STATE.hypothesisHistory[i].sourceId === source.id) {
+        activeFrom = STATE.hypothesisHistory[i].activeToSentenceIdx + 1;
+        prevEpochHist = STATE.hypothesisHistory[i].historicalHash || GENESIS_HASH;
+        break;
+      }
+    }
+    const epochStable = sha256(canonicalize(old));
+    const epochHistorical = sha256(epochStable + '|' + prevEpochHist + '|' + (recEv.historicalHash || GENESIS_HASH));
+    STATE.hypothesisHistory.push({
+      hypothesis: old,
+      sourceId: source.id,
+      activeFromSentenceIdx: activeFrom,
+      activeToSentenceIdx: sentenceIdx,
+      reason: reason,
+      cosineAtTrigger: currentCosine,
+      baseline: baselineCosine,
+      ts: Date.now(),
+      stableHash: epochStable,
+      historicalHash: epochHistorical,
+      closedByEventId: recEv.id,
+      closedByHistoricalHash: recEv.historicalHash,
+    });
+  }
 
   return parsed;
 }
@@ -7687,19 +7883,38 @@ function rebuildDerivedState() {
   STATE.evas = [];
   STATE.recs = [];
   STATE.predicates.clear();
+  _entityHistCache.clear();
+
+  // Re-chain. After a source deletion, the surviving events still
+  // carry historicalHash values pointing at predecessors that no
+  // longer exist — the chain is broken. Recompute from the surviving
+  // prefix so the integrity envelope describes the corpus as it now
+  // stands. Stable hashes don't change (they're content-only).
+  let prevHist = GENESIS_HASH;
+  for (const ev of STATE.G) {
+    if (!ev.stableHash) ev.stableHash = eventStableHash(ev);
+    ev.historicalHash = chainNext(ev.stableHash, prevHist);
+    prevHist = ev.historicalHash;
+  }
 
   // Replay events in chronological order
   for (const ev of STATE.G) {
     if (ev.op === 'INS') {
       // Source INS events are bookkeeping, not entities
       if (ev.payload?.kind === 'source') continue;
-      // Entity INS — re-mint
+      // Entity INS — re-mint. Stable hash anchors to this INS event's
+      // payload + canonical exactly as at first mint, so replay yields
+      // identical stable identity. The first-INS historical hash links
+      // the entity into the chain at the same point as origination.
       STATE.entities.set(ev.payload.entity, {
         id: ev.payload.entity,
         canonical: ev.payload.canonical,
         aliases: ev.payload.aliases || [ev.payload.canonical],
         kind: ev.payload.kind || null,
         mintedAt: ev.intakeTs,
+        firstInsEventId: ev.id,
+        firstInsHistoricalHash: ev.historicalHash || null,
+        stableHash: sha256(canonicalize(ev.payload) + '|' + ev.payload.canonical),
       });
     } else if (ev.op === 'CON') {
       STATE.edges.push({
@@ -9865,7 +10080,29 @@ async function runLibrarianTurn(question, cursor, framing, opts = {}) {
 
   const plans = [];
   if (eoPlan) {
+    // Read-only invariant. Querying does not transform the corpus —
+    // executeEOPlan must not append events to G. Snapshot length
+    // before/after; warn (don't throw, dev tool) on violation so a
+    // regression surfaces in the console without breaking the chat.
+    const gLenBefore = STATE.G.length;
+    const headBefore = logHeadHistoricalHash();
     const result = executeEOPlan(eoPlan);
+    if (STATE.G.length !== gLenBefore) {
+      console.warn('[anchorage] read-only invariant violated: executeEOPlan grew G by',
+        STATE.G.length - gLenBefore, 'event(s). Querying must not transform the Given-Log.');
+    }
+    // Stamp the finding with its identity hashes. stableHash is over
+    // the plan + cursor + framing + row identities — reproducible for
+    // identical content. historicalHash threads in the head of G at
+    // query time, so the same query against the same Given-Log yields
+    // an identical historical hash; against an extended log, the hash
+    // advances visibly. The finding "carries the historical hash of
+    // the path through the log that derived it."
+    if (result && typeof result === 'object') {
+      result.stableHash = findingStableHash(eoPlan, eoPlan.cursor, eoPlan.framing, result.rows);
+      result.historicalHash = chainNext(result.stableHash, headBefore);
+      result.derivedAtLogLength = gLenBefore;
+    }
     plans.push({ plan: eoPlan, result, line: formatPlanLine(eoPlan) });
   }
 
@@ -10338,6 +10575,18 @@ function renderLibrarianTranscript() {
           <span class="turn-meta-pill">${escapeHtml(planSummary || 'no plan')}</span>
           <span>cursor: ${escapeHtml(describeCursor(t.cursor))}</span>
           <span>framing: ${escapeHtml(describeFraming(t.framing))}</span>
+          ${(() => {
+            // Finding identity: stable hash over plan + cursor + framing
+            // + row identities; historical hash threads in the head of G
+            // at query time. The same query against the same Given-Log
+            // produces the same pair; against an extended log, the
+            // historical hash visibly advances.
+            const r = t.plans?.[0]?.result;
+            if (!r || !r.stableHash) return '';
+            const sh = r.stableHash.slice(0, 8);
+            const hh = (r.historicalHash || '').slice(0, 8);
+            return `<span class="turn-meta-pill" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-faint);" title="finding stableHash: ${escapeHtml(r.stableHash)}\nfinding historicalHash: ${escapeHtml(r.historicalHash || '')}\nderived at G length: ${r.derivedAtLogLength ?? '?'}">finding ${escapeHtml(sh)} · ${escapeHtml(hh)}</span>`;
+          })()}
         </div>
       </div>`;
   }
@@ -11302,6 +11551,23 @@ function showSourceSpanModal(grounding, opts = {}) {
 
 // Mint a reader EVA flagging a DEF. Called from the citation modal's
 // flag button. The EVA enters G and the DEF gets a `contested` flag.
+// Resolve the originating-event identity of a DEF — the event that
+// minted it, looked up via its first grounding's sourceEventId. Returns
+// the event's stable + historical hashes so a correction can carry an
+// auditable link back to exactly what it's correcting in the chain.
+function defOriginatingHashes(def) {
+  if (!def || !def.grounding || !def.grounding.length) return null;
+  const evId = def.grounding[0].sourceEventId;
+  if (!evId) return null;
+  const ev = STATE.G.find(e => e.id === evId);
+  if (!ev) return null;
+  return {
+    eventId: ev.id,
+    stableHash: ev.stableHash || null,
+    historicalHash: ev.historicalHash || null,
+  };
+}
+
 function flagDefViaModal(defId) {
   if (!defId) return;
   let def = null;
@@ -11328,6 +11594,11 @@ function flagDefViaModal(defId) {
     };
     STATE.sources.set(sourceId, readerSrc);
   }
+  // The corrects-link carries the historical hash of the event the
+  // reader is contesting, so the correction is traceable to the exact
+  // chain position it disputes — even if the underlying DEF id later
+  // changes shape, the historicalHash anchors it permanently.
+  const corrects = defOriginatingHashes(def);
   const ev = appendEvent({
     op: 'EVA',
     payload: {
@@ -11338,6 +11609,9 @@ function flagDefViaModal(defId) {
       verdict: 'dispute',
       rationale: '(flagged via citation modal — see source)',
       authoredBy: 'reader',
+      correctsEventId: corrects?.eventId || null,
+      correctsStableHash: corrects?.stableHash || null,
+      correctsHistoricalHash: corrects?.historicalHash || null,
     },
     sourceId: readerSrc.id,
     intakeTs: Date.now(),
@@ -11403,7 +11677,13 @@ function submitReaderFeedback() {
   if (!def || !verdict) return;
   const rationale = (document.getElementById('feedback-rationale')?.value || '').trim();
 
-  // Append a reader-authored EVA event to G
+  // Append a reader-authored EVA event to G. Carries the historical
+  // hash of the event being corrected so the correction is provably
+  // anchored to a specific point in the chain — re-running the same
+  // reader feedback against the same Given-Log produces an EVA with the
+  // same correctsHistoricalHash, while feedback against a different
+  // (or tampered-with) chain prefix produces a visibly different one.
+  const corrects = defOriginatingHashes(def);
   const ev = appendEvent({
     op: 'EVA',
     payload: {
@@ -11415,6 +11695,9 @@ function submitReaderFeedback() {
       verdict,
       rationale,
       authoredBy: 'reader',
+      correctsEventId: corrects?.eventId || null,
+      correctsStableHash: corrects?.stableHash || null,
+      correctsHistoricalHash: corrects?.historicalHash || null,
     },
     sourceId: 'reader',  // synthetic source — distinguishes from extracted EVAs
     intakeTs: Date.now(),
@@ -12074,7 +12357,17 @@ function renderInspectView() {
       .filter(Boolean);
     if (defs.length === 0) continue;
     html += `<div style="margin-bottom: 16px;">`;
-    html += `<div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; margin-bottom: 4px;"><span class="id">${id}</span> · <span class="canonical" style="font-family: 'Newsreader', serif; font-size: 14px;">${escapeHtml(ent.canonical)}</span></div>`;
+    // Stable identity (content) and historical identity (chain position).
+    // Stable hash anchors to first INS event payload + canonical name —
+    // re-ingesting the same source reproduces it. Historical hash folds
+    // every event involving this entity, in order; recomputed lazily on
+    // read because every new event referencing the entity advances it.
+    const entHist = (typeof entityHistoricalHash === 'function') ? entityHistoricalHash(id) : '';
+    const entStable = ent.stableHash || '';
+    const hashPill = entStable
+      ? ` · <span class="entity-hash" style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-faint);" title="stableHash: ${escapeHtml(entStable)}\nhistoricalHash: ${escapeHtml(entHist)}">stable ${escapeHtml(entStable.slice(0, 8))} · hist ${escapeHtml(entHist.slice(0, 8))}</span>`
+      : '';
+    html += `<div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; margin-bottom: 4px;"><span class="id">${id}</span> · <span class="canonical" style="font-family: 'Newsreader', serif; font-size: 14px;">${escapeHtml(ent.canonical)}</span>${hashPill}</div>`;
     html += `<table class="inspect-table"><tbody>`;
     const byPred = new Map();
     for (const d of defs) {
@@ -12172,18 +12465,27 @@ function renderInspectView() {
     if ((STATE.hypothesisHistory || []).length > 0) {
       html += `<div style="margin-top:10px;">
         <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:6px;">historical hypotheses (REC supersedes; nothing erased)</div>
-        <table class="inspect-table"><thead><tr><th>source</th><th>active span</th><th>reason</th><th>cosine→baseline</th><th>summary</th></tr></thead><tbody>`;
+        <table class="inspect-table"><thead><tr><th>source</th><th>active span</th><th>reason</th><th>cosine→baseline</th><th>chain</th><th>summary</th></tr></thead><tbody>`;
       for (const h of STATE.hypothesisHistory) {
         const srcName = STATE.sources.get(h.sourceId)?.name || h.sourceId;
         const cosLine = h.cosineAtTrigger != null && h.baseline != null
           ? `${h.cosineAtTrigger.toFixed(3)} → ${h.baseline.toFixed(3)}`
           : '—';
         const summary = h.hypothesis?.summary || h.hypothesis?.kind || '?';
+        // Epoch identity: stable hash over the hypothesis structure;
+        // historical hash chains through the REC event that closed the
+        // epoch and the prior epoch on this source.
+        const sh = (h.stableHash || '').slice(0, 8);
+        const hh = (h.historicalHash || '').slice(0, 8);
+        const chainCell = h.stableHash
+          ? `<span title="stableHash: ${escapeHtml(h.stableHash)}\nhistoricalHash: ${escapeHtml(h.historicalHash || '')}\nclosed by event ${escapeHtml(h.closedByEventId || '')}">${escapeHtml(sh)} · ${escapeHtml(hh)}</span>`
+          : '—';
         html += `<tr>
           <td>${escapeHtml(srcName)}</td>
           <td style="font-family:'IBM Plex Mono',monospace;">${h.activeFromSentenceIdx + 1}–${h.activeToSentenceIdx + 1}</td>
           <td style="font-family:'IBM Plex Mono',monospace;">${escapeHtml(h.reason || '?')}</td>
           <td style="font-family:'IBM Plex Mono',monospace;">${cosLine}</td>
+          <td style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-faint);">${chainCell}</td>
           <td><span style="font-style:italic;">${escapeHtml(summary)}</span></td>
         </tr>`;
       }
@@ -13706,6 +14008,19 @@ function logRowHtml(ev, offsets, opColor) {
   const predicate = comp.predicate ? escapeHtml(comp.predicate) : empty;
   const value = comp.value ? escapeHtml(comp.value) : empty;
   const flashCls = LOG_RENDER.flashIds.has(ev.id) ? ' flash' : '';
+  // Chain identity: stableHash (content) over historicalHash (chain
+  // position). Truncated to 8 hex chars for the row; full hash on hover.
+  // A correction event also surfaces the historicalHash of what it
+  // corrects, so the audit pointer is visible inline.
+  const sh = (ev.stableHash || '').slice(0, 8);
+  const hh = (ev.historicalHash || '').slice(0, 8);
+  const correctsHh = ev.payload?.correctsHistoricalHash;
+  const correctsTag = correctsHh
+    ? `<span class="chain-corrects" title="corrects ${escapeHtml(correctsHh)}">⤺${escapeHtml(correctsHh.slice(0, 6))}</span>`
+    : '';
+  const chainCell = ev.stableHash
+    ? `<span class="chain-stable" title="stableHash: ${escapeHtml(ev.stableHash)}">${escapeHtml(sh)}</span> · <span class="chain-historical" title="historicalHash: ${escapeHtml(ev.historicalHash || '')}">${escapeHtml(hh)}</span>${correctsTag}`
+    : '';
   return `<tr class="log-row${flashCls}" data-event-id="${escapeHtml(ev.id)}">
     <td class="col-span">${spanLabel}</td>
     <td class="col-op" style="color:${c};">${escapeHtml(ev.op)}</td>
@@ -13715,6 +14030,7 @@ function logRowHtml(ev, offsets, opColor) {
     <td class="col-cell">${cell ? escapeHtml(cell) : ''}</td>
     <td class="col-author">${author ? '[' + escapeHtml(author) + ']' : ''}</td>
     <td class="col-source">${escapeHtml(srcLabel)}</td>
+    <td class="col-chain">${chainCell}</td>
   </tr>`;
 }
 
@@ -13806,6 +14122,7 @@ function renderLogView() {
         <th class="col-cell">cell</th>
         <th class="col-author">author</th>
         <th class="col-source">source</th>
+        <th class="col-chain" title="stable hash · historical hash (chain link)">chain</th>
       </tr></thead>
       <tbody id="log-tbody">`;
   for (const ev of ordered) html += logRowHtml(ev, offsets, opColor);
@@ -14206,6 +14523,9 @@ document.getElementById('reset-btn').addEventListener('click', () => {
   STATE.sources.clear();
   STATE.predicates.clear();
   STATE.selectedSourceId = null;
+  // Drop the entity-historical-hash cache too — it's keyed on G length
+  // and would otherwise return stale hashes after reset.
+  if (typeof _entityHistCache !== 'undefined') _entityHistCache.clear();
   document.getElementById('query-results').innerHTML = `<div class="empty-state">Ingest a source, then ask.</div>`;
   document.getElementById('ingest-progress').textContent = '';
   renderHeaderStatus();
@@ -15918,6 +16238,42 @@ function renderHeaderStatusAndExamples() {
 // done by patching: just call this in the right places (already happens after ingest/reset)
 
 boot();
+
+// ─── INTEGRITY-ENVELOPE INSPECTION HOOK ───────────────────────────────
+// Expose the hash primitives + STATE on window so the integrity claims
+// in the architectural note are inspectable from the console: a user
+// can recompute any event's stableHash from its content, walk the chain
+// of historicalHash links forward from genesis, and verify that the
+// graph's identity matches what's logged. Read-only by intent — there's
+// no mutation API here. Tampering with STATE through the console will
+// invalidate downstream historicalHash values, which is the point.
+if (typeof window !== 'undefined') {
+  window.__anchorage = Object.freeze({
+    STATE,
+    sha256, canonicalize, GENESIS_HASH,
+    eventStableHash, chainNext,
+    entityHistoricalHash,
+    findingStableHash, logHeadHistoricalHash,
+    // Mutation surfaces are intentionally exposed read-as-handle so the
+    // user can replay any ingest step and watch the chain advance —
+    // exactly the kind of self-audit the architectural note describes.
+    appendEvent, mintEntity,
+    // Convenience: walk G and verify the chain end-to-end. Returns the
+    // index of the first event whose historicalHash doesn't match the
+    // recomputed value, or -1 if the chain is intact.
+    verifyChain() {
+      let prev = GENESIS_HASH;
+      for (let i = 0; i < STATE.G.length; i++) {
+        const ev = STATE.G[i];
+        const sh = eventStableHash(ev);
+        const hh = chainNext(sh, prev);
+        if (sh !== ev.stableHash || hh !== ev.historicalHash) return i;
+        prev = ev.historicalHash;
+      }
+      return -1;
+    },
+  });
+}
 
 </script>
 </body>
