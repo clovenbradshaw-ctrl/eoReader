@@ -5295,10 +5295,13 @@ function stripLeadingWord(surface, wordSet) {
 }
 
 // Iteratively strip leading filler words (handles "When I look", "By the way", etc.)
+// Also strips leading discourse markers so a sentence like "Consequently John
+// argues…" extracts "John" as the entity, not "Consequently John".
 function stripLeadingFillers(surface) {
   let cur = surface;
-  for (let i = 0; i < 4; i++) {  // bounded
-    const next = stripLeadingWord(cur, NAME_FILLER_PREFIXES);
+  for (let i = 0; i < 6; i++) {  // bounded
+    let next = stripLeadingWord(cur, NAME_FILLER_PREFIXES);
+    if (next === cur) next = stripLeadingWord(cur, DISCOURSE_MARKERS);
     if (next === cur) break;
     cur = next;
   }
