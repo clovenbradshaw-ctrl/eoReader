@@ -7710,6 +7710,9 @@ function resetLayeredContextForIngest() {
   STATE.priorSentenceText = '';
   STATE.lastSummaryUpdateAt = 0;
   STATE.lastSummaryAttemptAt = 0;
+  STATE.lastSummaryUpdateAtBodyIdx = 0;
+  STATE.lastSummaryAttemptAtBodyIdx = 0;
+  STATE.bodySentencesSeen = 0;
   STATE.lastSummaryEventIdx = STATE.G.length;
   STATE.lastDivergenceCheckEventIdx = STATE.G.length;
   STATE.lastSentenceEmbedding = null;
@@ -7810,6 +7813,7 @@ async function regenerateRunningSummary(source, sentenceIdx, reason) {
   // a failed attempt — without that, dropped meta-narration outputs make
   // every subsequent sentence re-fire the fallback trigger.
   STATE.lastSummaryAttemptAt = sentenceIdx;
+  STATE.lastSummaryAttemptAtBodyIdx = STATE.bodySentencesSeen || 0;
   STATE.metaCallSpentThisSentence = true;
   STATE.llmCallsThisIngest++;
   let raw;
@@ -7840,6 +7844,7 @@ async function regenerateRunningSummary(source, sentenceIdx, reason) {
 
   STATE.runningSummary = summary;
   STATE.lastSummaryUpdateAt = sentenceIdx;
+  STATE.lastSummaryUpdateAtBodyIdx = STATE.bodySentencesSeen || 0;
   STATE.lastSummaryEventIdx = STATE.G.length;
   // Stash on the sentence record so scrubbing the source view can show
   // what the read looked like at this moment.
@@ -7861,14 +7866,18 @@ async function maybeRegenerateRunningSummary(source, sentenceIdx, sentenceText, 
   // Per-sentence meta-call budget — only one summary OR hypothesis call
   // per sentence iteration. Sentence-extraction calls always run.
   if (STATE.metaCallSpentThisSentence) return false;
+  // Body-sentence gate: never run before at least one substantive
+  // narrative sentence has been read. Front matter shouldn't get to
+  // burn an LLM call summarizing nothing.
+  const bodyIdx = STATE.bodySentencesSeen || 0;
+  if (bodyIdx < 1) return false;
   // Self-revising back-off: don't re-attempt summary regen within
-  // SUMMARY_MIN_RETRY_GAP sentences of the last attempt — successful or
-  // not. Without this, a small model that keeps producing meta-narration
-  // (dropped by the validator below) makes every subsequent sentence
-  // re-fire the fallback trigger and burn calls.
+  // SUMMARY_MIN_RETRY_GAP body-sentences of the last attempt — successful
+  // or not. Counted in body sentences, not raw, so a long run of TOC
+  // lines doesn't burn down the back-off window.
   const SUMMARY_MIN_RETRY_GAP = 4;
-  const sinceAttempt = sentenceIdx - (STATE.lastSummaryAttemptAt || 0);
-  if (STATE.lastSummaryAttemptAt > 0 && sinceAttempt < SUMMARY_MIN_RETRY_GAP) {
+  const sinceAttemptBody = bodyIdx - (STATE.lastSummaryAttemptAtBodyIdx || 0);
+  if ((STATE.lastSummaryAttemptAtBodyIdx || 0) > 0 && sinceAttemptBody < SUMMARY_MIN_RETRY_GAP) {
     return false;
   }
   const triggers = [];
@@ -7880,9 +7889,10 @@ async function maybeRegenerateRunningSummary(source, sentenceIdx, sentenceText, 
       break;
     }
   }
-  // Trigger 2: long stable stretch fallback.
-  const sinceLast = sentenceIdx - (STATE.lastSummaryUpdateAt || 0);
-  if (sinceLast >= (STATE.summaryFallbackEveryN || 8)) {
+  // Trigger 2: long stable stretch fallback. Counted in body sentences
+  // — N body-sentences read since the last successful summary update.
+  const sinceLastBody = bodyIdx - (STATE.lastSummaryUpdateAtBodyIdx || 0);
+  if (sinceLastBody >= (STATE.summaryFallbackEveryN || 8)) {
     triggers.push('fallback');
   }
   // Trigger 3: semantic discontinuity vs prior sentence.
@@ -9848,6 +9858,73 @@ async function ingestUploadedFiles(files, onProgress) {
 //    fold proposed events into G/S/M
 // 4. Maintain salience window (last few sentences' active entities)
 
+// ─── NER PRE-PASS ────────────────────────────────────────────────────
+// Off-the-shelf entity extractor (compromise.js, CDN-loaded ESM) runs
+// once per source at intake. Mints PERSON / PLACE / ORGANIZATION entities
+// up front — replaces the per-sentence regex "mint anything title-case"
+// path that produced garbage like "Spouses Valerie Velardi", "Awards
+// Full", "Medium Stand". The per-sentence regex still RESOLVES surfaces
+// against the entity store (so coref/alias chains keep working); it just
+// no longer mints new entities outside the NER whitelist.
+const COMPROMISE_LOADER = { mod: null, loadPromise: null };
+async function loadCompromise() {
+  if (COMPROMISE_LOADER.mod) return COMPROMISE_LOADER.mod;
+  if (COMPROMISE_LOADER.loadPromise) return COMPROMISE_LOADER.loadPromise;
+  COMPROMISE_LOADER.loadPromise = (async () => {
+    const mod = await import('https://cdn.jsdelivr.net/npm/compromise@14.14.0/+esm');
+    COMPROMISE_LOADER.mod = mod;
+    return mod;
+  })();
+  try {
+    return await COMPROMISE_LOADER.loadPromise;
+  } catch (err) {
+    COMPROMISE_LOADER.loadPromise = null;
+    throw err;
+  }
+}
+
+// Run the NER pre-pass on a full document. Returns
+//   { entities: Map<lowerSurface, {surface, kind}>, available: boolean }
+// `available=false` signals the loader failed (offline, blocked CDN,
+// etc.) — callers fall back to the un-gated regex mint path so we
+// don't silently strip every entity from the source.
+async function extractNamedEntitiesFromText(text) {
+  const entities = new Map();
+  if (!text || typeof text !== 'string') return { entities, available: true };
+  let nlp;
+  try {
+    const mod = await loadCompromise();
+    nlp = mod.default || mod;
+  } catch (e) {
+    console.warn('[anchorage] compromise load failed; falling back to regex mint:', e);
+    return { entities, available: false };
+  }
+  const doc = nlp(text);
+  const collect = (label, kind) => {
+    let matches;
+    try { matches = doc[label](); } catch { return; }
+    if (!matches || typeof matches.forEach !== 'function') return;
+    matches.forEach((m) => {
+      let surface = '';
+      try { surface = m.text('clean').trim(); } catch { surface = ''; }
+      if (!surface) return;
+      // Filters: must start with uppercase, no leading digits, ≥2 chars,
+      // not a bare common pronoun/article (compromise occasionally tags
+      // sentence-initial "He"/"She" as people).
+      if (surface.length < 2) return;
+      if (/^\d/.test(surface)) return;
+      if (!/^[A-Z]/.test(surface)) return;
+      if (/^(He|She|It|They|We|You|I|This|That|These|Those|There|Here)$/.test(surface)) return;
+      const key = surface.toLowerCase();
+      if (!entities.has(key)) entities.set(key, { surface, kind });
+    });
+  };
+  collect('people', 'person');
+  collect('places', 'place');
+  collect('organizations', 'organization');
+  return { entities, available: true };
+}
+
 async function ingestSource(text, opts = {}) {
   const sourceName = opts.name || `Source ${STATE.sources.size + 1}`;
   const pubDate = opts.publicationDate ? Date.parse(opts.publicationDate) : null;
@@ -9913,6 +9990,45 @@ async function ingestSource(text, opts = {}) {
   STATE.clausesProcessed = 0;
   STATE.clausesChromeSuspect = chromeSuspectFlags.filter(Boolean).length;
   STATE.ingestAborted = false;
+  // Body-sentence counter: a sentence is body if it's not chrome-suspect
+  // AND looks like prose (has a terminator or substantive lowercase
+  // content). Drives the running-summary and hypothesis triggers below
+  // — they no longer fire on title-page / TOC / infobox sentences.
+  STATE.bodySentencesSeen = 0;
+  STATE.lastSummaryUpdateAtBodyIdx = 0;
+  STATE.lastSummaryAttemptAtBodyIdx = 0;
+
+  // ── NER PRE-PASS ──
+  // One-shot named-entity extraction over the whole source. Entities
+  // are minted up front so the per-sentence loop only RESOLVES against
+  // them; the regex matcher's mint path is gated on this allowlist
+  // below, killing the "title-case-soup" entities the previous pass
+  // produced (Spouses Valerie Velardi, Awards Full, Medium Stand…).
+  // If compromise can't load (offline / blocked CDN), `nerAvailable`
+  // is false and we leave the regex mint path un-gated so the source
+  // doesn't ingest with zero entities.
+  const ner = await extractNamedEntitiesFromText(processedText);
+  source.nerSurfaces = ner.entities.size;
+  source.nerAvailable = ner.available;
+  for (const { surface, kind } of ner.entities.values()) {
+    try {
+      mintEntity(surface, [surface], kind, {
+        sourceId: source.id,
+        spanText: surface,
+        authoredBy: 'ner',
+        // No narrativePos: the NER pre-pass is document-scoped. The
+        // first per-sentence SIG will anchor it for the user.
+      });
+    } catch (e) { /* non-fatal */ }
+  }
+  // Whitelist of surfaces the per-sentence regex matcher is allowed to
+  // mint. Lowercased for case-insensitive lookup. The matcher's coref
+  // tier (findEntityByMention) still runs against the full alias set,
+  // so "Williams" later in the text resolves to the NER-minted "Robin
+  // Williams" via word-overlap even though "williams" alone isn't on
+  // this list.
+  const nerAllowedSurfaces = new Set([...ner.entities.keys()]);
+  const nerAvailable = ner.available;
 
   // Salience window: last few sentences' active entities
   const salience = []; // ordered list of entity refs, most recent last
@@ -9963,7 +10079,7 @@ async function ingestSource(text, opts = {}) {
     if (f) STATE.hypothesisEmbedding = quantizeFloat32(f);
   } catch (e) { /* embedder may not be ready yet — divergence monitor lazily catches up */ }
   if (progressEl && isLLMReady() && !opts.rawMode) {
-    progressEl.innerHTML = `metadata-only frame · beginning extraction (grounded refresh at sentence ${(STATE.hypothesisFirstPromotionAt || 30) + 1})…`;
+    progressEl.innerHTML = `metadata-only frame · beginning extraction (grounded refresh after ${STATE.hypothesisFirstPromotionAt || 30} body sentences)…`;
   }
   // NOTE: metadata stub has NO principals — we deliberately skip
   // preMintHypothesisPrincipals and emitHypothesisDEFs. The grounded
@@ -10022,8 +10138,21 @@ async function ingestSource(text, opts = {}) {
     // Chrome-suspect gate: skip the entire mint pass for sentences flagged as
     // page chrome (section headers, page numbers, captions, footnotes). The
     // referent will be re-detected from a non-chrome sentence later.
+    // NER-whitelist gate: only mint surfaces the document-level NER pre-pass
+    // identified as PERSON / PLACE / ORGANIZATION. Without this, the regex
+    // grabs any title-case run and produces phrases like "Spouses Valerie
+    // Velardi" or "Medium Stand" as entities. The matcher's coref tier
+    // (findEntityByMention) still runs over the full mentions list, so
+    // a later "Williams" still resolves to the pre-minted "Robin Williams"
+    // via word-overlap; only the new-entity-mint step is gated.
     const newCandidates = isChromeSuspect ? [] : mentions
-      .filter(m => m.isCapitalized && !m.matchedEntity && !m.isPronoun);
+      .filter(m => m.isCapitalized && !m.matchedEntity && !m.isPronoun)
+      .filter(m => {
+        if (!nerAvailable) return true;  // graceful fallback: NER didn't load
+        const s = (m.surface || '').toLowerCase();
+        const o = (m.originalSurface || '').toLowerCase();
+        return nerAllowedSurfaces.has(s) || nerAllowedSurfaces.has(o);
+      });
 
     const seenCanonicals = new Set();
     const provisional = [];
@@ -10160,18 +10289,35 @@ async function ingestSource(text, opts = {}) {
         } catch (e) { /* embedder might not be ready yet */ }
       }
 
+      // Body-sentence gate. A sentence counts as "body" only when it
+      // looks like real prose (has a terminator or substantive content)
+      // AND isn't flagged as page chrome. Title pages, contributor
+      // lists, TOC entries, infobox label/value pairs all fail this
+      // check, so the summary and hypothesis engines below stay quiet
+      // until the reader has actually entered narrative content.
+      const isBodySentence = !isChromeSuspect && isProseClause(clause);
+      if (isBodySentence) {
+        STATE.bodySentencesSeen = (STATE.bodySentencesSeen || 0) + 1;
+      }
+
       // Decide whether to regenerate the running summary. Three triggers:
-      // (1) SEG event in this sentence, (2) sentences-since-last >= 8,
+      // (1) SEG event in this sentence, (2) body-sentences-since-last >= 8,
       // (3) sentence cosine to prior < 0.4.
-      try {
-        const regenerated = await maybeRegenerateRunningSummary(
-          source, i, clause, curSentenceEmbedding, sentenceEventIds
-        );
-        if (regenerated && progressEl) {
-          progressEl.innerHTML = `summary refreshed at sentence ${i + 1}: ${escapeHtml((STATE.runningSummary || '').slice(0, 120))}…`;
+      // Skipped on non-body sentences (front matter / chrome / fragments)
+      // — the textbase ring would have nothing real to paraphrase, and the
+      // model leaks process-narration ("the document hasn't yet…") when
+      // pushed against empty content.
+      if (isBodySentence) {
+        try {
+          const regenerated = await maybeRegenerateRunningSummary(
+            source, i, clause, curSentenceEmbedding, sentenceEventIds
+          );
+          if (regenerated && progressEl) {
+            progressEl.innerHTML = `summary refreshed at sentence ${i + 1}: ${escapeHtml((STATE.runningSummary || '').slice(0, 120))}…`;
+          }
+        } catch (e) {
+          console.warn('[anchorage] summary regen failed:', e);
         }
-      } catch (e) {
-        console.warn('[anchorage] summary regen failed:', e);
       }
 
       // Advance prior-sentence layer (verbatim; never paraphrased).
@@ -10233,26 +10379,30 @@ async function ingestSource(text, opts = {}) {
       try { maybeRunDecayPass(); } catch (e) { /* non-fatal */ }
 
       // ── HYPOTHESIS REC TRIGGERS ──
-      // First-promotion: at sentence (default) 30, unconditionally
-      // refresh from minimal → grounded. After first promotion, the
-      // refresh path runs only when divergence crosses the threshold.
+      // First-promotion: after the reader has consumed `firstPromoteAt`
+      // BODY sentences (not raw — front matter, TOC, infobox lines don't
+      // count), unconditionally refresh from minimal → grounded. After
+      // first promotion, the refresh path runs only when divergence
+      // crosses the threshold.
       //
       // Self-revising back-off: if a refresh attempt fails (parse error,
       // LLM echoed `minimal: true` back, or a timeout) we DON'T retry on
       // the very next sentence — that's how the loop forms. Mark the
-      // attempt and skip until at least FIRST_PROMOTION_BACKOFF more
+      // attempt and skip until at least FIRST_PROMOTION_BACKOFF more body
       // sentences of fresh evidence have accumulated. End-of-doc fallback
       // still runs at the bottom of ingestSource.
       const firstPromoteAt = STATE.hypothesisFirstPromotionAt ?? 30;
       const FIRST_PROMOTION_BACKOFF = 30;
       const isMinimalNow = source.hypothesis && source.hypothesis.minimal;
-      const lastAttemptAt = source._firstPromotionLastAttemptIdx ?? -Infinity;
-      const cooledDown = (i - lastAttemptAt) >= FIRST_PROMOTION_BACKOFF;
+      const bodyIdxNow = STATE.bodySentencesSeen || 0;
+      const lastAttemptBodyIdx = source._firstPromotionLastAttemptBodyIdx ?? -Infinity;
+      const cooledDown = (bodyIdxNow - lastAttemptBodyIdx) >= FIRST_PROMOTION_BACKOFF;
       // Per-sentence meta-call budget already spent (running-summary fired
       // earlier this iteration)? Skip hypothesis this round; it'll be
       // eligible again next sentence. One meta-call max per sentence.
       const metaBudgetAvailable = !STATE.metaCallSpentThisSentence;
-      if (isMinimalNow && i >= firstPromoteAt && cooledDown && metaBudgetAvailable) {
+      if (isMinimalNow && isBodySentence && bodyIdxNow >= firstPromoteAt && cooledDown && metaBudgetAvailable) {
+        source._firstPromotionLastAttemptBodyIdx = bodyIdxNow;
         source._firstPromotionLastAttemptIdx = i;
         STATE.metaCallSpentThisSentence = true;
         try {
@@ -10293,12 +10443,12 @@ async function ingestSource(text, opts = {}) {
         } catch (e) {
           console.warn('[anchorage] first-promotion refresh failed:', e);
         }
-      } else if (source.hypothesis && !source.hypothesis.minimal && !STATE.metaCallSpentThisSentence) {
+      } else if (source.hypothesis && !source.hypothesis.minimal && !STATE.metaCallSpentThisSentence && isBodySentence) {
         // Divergence monitor — fires every N classified events. When the
         // cosine drop crosses the threshold, refresh discretely with full
         // REC provenance (logged, not silent). Gated by per-sentence
-        // meta-call budget: if running-summary already fired this round,
-        // divergence refresh waits for the next sentence.
+        // meta-call budget AND isBodySentence: front matter / chrome
+        // shouldn't be allowed to drag the hypothesis cosine around.
         const div = checkHypothesisDivergence(source);
         if (div && div.needsBaseline) {
           try { await ensureHypothesisEmbedding(source); } catch {}
