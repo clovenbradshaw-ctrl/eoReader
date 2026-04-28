@@ -9743,72 +9743,37 @@ async function ingestSource(text, opts = {}) {
   // hypothesisHistory is preserved across ingests (keyed by sourceId).
   resetLayeredContextForIngest();
 
-  // ── Document hypothesis (minimal at ingest start, v25 layered-context spec) ──
-  // The initial hypothesis declares ONLY genre cues (kind, register, source
-  // metadata). No principals, no speculation — the classifier operates with
-  // a thin frame for the first ~30 events. The first grounded hypothesis
-  // arrives via REC (refreshHypothesis) at the first-promotion sentence,
-  // grounded in accumulated graph evidence rather than guess.
-  // Storage discipline: source.hypothesis is ALWAYS set on the source — at
-  // worst we install a stub-minimal hypothesis so finalHypothesis ships an
-  // entry per source (additive, never displaces other sources' entries).
-  let installedHyp = null;
-  if (isLLMReady() && !opts.rawMode) {
-    if (progressEl) progressEl.innerHTML = `forming minimal hypothesis (genre cues only)…`;
-    try {
-      const hyp = await hypothesizeDocument(processedText, {
-        minimal: true,
-        sourceMetadata: {
-          title: source.name,
-          name: (source.fileMetadata && source.fileMetadata.name) || null,
-          publicationDate: source.publicationDate,
-        },
-      });
-      if (hyp) {
-        installedHyp = hyp;
-        if (progressEl) {
-          progressEl.innerHTML = `hypothesis (minimal): ${escapeHtml(hyp.summary || hyp.kind)} · beginning extraction (grounded refresh at sentence ${(STATE.hypothesisFirstPromotionAt || 30) + 1})…`;
-        }
-        console.log('[anchorage] minimal document hypothesis:', hyp);
-      } else if (progressEl) {
-        progressEl.innerHTML = `hypothesis call returned no result; installing stub minimal and proceeding…`;
-      }
-    } catch (e) {
-      console.warn('Hypothesis call failed, installing stub minimal:', e);
-      if (progressEl) progressEl.innerHTML = `hypothesis failed: ${escapeHtml(e.message)} · installing stub minimal and proceeding…`;
-    }
-  }
-  // Stub-minimal fallback: build a hypothesis from source metadata only
-  // when the LLM call was unavailable, failed, or returned null. The stub
-  // is flagged so downstream code (and the export) can tell the difference
-  // between an LLM-derived minimal and a stub.
-  if (!installedHyp) {
-    installedHyp = {
-      kind: 'other',
-      register: 'other',
-      discourse: 'mixed',
-      period: 'unknown',
-      summary: '',
-      principals: [],
-      authorship: [],
-      expects_pronoun_chains: false,
-      expects_role_descriptions: false,
-      source_metadata: {
-        title: source.name || null,
-        name: (source.fileMetadata && source.fileMetadata.name) || null,
-        publicationDate: source.publicationDate || null,
-      },
-      minimal: true,
-      stub: true,
-      timestamp: Date.now(),
-      sampleChars: 0,
-      totalChars: processedText.length,
-    };
-  }
+  // ── Document hypothesis (metadata-only stub at ingest start) ──
+  // There's almost nothing to go on at sentence 0, so we don't pay for an
+  // LLM call to restate that. Install a stub built from source metadata
+  // (title / filename / publication date) and start processing. The first
+  // grounded hypothesis arrives via REC (refreshHypothesis) at the
+  // first-promotion sentence, grounded in accumulated graph evidence.
+  // refreshHypothesis itself triggers regenerateHypothesisProse, so the
+  // prose layer is generated exactly once — when there's actually content
+  // worth paraphrasing.
+  const installedHyp = {
+    kind: 'other',
+    register: 'other',
+    discourse: 'mixed',
+    period: 'unknown',
+    summary: '',
+    principals: [],
+    authorship: [],
+    expects_pronoun_chains: false,
+    expects_role_descriptions: false,
+    source_metadata: {
+      title: source.name || null,
+      name: (source.fileMetadata && source.fileMetadata.name) || null,
+      publicationDate: source.publicationDate || null,
+    },
+    minimal: true,
+    stub: true,
+    timestamp: Date.now(),
+    sampleChars: 0,
+    totalChars: processedText.length,
+  };
   source.hypothesis = installedHyp;
-  // Record the minimal_fallback entry in hypothesisHistory so the reader
-  // can see when the system was running on the stub. This is the first
-  // entry for this source; subsequent promotions append to the same list.
   appendHypothesisHistoryEntry(source, 0, installedHyp, 'minimal_fallback', {});
   // Cache the hypothesis embedding eagerly so the divergence monitor
   // has a baseline as soon as event embeddings start arriving.
@@ -9816,15 +9781,13 @@ async function ingestSource(text, opts = {}) {
     const f = await embedText(serializeHypothesisForEmbed(installedHyp));
     if (f) STATE.hypothesisEmbedding = quantizeFloat32(f);
   } catch (e) { /* embedder may not be ready yet — divergence monitor lazily catches up */ }
-  // Generate the plain-language prose layer that the assembler uses for
-  // the # Working Hypothesis section. Cached on STATE; refreshes run only
-  // when the hypothesis itself changes. Skipped when LLM isn't ready.
-  if (isLLMReady() && !opts.rawMode) {
-    try { await regenerateHypothesisProse(installedHyp); } catch (e) { /* non-fatal */ }
+  if (progressEl && isLLMReady() && !opts.rawMode) {
+    progressEl.innerHTML = `metadata-only frame · beginning extraction (grounded refresh at sentence ${(STATE.hypothesisFirstPromotionAt || 30) + 1})…`;
   }
-  // NOTE: minimal hypothesis has NO principals — we deliberately skip
+  // NOTE: metadata stub has NO principals — we deliberately skip
   // preMintHypothesisPrincipals and emitHypothesisDEFs. The grounded
-  // hypothesis (with principals) is produced later by REC.
+  // hypothesis (with principals) is produced later by REC, which also
+  // generates the # Working Hypothesis prose layer.
   renderActiveViewNow();
 
   for (let i = 0; i < sentences.length; i++) {
