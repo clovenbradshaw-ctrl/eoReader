@@ -2977,6 +2977,7 @@ const STATE = {
   costCeiling: 1000,
   llmCallsThisIngest: 0,
   ingestAborted: false,                 // user pressed Stop; the per-sentence loop drains and exits
+  metaCallSpentThisSentence: false,     // per-sentence budget: at most one meta-call (summary OR hypothesis) per iteration
 
   // LLM backend — switchable at runtime. Default is webllm so a new user
   // gets a fully local pipeline out of the box; the medium 3B Llama is
@@ -3076,7 +3077,8 @@ const STATE = {
   hypothesisHistory: new Map(),           // Map<sourceId, [{ts, sentenceIdx, hypothesis, reason, ...}]>; per-source promotion-event log (oldest first; reasons: 'minimal_fallback' | 'first_promotion' | 'divergence_check' | 'end_of_doc_promotion')
   hypothesisBaselineCosine: null,         // cosine at last refresh, for threshold compare
   hypothesisEmbedding: null,              // cached Int8Array; recompute only on hypothesis refresh
-  lastSummaryUpdateAt: 0,                 // global sentence idx of last summary regeneration
+  lastSummaryUpdateAt: 0,                 // global sentence idx of last SUCCESSFUL summary regeneration
+  lastSummaryAttemptAt: 0,                // global sentence idx of last LLM-call attempt (success or drop); rate-limits retries
   lastSummaryEventIdx: 0,                 // STATE.G length at last summary regeneration
   lastDivergenceCheckEventIdx: 0,         // STATE.G length at last 5-event divergence check
   globalSentencesProcessed: 0,            // counter incremented every sentence (across sources, for triggers)
@@ -7707,6 +7709,7 @@ function resetLayeredContextForIngest() {
   STATE.hypothesisProse = '';
   STATE.priorSentenceText = '';
   STATE.lastSummaryUpdateAt = 0;
+  STATE.lastSummaryAttemptAt = 0;
   STATE.lastSummaryEventIdx = STATE.G.length;
   STATE.lastDivergenceCheckEventIdx = STATE.G.length;
   STATE.lastSentenceEmbedding = null;
@@ -7801,6 +7804,13 @@ async function regenerateRunningSummary(source, sentenceIdx, reason) {
     content: contentParts.join('\n'),
   });
 
+  // Mark the attempt BEFORE the call. We're about to spend an LLM call
+  // regardless of whether the output passes validation. The rate-limiter
+  // in maybeRegenerateRunningSummary reads this cursor to back off after
+  // a failed attempt — without that, dropped meta-narration outputs make
+  // every subsequent sentence re-fire the fallback trigger.
+  STATE.lastSummaryAttemptAt = sentenceIdx;
+  STATE.metaCallSpentThisSentence = true;
   STATE.llmCallsThisIngest++;
   let raw;
   try {
@@ -7848,6 +7858,19 @@ async function regenerateRunningSummary(source, sentenceIdx, reason) {
 // stored on STATE.lastSentenceEmbedding before this fires).
 async function maybeRegenerateRunningSummary(source, sentenceIdx, sentenceText, sentenceEmbedding, sentenceEventIds) {
   if (!isLLMReady()) return false;
+  // Per-sentence meta-call budget — only one summary OR hypothesis call
+  // per sentence iteration. Sentence-extraction calls always run.
+  if (STATE.metaCallSpentThisSentence) return false;
+  // Self-revising back-off: don't re-attempt summary regen within
+  // SUMMARY_MIN_RETRY_GAP sentences of the last attempt — successful or
+  // not. Without this, a small model that keeps producing meta-narration
+  // (dropped by the validator below) makes every subsequent sentence
+  // re-fire the fallback trigger and burn calls.
+  const SUMMARY_MIN_RETRY_GAP = 4;
+  const sinceAttempt = sentenceIdx - (STATE.lastSummaryAttemptAt || 0);
+  if (STATE.lastSummaryAttemptAt > 0 && sinceAttempt < SUMMARY_MIN_RETRY_GAP) {
+    return false;
+  }
   const triggers = [];
   // Trigger 1: any event from this sentence is a SEG (structural break).
   for (const eid of (sentenceEventIds || [])) {
@@ -9954,6 +9977,12 @@ async function ingestSource(text, opts = {}) {
       console.log(`[anchorage] ingest aborted at sentence ${i + 1}/${sentences.length}`);
       break;
     }
+    // Per-sentence meta-call budget: at most ONE running-summary OR
+    // hypothesis-refresh per sentence iteration. Forward progress
+    // (sentence extraction) is mandatory; meta-calls are optional and
+    // can't pile up between sentences. The hypothesis-refresh's internal
+    // hypothesis-prose call counts as part of the same hypothesis op.
+    STATE.metaCallSpentThisSentence = false;
     const clause = sentences[i];
     if (clause.length < 6) continue;
 
@@ -10219,8 +10248,13 @@ async function ingestSource(text, opts = {}) {
       const isMinimalNow = source.hypothesis && source.hypothesis.minimal;
       const lastAttemptAt = source._firstPromotionLastAttemptIdx ?? -Infinity;
       const cooledDown = (i - lastAttemptAt) >= FIRST_PROMOTION_BACKOFF;
-      if (isMinimalNow && i >= firstPromoteAt && cooledDown) {
+      // Per-sentence meta-call budget already spent (running-summary fired
+      // earlier this iteration)? Skip hypothesis this round; it'll be
+      // eligible again next sentence. One meta-call max per sentence.
+      const metaBudgetAvailable = !STATE.metaCallSpentThisSentence;
+      if (isMinimalNow && i >= firstPromoteAt && cooledDown && metaBudgetAvailable) {
         source._firstPromotionLastAttemptIdx = i;
+        STATE.metaCallSpentThisSentence = true;
         try {
           await ensureHypothesisEmbedding(source);
           const c = recentEventCentroid(30);
@@ -10259,14 +10293,17 @@ async function ingestSource(text, opts = {}) {
         } catch (e) {
           console.warn('[anchorage] first-promotion refresh failed:', e);
         }
-      } else if (source.hypothesis && !source.hypothesis.minimal) {
+      } else if (source.hypothesis && !source.hypothesis.minimal && !STATE.metaCallSpentThisSentence) {
         // Divergence monitor — fires every N classified events. When the
         // cosine drop crosses the threshold, refresh discretely with full
-        // REC provenance (logged, not silent).
+        // REC provenance (logged, not silent). Gated by per-sentence
+        // meta-call budget: if running-summary already fired this round,
+        // divergence refresh waits for the next sentence.
         const div = checkHypothesisDivergence(source);
         if (div && div.needsBaseline) {
           try { await ensureHypothesisEmbedding(source); } catch {}
         } else if (div && div.reason === 'divergence') {
+          STATE.metaCallSpentThisSentence = true;
           try {
             const refreshed = await refreshHypothesis(
               source, i, 'divergence', div.currentCosine, div.baseline
