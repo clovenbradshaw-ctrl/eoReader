@@ -2547,6 +2547,7 @@ code {
 <div class="ingest-banner" id="ingest-banner">
   <div class="ingest-banner-title">ingesting…</div>
   <div class="ingest-banner-progress" id="ingest-banner-progress">starting</div>
+  <button class="secondary" id="ingest-stop-btn" style="margin-top: 8px; font-size: 10px; padding: 4px 10px;">stop</button>
 </div>
 
 <!-- ── POPOVER ─────────────────────────────────────────────────── -->
@@ -2975,6 +2976,7 @@ const STATE = {
   apiKey: '',
   costCeiling: 1000,
   llmCallsThisIngest: 0,
+  ingestAborted: false,                 // user pressed Stop; the per-sentence loop drains and exits
 
   // LLM backend — switchable at runtime. Default is webllm so a new user
   // gets a fully local pipeline out of the box; the medium 3B Llama is
@@ -8015,7 +8017,13 @@ async function refreshHypothesis(source, sentenceIdx, reason, currentCosine, bas
     source.publicationDate && `publication: ${new Date(source.publicationDate).toISOString().slice(0, 10)}`,
   ].filter(Boolean).join(' · ');
 
-  const currentJSON = JSON.stringify(source.hypothesis || {}, null, 2);
+  // Strip internal flags before showing the LLM the current hypothesis. Small
+  // models will echo back fields they see in the input (especially `minimal`
+  // and `stub`), which would re-arm the first-promotion trigger and loop.
+  const currentForPrompt = { ...(source.hypothesis || {}) };
+  delete currentForPrompt.minimal;
+  delete currentForPrompt.stub;
+  const currentJSON = JSON.stringify(currentForPrompt, null, 2);
   const userMsg = [
     `Current hypothesis: ${currentJSON}`,
     '',
@@ -8104,6 +8112,11 @@ async function refreshHypothesis(source, sentenceIdx, reason, currentCosine, bas
   parsed.timestamp = Date.now();
   parsed.refreshReason = reason;
   parsed.refreshAtSentence = sentenceIdx;
+  // The refreshed hypothesis is no longer the metadata-only stub. If the LLM
+  // echoed `minimal: true` or `stub: true` from the input, force them off so
+  // the per-sentence first-promotion trigger doesn't fire again next sentence.
+  parsed.minimal = false;
+  parsed.stub = false;
 
   // Append a promotion entry to this source's history. Schema (per v25
   // spec): { ts, sentenceIdx, hypothesis, reason, ... }. Each entry
@@ -9876,6 +9889,7 @@ async function ingestSource(text, opts = {}) {
   STATE.clausesSkippedNonProse = 0;
   STATE.clausesProcessed = 0;
   STATE.clausesChromeSuspect = chromeSuspectFlags.filter(Boolean).length;
+  STATE.ingestAborted = false;
 
   // Salience window: last few sentences' active entities
   const salience = []; // ordered list of entity refs, most recent last
@@ -9935,6 +9949,11 @@ async function ingestSource(text, opts = {}) {
   renderActiveViewNow();
 
   for (let i = 0; i < sentences.length; i++) {
+    if (STATE.ingestAborted) {
+      if (progressEl) progressEl.innerHTML = `stopped at sentence ${i + 1}/${sentences.length} · ${STATE.llmCallsThisIngest} LLM calls`;
+      console.log(`[anchorage] ingest aborted at sentence ${i + 1}/${sentences.length}`);
+      break;
+    }
     const clause = sentences[i];
     if (clause.length < 6) continue;
 
@@ -10188,9 +10207,20 @@ async function ingestSource(text, opts = {}) {
       // First-promotion: at sentence (default) 30, unconditionally
       // refresh from minimal → grounded. After first promotion, the
       // refresh path runs only when divergence crosses the threshold.
+      //
+      // Self-revising back-off: if a refresh attempt fails (parse error,
+      // LLM echoed `minimal: true` back, or a timeout) we DON'T retry on
+      // the very next sentence — that's how the loop forms. Mark the
+      // attempt and skip until at least FIRST_PROMOTION_BACKOFF more
+      // sentences of fresh evidence have accumulated. End-of-doc fallback
+      // still runs at the bottom of ingestSource.
       const firstPromoteAt = STATE.hypothesisFirstPromotionAt ?? 30;
+      const FIRST_PROMOTION_BACKOFF = 30;
       const isMinimalNow = source.hypothesis && source.hypothesis.minimal;
-      if (isMinimalNow && i >= firstPromoteAt) {
+      const lastAttemptAt = source._firstPromotionLastAttemptIdx ?? -Infinity;
+      const cooledDown = (i - lastAttemptAt) >= FIRST_PROMOTION_BACKOFF;
+      if (isMinimalNow && i >= firstPromoteAt && cooledDown) {
+        source._firstPromotionLastAttemptIdx = i;
         try {
           await ensureHypothesisEmbedding(source);
           const c = recentEventCentroid(30);
@@ -10200,7 +10230,7 @@ async function ingestSource(text, opts = {}) {
             cosAtTrigger,
             STATE.hypothesisBaselineCosine
           );
-          if (refreshed) {
+          if (refreshed && !refreshed.minimal) {
             // Now that we have grounded principals, premint them so the
             // matcher can resolve descriptors against entity records that
             // already exist. This carries span anchoring (the sentence
@@ -10217,6 +10247,14 @@ async function ingestSource(text, opts = {}) {
               progressEl.innerHTML = `hypothesis promoted at sentence ${i + 1}: ${escapeHtml(refreshed.summary || refreshed.kind)} · ${preminted.length} principals grounded`;
             }
             renderActiveViewNow();
+          } else {
+            // Refresh produced nothing usable — keep moving. Back-off
+            // window prevents an immediate retry; we'll either try again
+            // in FIRST_PROMOTION_BACKOFF sentences or fall through to the
+            // end-of-doc promotion fallback.
+            if (progressEl) {
+              progressEl.innerHTML = `hypothesis refresh deferred at sentence ${i + 1} · retrying in ${FIRST_PROMOTION_BACKOFF} sentences if still minimal`;
+            }
           }
         } catch (e) {
           console.warn('[anchorage] first-promotion refresh failed:', e);
@@ -10291,7 +10329,8 @@ async function ingestSource(text, opts = {}) {
   // before promotion fired and the graph has accumulated propositional
   // evidence, fire one final first-promotion REC so finalHypothesis ships
   // a grounded hypothesis instead of a schema-template artifact.
-  if (source.hypothesis && source.hypothesis.minimal && sentences.length > 0) {
+  // Skip when the user aborted — the run is over, no recovery LLM call.
+  if (!STATE.ingestAborted && source.hypothesis && source.hypothesis.minimal && sentences.length > 0) {
     const propositional = STATE.G.filter(
       e => e.sourceId === source.id && (e.op === 'DEF' || e.op === 'CON')
     ).length;
@@ -16155,6 +16194,18 @@ document.querySelectorAll('.view-tab').forEach(tab => {
   tab.addEventListener('click', () => switchView(tab.getAttribute('data-view')));
 });
 
+// Hard-stop button on the floating ingest banner. Sets the abort flag;
+// the per-sentence loop drains its current iteration (in-flight LLM call
+// finishes), checks the flag at the next iteration, and exits cleanly.
+// End-of-doc promotion is skipped when aborted.
+document.getElementById('ingest-stop-btn').addEventListener('click', () => {
+  STATE.ingestAborted = true;
+  const btn = document.getElementById('ingest-stop-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'stopping…'; }
+  const bannerProgress = document.getElementById('ingest-banner-progress');
+  if (bannerProgress) bannerProgress.innerHTML = `stopping… (waiting for current call to finish)`;
+});
+
 document.getElementById('ingest-btn').addEventListener('click', async () => {
   const text = document.getElementById('ingest-input').value.trim();
   if (!text) { alert('Paste a corpus first.'); return; }
@@ -16164,6 +16215,9 @@ document.getElementById('ingest-btn').addEventListener('click', async () => {
 
   document.getElementById('ingest-btn').disabled = true;
   document.getElementById('ingest-progress').textContent = 'starting…';
+  // Re-enable the stop button (it gets disabled when previous run finishes)
+  const stopBtn = document.getElementById('ingest-stop-btn');
+  if (stopBtn) { stopBtn.disabled = false; stopBtn.textContent = 'stop'; }
 
   try {
     await ingestSource(text, { name, publicationDate: pubDate, cleanChrome });
