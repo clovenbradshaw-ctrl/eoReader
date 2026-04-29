@@ -177,6 +177,60 @@ header.app-header {
   height: 2px;
   background: var(--accent);
 }
+.view-tab-more { position: relative; margin-left: auto; display: flex; }
+.more-tab-btn {
+  padding: 10px 18px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  border-left: 1px solid var(--rule);
+  background: none;
+  cursor: pointer;
+  position: relative;
+}
+.more-tab-btn:hover { color: var(--ink); background: var(--paper-soft); }
+.more-tab-btn.active { color: var(--ink); background: var(--paper-soft); }
+.more-tab-btn.active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+}
+.more-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  min-width: 160px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-top: none;
+  z-index: 50;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.08);
+}
+.more-menu[hidden] { display: none; }
+.more-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 10px 18px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--rule);
+  cursor: pointer;
+}
+.more-menu-item:last-child { border-bottom: none; }
+.more-menu-item:hover { color: var(--ink); background: var(--paper-soft); }
+.more-menu-item.active { color: var(--ink); background: var(--paper-soft); }
 
 /* ── MAIN ─────────────────────────────────────────────────────────── */
 .app-main {
@@ -513,58 +567,83 @@ button.secondary.danger:hover { background: var(--accent); color: var(--paper); 
 .log-filter-pill:hover { color: var(--ink); }
 .log-filter-pill.active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
 
-/* ── LOG TABLE ──
-   Tabular EO event stream. Fixed column layout so the operator,
-   subject, predicate, and value line up vertically across rows. */
-.log-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 11px;
-  table-layout: fixed;
+/* ── LOG LIST ──
+   EO event stream rendered as plain-English statements: a glyph
+   indicating the operator, a sentence body (subject/predicate/value),
+   and a faint subtitle (source · sentence #). The framework-internal
+   columns (cell, author, diagnostic markers) live in `.log-tech`,
+   only visible when the user toggles "Technical view". */
+.log-list {
+  display: flex;
+  flex-direction: column;
 }
-.log-table thead th {
-  position: sticky;
-  top: 0;
-  background: var(--paper-soft);
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-  text-align: left;
-  padding: 6px 8px;
+.log-row {
+  display: grid;
+  grid-template-columns: 24px 1fr auto;
+  grid-template-areas: "glyph statement subtitle" "glyph tech tech";
+  column-gap: 10px;
+  padding: 7px 8px;
   border-bottom: 1px solid var(--rule);
-  font-weight: 500;
-  z-index: 1;
-}
-.log-table tbody tr {
   cursor: pointer;
   transition: background 0.08s;
+  line-height: 1.45;
 }
-.log-table tbody tr:hover { background: var(--paper-soft); }
-.log-table tbody tr.flash { animation: log-row-flash 1.2s ease-out; }
+.log-row:hover { background: var(--paper-soft); }
+.log-row.flash { animation: log-row-flash 1.2s ease-out; }
 @keyframes log-row-flash {
   from { background: var(--accent-soft, rgba(176, 60, 36, 0.18)); }
   to   { background: transparent; }
 }
-.log-table td {
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--rule);
-  vertical-align: top;
-  line-height: 1.45;
+.log-glyph {
+  grid-area: glyph;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: center;
+  user-select: none;
+}
+.log-statement {
+  grid-area: statement;
+  font-family: 'Newsreader', serif;
+  font-size: 14px;
+  color: var(--ink);
   word-break: break-word;
   overflow-wrap: anywhere;
 }
-.log-table td.col-span    { width: 52px;  color: var(--ink-faint); text-align: right; font-size: 10px; }
-.log-table td.col-op      { width: 56px;  font-weight: 500; }
-.log-table td.col-pred    { width: 22%;   font-style: italic; color: var(--ink-soft); }
-.log-table td.col-cell    { width: 90px;  font-size: 10px; color: var(--ink-faint); }
-.log-table td.col-author  { width: 80px;  font-size: 9px;  color: var(--ink-faint); }
-.log-table td.col-source  { width: 14%;   font-size: 10px; color: var(--ink-faint); }
-.log-table td.col-subject { font-family: 'Newsreader', serif; font-size: 13px; color: var(--ink); }
-.log-table td.col-value   { font-family: 'Newsreader', serif; font-size: 13px; color: var(--ink); }
-.log-table .empty-cell { color: var(--ink-faint); font-style: italic; }
+.log-statement em {
+  font-style: italic;
+  color: var(--ink-soft);
+  margin: 0 4px;
+}
+.log-subtitle {
+  grid-area: subtitle;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  align-self: center;
+}
+.log-tech {
+  grid-area: tech;
+  display: none;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.log-list--technical .log-tech { display: flex; }
+.log-tech-pill {
+  display: inline-block;
+  padding: 1px 5px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  background: var(--paper);
+}
+.log-row .empty-cell { color: var(--ink-faint); font-style: italic; }
 
 .example-queries {
   display: flex;
@@ -2167,14 +2246,19 @@ code {
 
 <!-- ── TABS ────────────────────────────────────────────────────── -->
 <nav class="view-tabs">
-  <button class="view-tab active" data-view="query">Query</button>
-  <button class="view-tab" data-view="sources">Sources</button>
-  <button class="view-tab" data-view="cursors">Cursors</button>
-  <button class="view-tab" data-view="prompts">Prompts</button>
-  <button class="view-tab" data-view="inspect">Inspect</button>
+  <button class="view-tab active" data-view="sources">Sources</button>
   <button class="view-tab" data-view="graph">Graph</button>
+  <button class="view-tab" data-view="query">Query</button>
   <button class="view-tab" data-view="log">Log</button>
-  <button class="view-tab" data-view="dream">Dream</button>
+  <div class="view-tab-more" id="view-tab-more">
+    <button class="more-tab-btn" id="more-tab-btn" type="button" aria-haspopup="menu" aria-expanded="false">More ▾</button>
+    <div class="more-menu" id="more-menu" role="menu" hidden>
+      <button class="more-menu-item" data-view="cursors" role="menuitem">Cursors</button>
+      <button class="more-menu-item" data-view="inspect" role="menuitem">Inspect</button>
+      <button class="more-menu-item" data-view="prompts" role="menuitem">Prompts</button>
+      <button class="more-menu-item" data-view="dream" role="menuitem">Dream</button>
+    </div>
+  </div>
 </nav>
 
 <main class="app-main">
@@ -2221,7 +2305,7 @@ code {
   <div class="view-area">
 
     <!-- Query pane: ask the librarian, who walks the graph for cited answers -->
-    <div class="view-pane active" id="view-query">
+    <div class="view-pane" id="view-query">
       <div class="pane-header">
         <div class="pane-title">Librarian · ask the corpus</div>
         <div class="pane-meta" id="query-meta">no corpus</div>
@@ -2250,31 +2334,36 @@ code {
         <textarea id="query-input" placeholder="Ask the librarian a question. Subsequent questions can reference earlier turns."></textarea>
         <div class="query-controls">
           <button class="query-go" id="query-go">Ask</button>
-          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: 0.06em;">framing:</span>
-          <button class="framing-pill active" data-framing="uniform">uniform</button>
-          <button class="framing-pill" data-framing="recency">recency-weighted</button>
-          <button class="framing-pill" data-framing="corroboration">corroboration-counted</button>
-          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: 0.06em;">cursor:</span>
-          <button class="cursor-pill active" data-cursor="now">now</button>
-          <button class="cursor-pill" data-cursor="custom">custom...</button>
-          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: 0.06em; margin-left:auto;">grammar:</span>
-          <button class="edit-mode-pill active" data-edit-mode="polished" title="LLM polishes the templated answer for fluent English. Default.">polished</button>
-          <button class="edit-mode-pill" data-edit-mode="raw" title="Mechanical templated answer only — no LLM polish">raw</button>
-          <button class="edit-mode-pill" data-edit-mode="diff" title="Show polished version with raw companion below">diff</button>
           <button id="chat-clear" style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);background:none;border:1px solid var(--rule);padding:4px 8px;cursor:pointer;">clear</button>
         </div>
+        <details class="query-advanced" style="margin: 6px 12px 0;">
+          <summary style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);padding:4px 0;">Advanced</summary>
+          <div class="query-controls" style="margin-top:6px;">
+            <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: 0.06em;">framing:</span>
+            <button class="framing-pill active" data-framing="uniform">uniform</button>
+            <button class="framing-pill" data-framing="recency">recency-weighted</button>
+            <button class="framing-pill" data-framing="corroboration">corroboration-counted</button>
+            <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: 0.06em;">cursor:</span>
+            <button class="cursor-pill active" data-cursor="now">now</button>
+            <button class="cursor-pill" data-cursor="custom">custom...</button>
+            <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: 0.06em; margin-left:auto;">grammar:</span>
+            <button class="edit-mode-pill active" data-edit-mode="polished" title="LLM polishes the templated answer for fluent English. Default.">polished</button>
+            <button class="edit-mode-pill" data-edit-mode="raw" title="Mechanical templated answer only — no LLM polish">raw</button>
+            <button class="edit-mode-pill" data-edit-mode="diff" title="Show polished version with raw companion below">diff</button>
+          </div>
+        </details>
         <div class="example-queries" id="example-queries"></div>
       </div>
     </div>
 
     <!-- Sources pane -->
-    <div class="view-pane" id="view-sources">
+    <div class="view-pane active" id="view-sources">
       <div class="pane-header">
         <div class="pane-title">Sources · per-sentence events</div>
         <div class="pane-meta" id="sources-meta">no source selected</div>
       </div>
       <div class="pane-body" id="sources-body">
-        <div class="empty-state">Sources will appear here after ingest.</div>
+        <div class="empty-state">Paste a paragraph or upload a file in the sidebar to begin. Imported sources will appear here as a table; ingest progress shows in real time.</div>
       </div>
     </div>
 
@@ -3013,7 +3102,7 @@ const STATE = {
   lmstudioModel: 'auto',
 
   // UI state
-  activeView: 'query',
+  activeView: 'sources',
   activeFraming: 'uniform',
   activeCursor: { timeline: 'intake', position: 'now' },
   compareCursor: null,
@@ -13583,7 +13672,7 @@ function renderSourcesView() {
   const el = document.getElementById('sources-body');
   const meta = document.getElementById('sources-meta');
   if (STATE.sources.size === 0) {
-    el.innerHTML = `<div class="empty-state">Sources will appear here after ingest.</div>`;
+    el.innerHTML = `<div class="empty-state">Paste a paragraph or upload a file in the sidebar to begin. Imported sources will appear here as a table; ingest progress shows in real time.</div>`;
     meta.textContent = 'no source selected';
     return;
   }
@@ -13627,6 +13716,12 @@ function renderSourcesView() {
       const proc = STATE.currentlyProcessing?.sourceId === src.id ? STATE.currentlyProcessing : null;
       meta.textContent = `${src.name} · ${src.sentences.length} sentences · ${src.eventIds.length} events`;
 
+      // The interpretive cards (file metadata, document hypothesis,
+      // hypothesis timeline) are framework-internal — collected into
+      // `analysis` and disclosed via a single <details> below the
+      // sentences. Sentence list is the primary content.
+      let analysis = '';
+
       // File metadata card — shown for sources ingested from a file upload
       // (txt or csv, no-LLM path). Mirrors the metadata that's also stored
       // as DEFs on a per-file entity, so it's queryable from the librarian.
@@ -13652,7 +13747,7 @@ function renderSourcesView() {
              <span style="color:var(--ink-soft);min-width:110px;">${escapeHtml(k)}</span>
              <span style="color:var(--ink);">${escapeHtml(String(v))}</span>
            </div>`).join('');
-        html += `<div style="background:var(--paper-soft);border:1px solid var(--rule);padding:12px 14px;margin-bottom:18px;">
+        analysis += `<div style="background:var(--paper-soft);border:1px solid var(--rule);padding:12px 14px;margin-bottom:18px;">
           <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:8px;">file metadata · queryable provenance</div>
           ${rowsHtml}
           <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-faint);margin-top:8px;">These fields are also attached as DEFs on the <strong>${escapeHtml(fm.name || src.name)}</strong> entity so the librarian can answer questions about the file itself.</div>
@@ -13745,7 +13840,7 @@ function renderSourcesView() {
           }).join('');
           hotspotsHtml = `<div style="margin-top:8px;"><div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:4px;">structural moments (top ${sourceHotspots.length})</div>${items}</div>`;
         }
-        html += `<div style="background:var(--paper-soft);border:1px solid var(--rule);padding:14px 16px;margin-bottom:18px;font-size:11px;line-height:1.55;">
+        analysis += `<div style="background:var(--paper-soft);border:1px solid var(--rule);padding:14px 16px;margin-bottom:18px;font-size:11px;line-height:1.55;">
           <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:6px;">document hypothesis</div>
           <div style="font-family:'Newsreader',serif;font-size:14px;font-style:italic;color:var(--ink);margin-bottom:10px;">${escapeHtml(h.summary || '—')}</div>
           <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);margin-bottom:8px;">
@@ -13811,7 +13906,7 @@ function renderSourcesView() {
             const tip = `${h.reason} at sentence ${at + 1}`;
             return `<div class="hyp-strip-rec" title="${escapeHtml(tip)}" style="left:${left}%;">${reasonLabel}</div>`;
           }).join('');
-          html += `<div style="margin-bottom:14px;">
+          analysis += `<div style="margin-bottom:14px;">
             <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:4px;">hypothesis timeline · epochs across the read</div>
             <div class="hyp-strip" data-source-id="${escapeHtml(src.id)}" style="position:relative;display:flex;height:14px;border:1px solid var(--rule);background:var(--paper);border-radius:2px;overflow:visible;">
               ${stripSegs}
@@ -13828,8 +13923,15 @@ function renderSourcesView() {
           // Note the escaped close — a literal close-tag inside this template
           // would prematurely terminate the OUTER script block in the HTML
           // parser, regardless of being inside a JS string.
-          html += `<script type="application/json" id="hyp-epochs-data">${JSON.stringify(allEpochs)}<\/script>`;
+          analysis += `<script type="application/json" id="hyp-epochs-data">${JSON.stringify(allEpochs)}<\/script>`;
         }
+      }
+
+      if (analysis) {
+        html += `<details class="source-analysis" style="margin-bottom:14px;">
+          <summary style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-soft);padding:6px 0;">Show document analysis</summary>
+          <div style="margin-top:10px;">${analysis}</div>
+        </details>`;
       }
 
       html += `<div class="label" style="margin-bottom: 8px;">${proc ? 'Reading ' + escapeHtml(src.name) + '…' : 'Sentences in ' + escapeHtml(src.name)}</div>`;
@@ -14950,25 +15052,68 @@ function renderGraphView() {
 
   const hash = graphDataHash(data);
   if (hash !== GRAPH.lastBuildHash) {
-    // Topology changed — preserve positions for nodes that survived, randomize new ones.
+    // Topology changed — preserve positions for nodes that survived,
+    // and place each new node next to its connected neighbours so the
+    // existing layout doesn't get jolted by a single ingest event.
     const oldPositions = new Map(GRAPH.nodes.map(n => [n.id, { x: n.x, y: n.y, vx: n.vx, vy: n.vy }]));
+    const oldCount = GRAPH.nodes.length;
     GRAPH.nodes = data.nodes;
     GRAPH.links = data.links;
     const cv = document.getElementById('graph-canvas');
     const W = cv.clientWidth || 800;
     const H = cv.clientHeight || 600;
+
+    // Centroid of nodes that already had positions — fallback anchor
+    // for new nodes with no connected neighbours yet.
+    let cx = 0, cy = 0, anchored = 0;
     for (const n of GRAPH.nodes) {
       const prev = oldPositions.get(n.id);
-      if (prev) { n.x = prev.x; n.y = prev.y; n.vx = prev.vx; n.vy = prev.vy; }
-      else {
-        n.x = W/2 + (Math.random() - 0.5) * 400;
-        n.y = H/2 + (Math.random() - 0.5) * 300;
-        n.vx = 0; n.vy = 0;
+      if (prev) { cx += prev.x; cy += prev.y; anchored++; }
+    }
+    if (anchored > 0) { cx /= anchored; cy /= anchored; }
+    else { cx = W / 2; cy = H / 2; }
+
+    // Build neighbour lookup keyed by node id, using positions of
+    // already-placed nodes only (so the order of nodes in the array
+    // doesn't matter for the placement step below).
+    const neighboursByIdx = new Map();
+    for (let i = 0; i < GRAPH.links.length; i++) {
+      const l = GRAPH.links[i];
+      const a = GRAPH.nodes[l.source]?.id;
+      const b = GRAPH.nodes[l.target]?.id;
+      if (a == null || b == null) continue;
+      if (!neighboursByIdx.has(a)) neighboursByIdx.set(a, []);
+      if (!neighboursByIdx.has(b)) neighboursByIdx.set(b, []);
+      neighboursByIdx.get(a).push(b);
+      neighboursByIdx.get(b).push(a);
+    }
+
+    let newCount = 0;
+    for (const n of GRAPH.nodes) {
+      const prev = oldPositions.get(n.id);
+      if (prev) { n.x = prev.x; n.y = prev.y; n.vx = prev.vx; n.vy = prev.vy; continue; }
+      newCount++;
+      // Average position of any already-placed neighbours.
+      let sx = 0, sy = 0, found = 0;
+      const nbrs = neighboursByIdx.get(n.id) || [];
+      for (const nbId of nbrs) {
+        const p = oldPositions.get(nbId);
+        if (p) { sx += p.x; sy += p.y; found++; }
       }
+      const cxFor = found > 0 ? sx / found : cx;
+      const cyFor = found > 0 ? sy / found : cy;
+      // Small jitter so coincident new nodes don't stack exactly.
+      n.x = cxFor + (Math.random() - 0.5) * 30;
+      n.y = cyFor + (Math.random() - 0.5) * 30;
+      n.vx = 0; n.vy = 0;
     }
     GRAPH.lastBuildHash = hash;
     GRAPH.frozen = false;
-    GRAPH.freezeAt = Date.now() + 4000;
+    // Adaptive settle window: tiny additions during streaming ingest
+    // get a short window so the layout barely jiggles. A large jump
+    // (e.g. ingesting a fresh source) gets the full re-layout window.
+    const growthRatio = oldCount > 0 ? newCount / oldCount : 1;
+    GRAPH.freezeAt = Date.now() + (growthRatio > 0.25 ? 4000 : 1500);
   }
 
   renderGraphLegend(cellCounts);
@@ -15827,6 +15972,24 @@ const LOG_FILTER = {
   sourceId: null,  // source ID or null for all
   search: '',      // free text on subject/predicate/value
   sort: 'newest',  // 'newest' (most recent at top, default) | 'oldest'
+  technical: false,// when true, surface cell/author/markers per row
+};
+
+// Friendly glyph + label for each EO operator. Renders the log as
+// plain-English statements legible without knowing the framework, while
+// keeping op codes available for filtering and search.
+const OP_GLYPH = {
+  DEF: { glyph: '+', label: 'defined'    },
+  INS: { glyph: '↳', label: 'inserted'   },
+  REC: { glyph: '×', label: 'retracted'  },
+  ALT: { glyph: '↔', label: 'revised'    },
+  SYN: { glyph: '≡', label: 'synonym'    },
+  CON: { glyph: '⊃', label: 'contains'   },
+  SUP: { glyph: '⊕', label: 'superposed' },
+  SEG: { glyph: '·', label: 'segmented'  },
+  SIG: { glyph: '?', label: 'signal'     },
+  EVA: { glyph: '⊙', label: 'evaluated'  },
+  NUL: { glyph: '∅', label: 'no-op'      },
 };
 
 // Decompose an event into its EO-notation components — useful for both
@@ -15893,7 +16056,7 @@ const LOG_RENDER = {
 };
 
 function logFilterFingerprint() {
-  return `${LOG_FILTER.op || ''}|${LOG_FILTER.sourceId || ''}|${LOG_FILTER.search || ''}|${LOG_FILTER.sort}`;
+  return `${LOG_FILTER.op || ''}|${LOG_FILTER.sourceId || ''}|${LOG_FILTER.search || ''}|${LOG_FILTER.sort}|${LOG_FILTER.technical ? 't' : ''}`;
 }
 
 function logEventPasses(ev, offsets) {
@@ -15919,24 +16082,24 @@ function logRowHtml(ev, offsets, opColor) {
   const author = ev.authoredBy && ev.authoredBy !== 'system' ? ev.authoredBy : '';
   const empty = `<span class="empty-cell">—</span>`;
   const subject = comp.subject ? escapeHtml(comp.subject) : empty;
-  const predicate = comp.predicate ? escapeHtml(comp.predicate) : empty;
+  const predicate = comp.predicate ? `<em>${escapeHtml(comp.predicate)}</em>` : empty;
   const value = comp.value ? escapeHtml(comp.value) : empty;
   const flashCls = LOG_RENDER.flashIds.has(ev.id) ? ' flash' : '';
 
-  // Marker pills: priming miss (event embedding diverged from the
-  // entities the retrieval primed), dependency-chain warning, comprehension
-  // SIG. NUL "priming-confirmation" events are not marked — they ARE the
-  // marker: a non-transformation logged because the priming caught it.
+  const og = OP_GLYPH[ev.op] || { glyph: ev.op, label: ev.op.toLowerCase() };
+  const opTitle = `${ev.op} — ${og.label}`;
+
+  // Marker pills shown only in the technical strip below the sentence.
   const markers = [];
   if (ev.primingMiss) {
     const fit = typeof ev.primingFit === 'number' ? ev.primingFit.toFixed(2) : '—';
     const tip = `priming miss — event embedding diverged from retrieved entity centroids (cosine ${fit})`;
-    markers.push(`<span title="${escapeHtml(tip)}" style="display:inline-block;margin-left:4px;padding:0 4px;border:1px solid var(--gap, #b07a3a);color:var(--gap, #b07a3a);font-size:9px;font-family:'IBM Plex Mono',monospace;letter-spacing:0.04em;">miss</span>`);
+    markers.push(`<span class="log-tech-pill" title="${escapeHtml(tip)}" style="border-color:var(--gap, #b07a3a);color:var(--gap, #b07a3a);">miss</span>`);
   }
   if (ev.dependencyFlag === 'missing-prerequisites') {
-    markers.push(`<span title="entity has prior events but no INS — possible dependency violation" style="display:inline-block;margin-left:4px;padding:0 4px;border:1px solid #b04a4a;color:#b04a4a;font-size:9px;font-family:'IBM Plex Mono',monospace;letter-spacing:0.04em;">⚑ deps</span>`);
+    markers.push(`<span class="log-tech-pill" title="entity has prior events but no INS — possible dependency violation" style="border-color:#b04a4a;color:#b04a4a;">⚑ deps</span>`);
   } else if (ev.dependencyFlag === 'introduces-with-higher-op') {
-    markers.push(`<span title="entity has no prior events; this higher-op event is doing introduction work too" style="display:inline-block;margin-left:4px;padding:0 4px;border:1px solid var(--ink-faint);color:var(--ink-faint);font-size:9px;font-family:'IBM Plex Mono',monospace;letter-spacing:0.04em;">no-INS</span>`);
+    markers.push(`<span class="log-tech-pill" title="entity has no prior events; this higher-op event is doing introduction work too" style="border-color:var(--ink-faint);color:var(--ink-faint);">no-INS</span>`);
   }
   if (ev.op === 'SIG' && ev.payload && ev.payload.kind === 'comprehension') {
     const sp = ev.payload;
@@ -15946,20 +16109,27 @@ function logRowHtml(ev, offsets, opColor) {
     const color = sp.permanentlyUnresolved ? '#7a3a3a'
       : sp.awaitingResolution ? 'var(--gap, #b07a3a)'
       : 'var(--confirm, #4a7c59)';
-    markers.push(`<span title="${escapeHtml(reason)}" style="display:inline-block;margin-left:4px;padding:0 4px;border:1px solid ${color};color:${color};font-size:9px;font-family:'IBM Plex Mono',monospace;letter-spacing:0.04em;">comp</span>`);
+    markers.push(`<span class="log-tech-pill" title="${escapeHtml(reason)}" style="border-color:${color};color:${color};">comp</span>`);
   }
-  const markerHtml = markers.join('');
 
-  return `<tr class="log-row${flashCls}" data-event-id="${escapeHtml(ev.id)}">
-    <td class="col-span">${spanLabel}</td>
-    <td class="col-op" style="color:${c};">${escapeHtml(ev.op)}${markerHtml}</td>
-    <td class="col-subject">${subject}</td>
-    <td class="col-pred">${predicate}</td>
-    <td class="col-value">${value}</td>
-    <td class="col-cell">${cell ? escapeHtml(cell) : ''}</td>
-    <td class="col-author">${author ? '[' + escapeHtml(author) + ']' : ''}</td>
-    <td class="col-source">${escapeHtml(srcLabel)}</td>
-  </tr>`;
+  const techParts = [];
+  if (cell) techParts.push(`<span class="log-tech-pill" style="border-color:${c};color:${c};">${escapeHtml(cell)}</span>`);
+  techParts.push(`<span class="log-tech-pill" style="opacity:0.7;">${escapeHtml(ev.op)}</span>`);
+  if (author) techParts.push(`<span class="log-tech-pill" style="opacity:0.7;">${escapeHtml(author)}</span>`);
+  techParts.push(...markers);
+  const techHtml = `<div class="log-tech">${techParts.join('')}</div>`;
+
+  const subtitleParts = [];
+  if (srcLabel) subtitleParts.push(escapeHtml(srcLabel));
+  if (spanLabel !== '—') subtitleParts.push(`#${spanLabel}`);
+  const subtitle = subtitleParts.join(' · ');
+
+  return `<div class="log-row${flashCls}" data-event-id="${escapeHtml(ev.id)}">
+    <span class="log-glyph" style="color:${c};" title="${escapeHtml(opTitle)}">${escapeHtml(og.glyph)}</span>
+    <span class="log-statement">${subject} ${predicate} ${value}</span>
+    <span class="log-subtitle">${subtitle}</span>
+    ${techHtml}
+  </div>`;
 }
 
 function wireLogTable(el) {
@@ -16009,13 +16179,14 @@ function renderLogView() {
   const ops = ['NUL', 'SIG', 'INS', 'SEG', 'CON', 'SYN', 'ALT', 'SUP', 'REC', 'EVA', 'DEF'];
   let html = `<div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; align-items: center;">`;
   html += `<span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-right:6px;">filter:</span>`;
-  html += `<button class="log-filter-pill${LOG_FILTER.op === null ? ' active' : ''}" data-op="">all</button>`;
+  html += `<button class="log-filter-pill${LOG_FILTER.op === null ? ' active' : ''}" data-op="" title="show all operators">all</button>`;
   for (const op of ops) {
     const count = visible.filter(e => e.op === op).length;
     if (count === 0) continue;
     const c = opColor(op);
     const active = LOG_FILTER.op === op ? ' active' : '';
-    html += `<button class="log-filter-pill${active}" data-op="${op}" style="border-color:${c};color:${c};">${op} <span style="opacity:0.6;">${count}</span></button>`;
+    const og = OP_GLYPH[op] || { label: op.toLowerCase() };
+    html += `<button class="log-filter-pill${active}" data-op="${op}" title="${escapeHtml(op + ' — ' + og.label)}" style="border-color:${c};color:${c};">${op} <span style="opacity:0.6;">${count}</span></button>`;
   }
   if (STATE.sources.size > 1) {
     html += `<span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-left:12px;margin-right:6px;">source:</span>`;
@@ -16028,6 +16199,7 @@ function renderLogView() {
   html += `<span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-soft);margin-left:12px;margin-right:6px;">sort:</span>`;
   html += `<button class="log-filter-pill log-sort-pill${LOG_FILTER.sort === 'newest' ? ' active' : ''}" data-sort="newest" title="Most recent at top">newest first</button>`;
   html += `<button class="log-filter-pill log-sort-pill${LOG_FILTER.sort === 'oldest' ? ' active' : ''}" data-sort="oldest" title="Oldest at top">oldest first</button>`;
+  html += `<button class="log-filter-pill log-tech-toggle${LOG_FILTER.technical ? ' active' : ''}" id="log-tech-toggle" title="Reveal cell, author, and diagnostic markers per event">Technical view</button>`;
   html += `<input type="text" id="log-search" placeholder="search subject/predicate/value…" value="${escapeHtml(LOG_FILTER.search)}" style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:11px;padding:4px 8px;border:1px solid var(--rule);background:var(--paper);min-width:220px;" />`;
   html += `</div>`;
 
@@ -16039,21 +16211,9 @@ function renderLogView() {
     html += `<div style="color: var(--ink-faint); font-style: italic; margin-bottom: 8px;font-family:'IBM Plex Mono',monospace;font-size:10px;">showing latest ${cap} of ${filtered.length} matching events</div>`;
   }
 
-  html += `<div style="overflow-x:auto;">
-    <table class="log-table" id="log-table">
-      <thead><tr>
-        <th class="col-span" style="text-align:right;">#</th>
-        <th class="col-op">op</th>
-        <th class="col-subject">subject</th>
-        <th class="col-pred">predicate</th>
-        <th class="col-value">value</th>
-        <th class="col-cell">cell</th>
-        <th class="col-author">author</th>
-        <th class="col-source">source</th>
-      </tr></thead>
-      <tbody id="log-tbody">`;
+  html += `<div class="log-list${LOG_FILTER.technical ? ' log-list--technical' : ''}" id="log-tbody">`;
   for (const ev of ordered) html += logRowHtml(ev, offsets, opColor);
-  html += `</tbody></table></div>`;
+  html += `</div>`;
 
   el.innerHTML = html;
   updateLogMeta(filtered.length, visible.length);
@@ -16077,6 +16237,13 @@ function renderLogView() {
       renderLogView();
     });
   });
+  const techBtn = el.querySelector('#log-tech-toggle');
+  if (techBtn) {
+    techBtn.addEventListener('click', () => {
+      LOG_FILTER.technical = !LOG_FILTER.technical;
+      renderLogView();
+    });
+  }
   const searchInput = el.querySelector('#log-search');
   if (searchInput) {
     let t = null;
@@ -16344,14 +16511,25 @@ function renderHeaderStatus() {
 }
 // ─── UI WIRING ───────────────────────────────────────────────────────
 
+// Views surfaced under the "More ▾" overflow rather than directly in
+// the top tab bar. When one of these is active, the More button gets
+// the active underline and the corresponding menu item highlights.
+const MORE_VIEWS = new Set(['cursors', 'inspect', 'prompts', 'dream']);
+
 function switchView(viewName) {
   STATE.activeView = viewName;
   document.querySelectorAll('.view-tab').forEach(t => {
     t.classList.toggle('active', t.getAttribute('data-view') === viewName);
   });
+  const moreBtn = document.getElementById('more-tab-btn');
+  if (moreBtn) moreBtn.classList.toggle('active', MORE_VIEWS.has(viewName));
+  document.querySelectorAll('.more-menu-item').forEach(it => {
+    it.classList.toggle('active', it.getAttribute('data-view') === viewName);
+  });
   document.querySelectorAll('.view-pane').forEach(p => {
     p.classList.toggle('active', p.id === `view-${viewName}`);
   });
+  closeMoreMenu();
   if (viewName === 'sources') renderSourcesView();
   else if (viewName === 'inspect') renderInspectView();
   else if (viewName === 'cursors') renderCursorStatus();
@@ -16364,6 +16542,37 @@ function switchView(viewName) {
 document.querySelectorAll('.view-tab').forEach(tab => {
   tab.addEventListener('click', () => switchView(tab.getAttribute('data-view')));
 });
+
+function closeMoreMenu() {
+  const menu = document.getElementById('more-menu');
+  const btn = document.getElementById('more-tab-btn');
+  if (menu) menu.hidden = true;
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+(() => {
+  const btn = document.getElementById('more-tab-btn');
+  const menu = document.getElementById('more-menu');
+  if (!btn || !menu) return;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isOpen = !menu.hidden;
+    if (isOpen) closeMoreMenu();
+    else { menu.hidden = false; btn.setAttribute('aria-expanded', 'true'); }
+  });
+  menu.querySelectorAll('.more-menu-item').forEach(item => {
+    item.addEventListener('click', (e) => {
+      e.stopPropagation();
+      switchView(item.getAttribute('data-view'));
+    });
+  });
+  document.addEventListener('click', (e) => {
+    if (menu.hidden) return;
+    if (!menu.contains(e.target) && e.target !== btn) closeMoreMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !menu.hidden) closeMoreMenu();
+  });
+})();
 
 // Hard-stop button on the floating ingest banner. Sets the abort flag;
 // the per-sentence loop drains its current iteration (in-flight LLM call
@@ -16389,6 +16598,9 @@ document.getElementById('ingest-btn').addEventListener('click', async () => {
   // Re-enable the stop button (it gets disabled when previous run finishes)
   const stopBtn = document.getElementById('ingest-stop-btn');
   if (stopBtn) { stopBtn.disabled = false; stopBtn.textContent = 'stop'; }
+
+  // Auto-switch to Sources so the user watches the import table fill.
+  switchView('sources');
 
   try {
     await ingestSource(text, { name, publicationDate: pubDate, cleanChrome });
@@ -16427,6 +16639,8 @@ document.getElementById('ingest-btn').addEventListener('click', async () => {
     if (files.length === 0) return;
     filesBtn.disabled = true;
     if (progress) progress.textContent = `ingesting ${files.length} file${files.length === 1 ? '' : 's'}…`;
+    // Auto-switch to Sources so the user watches the import table fill.
+    switchView('sources');
     try {
       const sources = await ingestUploadedFiles(files, ({ current, total, file, kind, page, pageCount }) => {
         if (!progress) return;
