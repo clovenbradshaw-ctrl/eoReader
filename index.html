@@ -2872,13 +2872,29 @@ function cleanCorpus(text, opts = {}) {
   let seenRealProse = false;
   let footerStreak = 0;
   let inFooter = false;
-  const FOOTER_THRESHOLD = 4;
+  // Threshold deliberately conservative: PDF page breaks emit running
+  // headers/footers ("Title - Wikipedia", a URL, a date, "1/36") that
+  // form 4-line streaks of pre-prose fragments at every page boundary.
+  // Requiring a longer streak keeps the HTML-footer signal intact while
+  // tolerating PDF page chrome interleaved with body content.
+  const FOOTER_THRESHOLD = 8;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    const t = line.trim();
+    const isProse = t.length > 30 && /[.!?]\s*$/.test(t);
     if (inFooter) {
-      chromeLines[i] = true;
-      continue;
+      // Recovery: a real prose line below a supposed footer means we
+      // got it wrong. PDFs interleave body prose with page chrome
+      // rather than appending chrome after the body, so once we see
+      // genuine prose again we exit footer mode and resume tagging.
+      if (isProse) {
+        inFooter = false;
+        footerStreak = 0;
+      } else {
+        chromeLines[i] = true;
+        continue;
+      }
     }
     if (isChromeLine(line)) {
       chromeLines[i] = true;
@@ -2889,8 +2905,6 @@ function cleanCorpus(text, opts = {}) {
       chromeLines[i] = true;
       continue;
     }
-    const t = line.trim();
-    const isProse = t.length > 30 && /[.!?]\s*$/.test(t);
     if (isProse) {
       seenRealProse = true;
       footerStreak = 0;
