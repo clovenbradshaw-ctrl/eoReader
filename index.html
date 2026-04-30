@@ -3355,6 +3355,18 @@ const METRIC_SEEDS = [
     computation: { kind: 'builtin', ref: 'divergenceFireRate' },
     unit: 'ratio',
     authoredBy: 'system' },
+  { id: 'metric_summary_fallback_rate',
+    name: 'summary-fallback-rate',
+    description: 'Fraction of summary checks where the time-elapsed fallback trigger fired. Above the band means the fallback is dominating (cadence too tight); below means it almost never fires (cadence too loose, summary updates rely on other triggers).',
+    computation: { kind: 'builtin', ref: 'summaryFallbackRate' },
+    unit: 'ratio',
+    authoredBy: 'system' },
+  { id: 'metric_summary_discontinuity_rate',
+    name: 'summary-discontinuity-rate',
+    description: 'Fraction of cosine-checked sentences where the prior-sentence cosine fell below the discontinuity threshold. Above the band means the threshold is too loose (firing on minor topic shifts); below means it is too tight (missing real breaks).',
+    computation: { kind: 'builtin', ref: 'summaryDiscontinuityRate' },
+    unit: 'ratio',
+    authoredBy: 'system' },
 ];
 
 const TUNABLE_SEEDS = [
@@ -3377,9 +3389,25 @@ const TUNABLE_SEEDS = [
     },
     expectedOutcome: 'hold' },
   { key: 'summaryFallbackEveryN', value: 4, unit: 'events',
-    note: 'Regenerate summary every N textbase-ring events absent other triggers.' },
+    note: 'Regenerate summary every N textbase-ring events absent other triggers.',
+    prediction: {
+      statement: 'fallback fires for [0.10, 0.50] of summary checks per run',
+      metricId: 'metric_summary_fallback_rate',
+      threshold: { lower: 0.10, upper: 0.50 },
+      direction: 'within',
+      window: 1,
+    },
+    expectedOutcome: 'hold' },
   { key: 'summaryDiscontinuityCosine', value: 0.4, unit: 'cosine',
-    note: 'Sentence cosine to prior below this triggers regenerate.' },
+    note: 'Sentence cosine to prior below this triggers regenerate.',
+    prediction: {
+      statement: 'discontinuity fires for [0.05, 0.30] of cosine-checked sentences per run',
+      metricId: 'metric_summary_discontinuity_rate',
+      threshold: { lower: 0.05, upper: 0.30 },
+      direction: 'within',
+      window: 1,
+    },
+    expectedOutcome: 'hold' },
   { key: 'recBaseDelta', value: 0.15, unit: 'cosine',
     note: 'Base hypothesisDivergenceDelta; modulated by hypothesis.precision.' },
 ];
@@ -3505,6 +3533,7 @@ function startRun(sourceId) {
     snapshot,
   });
   STATE.currentRunId = id;
+  persistTunablesSubstrate();
   return id;
 }
 
@@ -3528,6 +3557,20 @@ const BUILTIN_METRICS = {
     const checks = c['divergence-checks'] || 0;
     const fires = c['divergence-fires'] || 0;
     if (checks === 0) return null;  // no signal this run
+    return fires / checks;
+  },
+  summaryFallbackRate(run) {
+    const c = run.counters || {};
+    const checks = c['summary-fallback-checks'] || 0;
+    const fires = c['summary-fallback-fires'] || 0;
+    if (checks === 0) return null;
+    return fires / checks;
+  },
+  summaryDiscontinuityRate(run) {
+    const c = run.counters || {};
+    const checks = c['summary-discontinuity-checks'] || 0;
+    const fires = c['summary-discontinuity-fires'] || 0;
+    if (checks === 0) return null;
     return fires / checks;
   },
 };
@@ -3647,6 +3690,7 @@ function endRun() {
   if (STATE.runs.length > RUNS_RETAINED) {
     STATE.runs.splice(0, STATE.runs.length - RUNS_RETAINED);
   }
+  persistTunablesSubstrate();
 }
 
 // ── Loop-hazard guard rails ───────────────────────────────────────────
@@ -3874,6 +3918,7 @@ function proposeTunableRevision(replacingId, proposedShape, reasoning, authoredB
     reasoning, status: 'pending', reviewedBy: null,
     authoredBy, createdAt: Date.now(),
   });
+  persistTunablesSubstrate();
   return { ok: true, reason: 'created', proposalId: id };
 }
 
@@ -3913,6 +3958,7 @@ function _materializeRevision(oldDefId, changes, authoredBy) {
       }
     }
   }
+  persistTunablesSubstrate();
   return newDef;
 }
 
@@ -3937,6 +3983,7 @@ function applyManualTunableEdit(oldDefId, changes, reasoning = '') {
     authoredBy: 'human',
     createdAt: Date.now(),
   });
+  persistTunablesSubstrate();
   return { ok: true, newDef };
 }
 
@@ -3955,6 +4002,7 @@ function acceptProposal(proposalId, reviewerNote = null) {
   prop.reviewedBy = 'human';
   prop.acceptedAt = Date.now();
   if (reviewerNote) prop.reviewerNote = reviewerNote;
+  persistTunablesSubstrate();
   return { ok: true, newDef };
 }
 
@@ -3969,6 +4017,7 @@ function rejectProposal(proposalId, reviewerNote = null) {
   prop.reviewedBy = 'human';
   prop.rejectedAt = Date.now();
   if (reviewerNote) prop.reviewerNote = reviewerNote;
+  persistTunablesSubstrate();
   return { ok: true };
 }
 
@@ -4102,6 +4151,7 @@ function recordTunableEva({ tunableDefId, runId, measured, predicted, surprise =
     authoredBy, rationale, createdAt: Date.now(),
   };
   STATE.tunableEvas.push(eva);
+  persistTunablesSubstrate();
   return eva;
 }
 
@@ -8946,14 +8996,23 @@ async function maybeRegenerateRunningSummary(source, sentenceIdx, sentenceText, 
   // update. Default 4 ring-events ≈ the same density as the prior
   // 8-body-sentence threshold but anchored to actual content.
   const sinceLastUpdate = ringNow - ringAtLastUpdate;
+  // Per-run signal for the summaryFallbackEveryN tunable: count every
+  // evaluation of this trigger and how many of them fire. The metric
+  // graded at endRun is fires/checks.
+  incrementRunCounter('summary-fallback-checks');
   if (sinceLastUpdate >= tunable('summaryFallbackEveryN', 4)) {
     triggers.push('fallback');
+    incrementRunCounter('summary-fallback-fires');
   }
   // Trigger 3: semantic discontinuity vs prior sentence.
   if (sentenceEmbedding && STATE.lastSentenceEmbedding) {
+    // Per-run signal for summaryDiscontinuityCosine: count cosine
+    // checks (which require both embeddings to exist) and fires.
+    incrementRunCounter('summary-discontinuity-checks');
     const cos = cosineInt8(sentenceEmbedding, STATE.lastSentenceEmbedding);
     if (cos < tunable('summaryDiscontinuityCosine', 0.4)) {
       triggers.push(`discontinuity(${cos.toFixed(2)})`);
+      incrementRunCounter('summary-discontinuity-fires');
     }
   }
   if (triggers.length === 0) return false;
@@ -17320,13 +17379,73 @@ function updateLogMeta(filteredCount, totalLogged) {
   meta.textContent = `${filteredCount} of ${totalLogged} events · ${LOG_FILTER.op || 'all ops'}${LOG_FILTER.sourceId ? ' · filtered to source' : ''}`;
 }
 
+// ─── Tunables substrate persistence ────────────────────────────────
+// localStorage-backed, debounced through a microtask so a burst of
+// writes within one event-loop tick coalesces to a single disk write.
+// Schema is keyed on serializeTunablesSubstrate's formatVersion;
+// version skew on restore drops the persisted data and starts fresh.
+const TUNABLES_PERSIST_KEY = 'eoreader-tunables-v0';
+let _tunablesPersistScheduled = false;
+function persistTunablesSubstrate() {
+  if (_tunablesPersistScheduled) return;
+  if (typeof localStorage === 'undefined') return;
+  _tunablesPersistScheduled = true;
+  Promise.resolve().then(() => {
+    _tunablesPersistScheduled = false;
+    try {
+      const data = serializeTunablesSubstrate();
+      localStorage.setItem(TUNABLES_PERSIST_KEY, JSON.stringify(data));
+    } catch (e) {
+      // Quota / serialization errors are surfaced as warnings, not
+      // thrown — losing persistence on the next write is preferable
+      // to crashing the active run.
+      console.warn('Could not persist tunables substrate:', e);
+    }
+  });
+}
+
+// Restore the substrate from localStorage at boot. Returns true if
+// anything was loaded, false otherwise. Called BEFORE seedMetrics /
+// seedTunables so those backfills only fill in keys that aren't
+// already restored. Runs that were active at the moment of the prior
+// session's exit are NOT restored as live (currentRunId is forced to
+// null) — a cold-start can't continue a run mid-flight.
+function restoreTunablesSubstrate() {
+  if (typeof localStorage === 'undefined') return false;
+  let json;
+  try { json = localStorage.getItem(TUNABLES_PERSIST_KEY); }
+  catch (e) { return false; }
+  if (!json) return false;
+  let data;
+  try { data = JSON.parse(json); }
+  catch (e) { console.warn('Tunables substrate persistence corrupt; starting fresh'); return false; }
+  if (!data || data.formatVersion !== 'tunables-v0') {
+    console.warn('Tunables substrate format mismatch; ignoring persisted data');
+    return false;
+  }
+  STATE.tunableDefs = new Map();
+  for (const d of (data.tunableDefs || [])) STATE.tunableDefs.set(d.id, d);
+  STATE.tunableMetrics = new Map();
+  for (const m of (data.tunableMetrics || [])) STATE.tunableMetrics.set(m.id, m);
+  STATE.tunableEvas = Array.isArray(data.tunableEvas) ? data.tunableEvas : [];
+  STATE.tunableProposals = Array.isArray(data.tunableProposals) ? data.tunableProposals : [];
+  STATE.sourceKindSignatures = new Map();
+  for (const s of (data.sourceKindSignatures || [])) STATE.sourceKindSignatures.set(s.id, s);
+  STATE.runs = (data.runs || []).map(r => ({
+    ...r,
+    snapshot: new Map((r.snapshot || []).map(s => [s.key, { value: s.value, tunableDefId: s.tunableDefId, signature: s.signature }])),
+    counters: r.counters || {},
+  }));
+  STATE.currentRunId = null;  // never resume a run cross-session
+  return true;
+}
+
 // ─── Tunables substrate export ────────────────────────────────────
 // Serializes the tunables substrate to a plain JS object suitable for
 // JSON.stringify. The Map structures (tunableDefs, sourceKindSignatures,
 // per-run snapshot) get expanded into arrays so they survive the
-// stringify; everything else is already plain. Round-trip-safe with a
-// future importer (not yet built — write path comes when /proposals
-// review lands).
+// stringify; everything else is already plain. Round-trip-safe with
+// restoreTunablesSubstrate (the persistence path above).
 function serializeTunablesSubstrate() {
   return {
     formatVersion: 'tunables-v0',
@@ -20068,7 +20187,7 @@ async function boot() {
   const steps = [
     { stage: 'init', detail: 'starting…', after: () => {} },
     { stage: 'ui', detail: 'wiring tabs and controls', after: () => { renderSamples(); } },
-    { stage: 'state', detail: 'initializing graph', after: () => { seedMetrics(); seedTunables(); renderHeaderStatus(); } },
+    { stage: 'state', detail: 'initializing graph', after: () => { restoreTunablesSubstrate(); seedMetrics(); seedTunables(); renderHeaderStatus(); } },
     { stage: 'render', detail: 'rendering panes', after: () => {
       renderCursorStatus();
       renderExampleQueries();
