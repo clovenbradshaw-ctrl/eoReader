@@ -9947,14 +9947,46 @@ async function extractPDFText(file, onProgress) {
     if (onProgress) onProgress({ page: i, pageCount });
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
-    // pdf.js text items don't carry explicit spaces — items come in reading
-    // order, and `hasEOL` marks line breaks. Join with spaces and turn EOL
-    // markers into newlines so segmentSentences sees normal whitespace.
+    // Geometry-aware joiner. pdf.js emits each styled run (small caps,
+    // stylistic alternates, font switches) as a separate text item with
+    // its own x/y/width in `transform`/`width`. Always inserting a space
+    // between items shatters words like "Elinor" into "E linor" on
+    // small-cap PDFs (Adobe InDesign + stylistic-set fonts). Instead use
+    // the gap between the previous item's right edge and the next item's
+    // x: if they butt up on the same baseline, join directly; if there's
+    // a space-sized gap, insert one; if y differs or hasEOL fires, break
+    // the line.
     let pageText = '';
+    let prev = null; // { rightX, y } of the last glyph item we appended
     for (const item of content.items) {
-      if (item.str) pageText += item.str;
-      if (item.hasEOL) pageText += '\n';
-      else pageText += ' ';
+      if (item.type) continue; // marked-content boundary, no glyphs
+      if (item.hasEOL) {
+        pageText += '\n';
+        prev = null;
+        continue;
+      }
+      if (!item.str) continue;
+      const x = item.transform[4];
+      const y = item.transform[5];
+      // transform[3] is the y-scale (effective glyph height). Fall back to
+      // item.height if the matrix is degenerate, then to a sensible default.
+      const h = Math.abs(item.transform[3]) || item.height || 10;
+      const w = item.width || 0;
+      if (prev) {
+        if (Math.abs(y - prev.y) > h * 0.5) {
+          // New line in reading order even without an explicit hasEOL.
+          pageText += '\n';
+        } else {
+          const gap = x - prev.rightX;
+          // ≥0.2em counts as a real interword space; smaller gaps are
+          // intra-word styled runs (small caps, ligatures, font switch).
+          if (gap >= h * 0.2 && !pageText.endsWith(' ') && !item.str.startsWith(' ')) {
+            pageText += ' ';
+          }
+        }
+      }
+      pageText += item.str;
+      prev = { rightX: x + w, y };
     }
     pages.push(pageText.replace(/[ \t]+\n/g, '\n').replace(/[ \t]{2,}/g, ' ').trim());
     page.cleanup();
