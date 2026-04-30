@@ -3540,6 +3540,20 @@ function computeMetric(metric, run) {
 // Surprise is the distance to the threshold normalized by its scale,
 // clamped at 2. Intensity delta is small-positive on support and
 // negative-and-larger on weaken/contradict, scaled by surprise.
+// Grade a prediction against a measured value. Produces a categorical
+// verdict and a numerical surprise — both relational quantities — but
+// no scalar "confidence delta" to roll up into a running score. The
+// EVA stream itself is the substrate for asymptotic characterization;
+// trajectoryShape reads the sequence directly.
+//
+//   direction='above'   threshold: number  → support if measured ≥ threshold
+//   direction='below'   threshold: number  → support if measured ≤ threshold
+//   direction='within'  threshold: {lower, upper} → support if in [lower, upper]
+//
+// Surprise is the threshold-relative distance, clamped at 2. Verdict
+// transitions from 'support' (in band) to 'weaken' (out, near) to
+// 'contradict' (out, far — surprise > 1). 'ambiguous' is reserved for
+// future LLM-arbitrated edge cases.
 function gradeTunablePrediction(def, measured) {
   if (!def || !def.prediction || measured == null) return null;
   const pred = def.prediction;
@@ -3565,19 +3579,8 @@ function gradeTunablePrediction(def, measured) {
     return null;
   }
   surprise = Math.min(surprise, 2);
-  let verdict, intensityDelta;
-  if (inRange) {
-    verdict = 'support';
-    // Reward small steady support; reward big confirmations slightly more
-    intensityDelta = 0.04 * (1 + surprise * 0.25);
-  } else {
-    verdict = surprise > 1 ? 'contradict' : 'weaken';
-    // Penalize harder than we reward — a single contradict erases
-    // ~3 supports of the same magnitude. This is the ratchet the spec
-    // wants: confirmation moves intensity slowly, contradiction fast.
-    intensityDelta = -0.12 * (1 + surprise);
-  }
-  return { verdict, surprise, intensityDelta, measured };
+  const verdict = inRange ? 'support' : (surprise > 1 ? 'contradict' : 'weaken');
+  return { verdict, surprise, measured };
 }
 
 // At endRun, grade every snapshotted tunable that carries a prediction.
@@ -3601,7 +3604,6 @@ function emitEvasForRun(run) {
       predicted: _prettyPredictedValue(def.prediction),
       surprise: grade.surprise,
       verdict: grade.verdict,
-      intensityDelta: grade.intensityDelta,
       authoredBy: 'system',
       rationale: null,
     });
@@ -3660,14 +3662,101 @@ function _revisionChainLength(def) {
   return count;
 }
 
-// Public state classifier. Drives the /tunables view's badges and
-// gates which queues a tunable joins for the next sweep.
-//   ungraded            no prediction yet → open question for human / hot pass
-//   predicted-no-evas   prediction exists but EVAs aren't accumulating
-//   active              prediction + EVAs landing
-//   frozen-oscillating  too many revisions in chain; freeze auto-revisions
-//   inactive            tunable.active === false
+// ─── Trajectory characterization ───────────────────────────────────
+// We don't track a confidence score for tunables. A scalar like
+// "intensity: 0.7" collapses a whole evidence relation into a
+// magnitude — geometric, summarizing, flat. What we actually have is a
+// SEQUENCE of measurements (the EVA stream) that asymptotically
+// approaches the true right value of the tunable for the current
+// signature, a value the system can't know directly. trajectoryShape
+// characterizes the shape of that approach.
+//
+//   { kind: 'ungraded' | 'insufficient' | 'converging' |
+//           'oscillating' | 'diverging' | 'unsettled',
+//     n: number of samples,
+//     recentMean, priorMean, recentVar, priorVar,  // null on insufficient
+//     direction: 'rising' | 'falling' | 'stable' | null,
+//     estimatedLimit: number | null  // only when converging
+//   }
+//
+// "Insufficient" means there aren't enough samples to characterize
+// (default cutoff 4); ungraded means the def has no prediction so
+// no EVAs are accumulating in the first place.
+const TRAJECTORY_MIN_SAMPLES = 4;
+const TRAJECTORY_CONVERGENCE_VARIANCE = 0.03;  // recent variance below this with shrinking variance = converging
+const TRAJECTORY_DIRECTION_DELTA = 0.04;       // mean shift larger than this between halves = directional
+function trajectoryShape(tunableDefId) {
+  const def = STATE.tunableDefs.get(tunableDefId);
+  if (!def) return { kind: 'ungraded', n: 0 };
+  if (def.prediction == null) return { kind: 'ungraded', n: 0 };
+  const evas = STATE.tunableEvas.filter(e => e.tunableDefId === tunableDefId);
+  const n = evas.length;
+  if (n < TRAJECTORY_MIN_SAMPLES) {
+    return { kind: 'insufficient', n, recentMean: null, priorMean: null, recentVar: null, priorVar: null, direction: null, estimatedLimit: null };
+  }
+  const measurements = evas.map(e => Number(e.measured)).filter(m => Number.isFinite(m));
+  if (measurements.length < TRAJECTORY_MIN_SAMPLES) {
+    return { kind: 'insufficient', n, recentMean: null, priorMean: null, recentVar: null, priorVar: null, direction: null, estimatedLimit: null };
+  }
+  const half = Math.floor(measurements.length / 2);
+  const prior = measurements.slice(0, half);
+  const recent = measurements.slice(half);
+  const mean = arr => arr.reduce((s, x) => s + x, 0) / arr.length;
+  const variance = arr => { const m = mean(arr); return arr.reduce((s, x) => s + (x - m) * (x - m), 0) / arr.length; };
+  const recentMean = mean(recent);
+  const priorMean = mean(prior);
+  const recentVar = variance(recent);
+  const priorVar = variance(prior);
+  const meanShift = recentMean - priorMean;
+  const direction = meanShift > TRAJECTORY_DIRECTION_DELTA ? 'rising'
+                  : meanShift < -TRAJECTORY_DIRECTION_DELTA ? 'falling'
+                  : 'stable';
+  // Converging: variance is small AND the trajectory has stopped
+  // moving (direction stable). A monotonically rising sequence with
+  // low variance per-half is NOT converging — it's still asymptoting
+  // toward something further out, we just don't see the limit yet.
+  const tightenedFromLoose = recentVar < priorVar * 0.6;
+  const tightThroughout = recentVar < TRAJECTORY_CONVERGENCE_VARIANCE && priorVar < TRAJECTORY_CONVERGENCE_VARIANCE;
+  const converging = direction === 'stable' && (
+    (recentVar < TRAJECTORY_CONVERGENCE_VARIANCE && tightenedFromLoose) || tightThroughout
+  );
+  // Diverging: recent variance materially larger than prior
+  const diverging = !converging && recentVar > priorVar * 2 && recentVar > TRAJECTORY_CONVERGENCE_VARIANCE * 2;
+  // Oscillating: persistent high variance with no asymptotic settling.
+  // Direction-independent — the issue is that the trajectory isn't
+  // tightening, so even a "rising oscillator" counts.
+  const oscillating = !converging && !diverging && recentVar > TRAJECTORY_CONVERGENCE_VARIANCE * 1.5;
+  let kind;
+  if (converging) kind = 'converging';
+  else if (diverging) kind = 'diverging';
+  else if (oscillating) kind = 'oscillating';
+  else kind = 'unsettled';
+  // Estimated noumenal limit: where the trajectory appears to be
+  // heading. Only meaningful when converging — otherwise the recent
+  // mean is just a snapshot of a moving target.
+  const estimatedLimit = (kind === 'converging') ? recentMean : null;
+  return { kind, n, recentMean, priorMean, recentVar, priorVar, direction, estimatedLimit };
+}
+
+// Public state classifier. Returns a label describing where on the
+// asymptotic approach this tunable currently is. The view colors the
+// badge from this; the eligibility guards consult it; future sweeps
+// queue tunables based on it.
+//
+//   ungraded            no prediction → open question
+//   inactive            def.active === false
 //   unknown             unrecognized id
+//   predicted-no-evas   prediction exists but EVAs not accumulating
+//   insufficient        too few samples to characterize the approach
+//   converging          variance shrinking; the trajectory is approaching a limit
+//   oscillating         variance not shrinking, direction unstable
+//   diverging           variance growing; the approach is breaking down
+//   unsettled           too few samples for confident shape, but trending
+//
+// Revision-chain length still adds a hard freeze for runaway oscillation
+// (the spec's allostatic-load case), but it's a separate signal from
+// the asymptotic shape — chain length is "too many revisions in flight,"
+// shape is "the measurements are or aren't homing in on a value."
 function tunableState(tunableDefId) {
   const def = STATE.tunableDefs.get(tunableDefId);
   if (!def) return 'unknown';
@@ -3677,7 +3766,7 @@ function tunableState(tunableDefId) {
   const cutoff = Date.now() - TUNABLES_GUARD.STUCK_PREDICTION_WINDOW_MS;
   const recentEvas = STATE.tunableEvas.filter(e => e.tunableDefId === tunableDefId && e.createdAt >= cutoff).length;
   if (recentEvas === 0) return 'predicted-no-evas';
-  return 'active';
+  return trajectoryShape(tunableDefId).kind;  // converging | oscillating | diverging | unsettled | insufficient
 }
 
 // Guard: may we propose a revision for this tunable right now?
@@ -3699,19 +3788,37 @@ function canProposeRevision(tunableDefId) {
 }
 
 // Guard: may an LLM hot pass be triggered for this tunable?
-// Layered on top of canProposeRevision (which catches most cases) plus
-// the "premature hot pass" rule — don't ask the LLM to revise a tunable
-// that hasn't accumulated enough graded evidence.
+//
+// Hot-pass triggers (any of these makes a graded tunable eligible):
+//   - trajectory is OSCILLATING or DIVERGING — the approach isn't
+//     converging on a stable limit; ask the LLM to propose a different
+//     value or a different prediction
+//   - the prediction is wrong — recent measurements never hit
+//     'support' (the trajectory is converging, but to the wrong
+//     limit). Detected via a streak of non-support verdicts in recent
+//     EVAs.
+// A converging trajectory whose recent verdicts are 'support' is doing
+// what we wanted — leave it alone.
+//
+// Ungraded tunables are always eligible: their hot pass proposes a
+// prediction + metric, not a value revision.
 function isEligibleForHotPass(tunableDefId) {
   const def = STATE.tunableDefs.get(tunableDefId);
   if (!def) return { ok: false, reason: 'unknown-tunable' };
   if (!def.active) return { ok: false, reason: 'inactive-tunable' };
-  // Ungraded tunables ARE eligible — their hot pass proposes a prediction,
-  // not a value revision. Distinct from value-revision hot passes.
   if (def.prediction != null) {
     const evaCount = STATE.tunableEvas.filter(e => e.tunableDefId === tunableDefId).length;
     if (evaCount < TUNABLES_GUARD.MIN_EVAS_FOR_HOT_PASS) {
       return { ok: false, reason: 'too-few-evas' };
+    }
+    const shape = trajectoryShape(tunableDefId);
+    // Converging on the right answer (recent verdicts mostly 'support')
+    // means the system is approaching a usable limit — don't disturb.
+    const recentEvas = STATE.tunableEvas.filter(e => e.tunableDefId === tunableDefId).slice(-Math.min(evaCount, 6));
+    const recentSupports = recentEvas.filter(e => e.verdict === 'support').length;
+    const supportFraction = recentEvas.length > 0 ? recentSupports / recentEvas.length : 0;
+    if (shape.kind === 'converging' && supportFraction >= 0.5) {
+      return { ok: false, reason: 'converging-on-support' };
     }
   }
   const guard = canProposeRevision(tunableDefId);
@@ -3759,23 +3866,85 @@ function proposeTunableRevision(replacingId, proposedShape, reasoning, authoredB
   return { ok: true, reason: 'created', proposalId: id };
 }
 
-// Canonical write entry-point for EVAs. Applies the verdict's
-// intensity delta to the def in the same call so callers can't write
-// an EVA without affecting intensity (or vice versa). Clamped to [0,1].
-function recordTunableEva({ tunableDefId, runId, measured, predicted, surprise = 0, verdict, intensityDelta = 0, authoredBy = 'system', rationale = null }) {
+// Manual edit entry-point. Bypasses canProposeRevision (the user is
+// the authority here; the audit row records what they did). Mints a
+// new tunableDef with supersedes pointing at the old one, marks the
+// old def inactive so the resolver returns the new one, writes an
+// auto-accepted proposal entry as audit, and — if a run is in flight
+// and was using this exact def — updates the run snapshot too so the
+// edit takes effect for the rest of the run.
+//
+// `changes` is a partial object merged onto the existing def. Common
+// keys: value, prediction, intensity, expectedOutcome, authorNote.
+// Returns { ok, newDef } or { ok: false, reason }.
+function applyManualTunableEdit(oldDefId, changes, reasoning = '') {
+  const oldDef = STATE.tunableDefs.get(oldDefId);
+  if (!oldDef) return { ok: false, reason: 'unknown-tunable' };
+  const id = uid('tdef');
+  const newDef = {
+    ...oldDef,
+    ...changes,
+    id,
+    supersedes: oldDefId,
+    authoredBy: 'human',
+    active: true,
+    createdAt: Date.now(),
+  };
+  // metricDefinitionId tracks prediction.metricId; keep them in sync
+  // when the prediction is being edited.
+  if (changes.prediction) {
+    newDef.metricDefinitionId = changes.prediction.metricId || null;
+  }
+  STATE.tunableDefs.set(id, newDef);
+  oldDef.active = false;
+  STATE.tunableProposals.push({
+    id: uid('tprop'),
+    replacing: oldDefId,
+    proposed: changes,
+    reasoning: reasoning || `Manual edit (${oldDef.key})`,
+    status: 'auto-accepted',
+    reviewedBy: 'human',
+    authoredBy: 'human',
+    createdAt: Date.now(),
+  });
+  // If an active run was snapshotting this exact def, update the
+  // snapshot so the change takes effect immediately for the rest of
+  // the run. Snapshots from other runs aren't touched.
+  if (STATE.currentRunId) {
+    const run = STATE.runs.find(r => r.id === STATE.currentRunId);
+    if (run && run.snapshot && run.snapshot.has(oldDef.key)) {
+      const snap = run.snapshot.get(oldDef.key);
+      if (snap.tunableDefId === oldDefId) {
+        run.snapshot.set(oldDef.key, {
+          value: newDef.value,
+          tunableDefId: id,
+          signature: newDef.sourceKindSignature,
+        });
+      }
+    }
+  }
+  return { ok: true, newDef };
+}
+
+// Canonical write entry-point for EVAs. The EVA is an observation —
+// what was measured, what was predicted, the categorical verdict —
+// not an update to a confidence score. trajectoryShape reads the
+// sequence of EVAs to characterize the asymptotic approach; nothing
+// here mutates an aggregate scalar. The intensityDelta field is kept
+// in the record shape for backward-compat with older exports but is
+// no longer computed or applied.
+function recordTunableEva({ tunableDefId, runId, measured, predicted, surprise = 0, verdict, authoredBy = 'system', rationale = null }) {
   const def = STATE.tunableDefs.get(tunableDefId);
   if (!def) return null;
   const id = uid('teva');
   const eva = {
     id, tunableDefId, runId,
     sourceKindSignature: def.sourceKindSignature,
-    measured, predicted, surprise, verdict, intensityDelta,
+    measured, predicted, surprise, verdict,
+    intensityDelta: null,  // legacy field; we don't roll up to a scalar anymore
     authoredBy, rationale, createdAt: Date.now(),
   };
   STATE.tunableEvas.push(eva);
-  if (Number.isFinite(intensityDelta)) {
-    def.intensity = Math.max(0, Math.min(1, (def.intensity ?? 0.5) + intensityDelta));
-  }
   return eva;
 }
 
@@ -17041,11 +17210,18 @@ function downloadTunablesExport() {
 // affordances and proposal review come in subsequent passes. The
 // "↓ Export tunables JSON" button lets a reviewer pull just the
 // substrate (not the whole graph) for the tune-the-tuning workflow.
+// State badge palette. Trajectory states (converging/oscillating/etc.)
+// inherit from the eoREADER paper-tone palette so the cards read as
+// notes rather than dashboards.
 const TUNABLE_STATE_STYLES = {
   'ungraded':           { label: 'ungraded',         fg: '#8a7026', bg: '#8a702620', border: '#8a702660' },
   'predicted-no-evas':  { label: 'no evas yet',      fg: '#b07a3a', bg: '#b07a3a20', border: '#b07a3a60' },
-  'active':             { label: 'active',           fg: '#4a6b3e', bg: '#4a6b3e20', border: '#4a6b3e60' },
-  'frozen-oscillating': { label: 'oscillating',      fg: '#95305a', bg: '#95305a20', border: '#95305a60' },
+  'insufficient':       { label: 'gathering',        fg: '#b07a3a', bg: '#b07a3a20', border: '#b07a3a60' },
+  'unsettled':          { label: 'unsettled',        fg: '#8a7026', bg: '#8a702620', border: '#8a702660' },
+  'converging':         { label: 'converging',       fg: '#4a6b3e', bg: '#4a6b3e20', border: '#4a6b3e60' },
+  'oscillating':        { label: 'oscillating',      fg: '#95305a', bg: '#95305a20', border: '#95305a60' },
+  'diverging':          { label: 'diverging',        fg: '#95305a', bg: '#95305a20', border: '#95305a60' },
+  'frozen-oscillating': { label: 'frozen',           fg: '#95305a', bg: '#95305a20', border: '#95305a60' },
   'inactive':           { label: 'inactive',         fg: '#6a6358', bg: 'transparent', border: '#6a635860' },
   'unknown':            { label: 'unknown',          fg: '#6a6358', bg: 'transparent', border: '#6a635860' },
 };
@@ -17055,57 +17231,153 @@ function renderTunableStateBadge(state) {
   return `<span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.04em;text-transform:uppercase;padding:1px 6px;color:${s.fg};background:${s.bg};border:1px solid ${s.border};border-radius:2px;">${escapeHtml(s.label)}</span>`;
 }
 
-function renderTunableIntensityBar(intensity) {
-  const pct = Math.round(Math.max(0, Math.min(1, intensity ?? 0.5)) * 100);
-  return `<span title="intensity ${(intensity ?? 0.5).toFixed(2)}" style="display:inline-block;width:60px;height:4px;background:var(--paper-soft,rgba(0,0,0,0.06));border-radius:2px;overflow:hidden;vertical-align:middle;">
-    <span style="display:block;height:100%;width:${pct}%;background:var(--ink-soft);"></span>
+// Inline SVG sparkline of the last N measurements. The prediction band
+// (if `within`) is drawn as a faint horizontal stripe so the reader
+// sees the trajectory's relation to the target band, not just the
+// trajectory in isolation. No scalar score, no progress bar — the
+// shape of the approach IS the readout.
+function renderTrajectorySparkline(def, evas, shape) {
+  if (!evas || evas.length === 0) return '';
+  const values = evas.map(e => Number(e.measured)).filter(Number.isFinite);
+  if (values.length === 0) return '';
+  const w = 110, h = 26, pad = 3;
+  let domainMin = Math.min(...values);
+  let domainMax = Math.max(...values);
+  // Stretch the domain to include the prediction band when within
+  const pred = def.prediction;
+  const isWithin = pred && pred.direction === 'within' && pred.threshold && typeof pred.threshold === 'object';
+  if (isWithin) {
+    domainMin = Math.min(domainMin, pred.threshold.lower);
+    domainMax = Math.max(domainMax, pred.threshold.upper);
+  }
+  const range = domainMax - domainMin || 1;
+  const yFor = v => h - pad - ((v - domainMin) / range) * (h - 2 * pad);
+  let bandRect = '';
+  if (isWithin) {
+    const yLo = yFor(pred.threshold.upper);  // upper bound is higher Y up-axis flipped
+    const yHi = yFor(pred.threshold.lower);
+    bandRect = `<rect x="${pad}" y="${yLo.toFixed(1)}" width="${w - 2 * pad}" height="${(yHi - yLo).toFixed(1)}" fill="#4a6b3e" opacity="0.08"/>`;
+  }
+  let polyline = '';
+  if (values.length >= 2) {
+    const points = values.map((v, i) => {
+      const x = pad + (i / (values.length - 1)) * (w - 2 * pad);
+      return `${x.toFixed(1)},${yFor(v).toFixed(1)}`;
+    }).join(' ');
+    polyline = `<polyline points="${points}" fill="none" stroke="var(--ink-soft,#6a6358)" stroke-width="1.2" />`;
+  }
+  // Mark the most recent measurement
+  const lastV = values[values.length - 1];
+  const lastX = pad + (values.length === 1 ? (w - 2 * pad) / 2 : (values.length - 1) / (values.length - 1) * (w - 2 * pad));
+  const lastY = yFor(lastV);
+  const dot = `<circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="1.8" fill="var(--ink,#3a3530)" />`;
+  // Shape label
+  const limit = (shape && shape.estimatedLimit != null)
+    ? ` <span style="color:var(--ink-faint);">≈ ${shape.estimatedLimit.toFixed(2)}</span>`
+    : '';
+  const dirArrow = shape && shape.direction === 'rising' ? '↑'
+                  : shape && shape.direction === 'falling' ? '↓'
+                  : shape && shape.direction === 'stable' ? '→' : '';
+  return `<span style="display:inline-flex;align-items:center;gap:6px;vertical-align:middle;">
+    <svg width="${w}" height="${h}" style="display:block;">${bandRect}${polyline}${dot}</svg>
+    <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);">${escapeHtml(dirArrow)}${limit}</span>
   </span>`;
 }
 
+// Render a single tunable card. v0 read-only-plus-edit: the value
+// field has an "edit" affordance that swaps to an inline JSON input;
+// pressing Save calls applyManualTunableEdit (which mints a new def,
+// supersedes the old, writes an auto-accepted audit row).
+const TUNABLES_UI = { editingId: null, editingError: null };
+
 function renderTunableCard(def) {
   const state = tunableState(def.id);
-  const evas = STATE.tunableEvas.filter(e => e.tunableDefId === def.id).slice(-3);
-  const value = (typeof def.value === 'object') ? JSON.stringify(def.value) : String(def.value);
+  const shape = trajectoryShape(def.id);
+  const evas = STATE.tunableEvas.filter(e => e.tunableDefId === def.id);
+  const recentEvas = evas.slice(-3);
+  const valueStr = (typeof def.value === 'object') ? JSON.stringify(def.value) : String(def.value);
   const unit = def.unit ? ` <span style="color:var(--ink-faint);">${escapeHtml(def.unit)}</span>` : '';
+  const isEditing = TUNABLES_UI.editingId === def.id;
+
+  // Value display or inline editor
+  let valueLine;
+  if (isEditing) {
+    const valJson = JSON.stringify(def.value);
+    const errMsg = TUNABLES_UI.editingError
+      ? `<span style="color:#95305a;font-family:'IBM Plex Mono',monospace;font-size:10px;margin-left:8px;">${escapeHtml(TUNABLES_UI.editingError)}</span>`
+      : '';
+    valueLine = `<div style="margin-top:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink);">value:</span>
+      <input class="tunable-edit-input" data-tdef-id="${escapeHtml(def.id)}" type="text" value="${escapeHtml(valJson)}"
+        style="font-family:'IBM Plex Mono',monospace;font-size:11px;padding:2px 6px;border:1px solid var(--ink-soft);border-radius:2px;background:var(--paper);min-width:200px;" />
+      <button class="secondary" data-tdef-id="${escapeHtml(def.id)}" data-action="save" style="font-size:10px;padding:2px 8px;">Save</button>
+      <button class="secondary" data-tdef-id="${escapeHtml(def.id)}" data-action="cancel" style="font-size:10px;padding:2px 8px;">Cancel</button>
+      ${errMsg}
+    </div>`;
+  } else {
+    valueLine = `<div style="margin-top:4px;display:flex;align-items:baseline;gap:10px;font-family:'IBM Plex Mono',monospace;font-size:11px;">
+      <span style="color:var(--ink);">value: <strong>${escapeHtml(valueStr)}</strong>${unit}</span>
+      <button data-tdef-id="${escapeHtml(def.id)}" data-action="edit" title="Edit value (creates a superseding def, audit row, updates active run snapshot)"
+        style="font-size:9px;padding:1px 6px;border:1px solid var(--rule);background:transparent;color:var(--ink-soft);border-radius:2px;cursor:pointer;font-family:inherit;">edit</button>
+      <span style="color:var(--ink-faint);">scope: ${escapeHtml(def.sourceKindSignature)}</span>
+      <span style="color:var(--ink-faint);">by: ${escapeHtml(def.authoredBy || '?')}</span>
+      <span style="color:var(--ink-faint);">${evas.length} eva${evas.length === 1 ? '' : 's'}</span>
+    </div>`;
+  }
+
+  // Prediction
   let predictionBlock;
   if (def.prediction && def.prediction.statement) {
     const pred = def.prediction;
+    const tDisplay = (pred.threshold && typeof pred.threshold === 'object' && pred.threshold.lower != null)
+      ? `[${pred.threshold.lower}, ${pred.threshold.upper}]`
+      : (pred.threshold != null ? String(pred.threshold) : '');
     predictionBlock = `<div style="margin-top:6px;font-family:'Newsreader',serif;font-size:12px;color:var(--ink);line-height:1.5;">
       <span style="color:var(--ink-faint);font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;">prediction · </span>
       ${escapeHtml(pred.statement)}
-      ${pred.threshold != null ? `<span style="color:var(--ink-soft);"> (${escapeHtml(pred.direction || '')} ${pred.threshold})</span>` : ''}
+      ${tDisplay ? `<span style="color:var(--ink-soft);"> (${escapeHtml(pred.direction || '')} ${escapeHtml(tDisplay)})</span>` : ''}
     </div>`;
   } else {
     predictionBlock = `<div style="margin-top:6px;font-family:'Newsreader',serif;font-size:11px;color:var(--ink-faint);font-style:italic;">no prediction yet — open question for the next hot pass or a manual edit.</div>`;
   }
+
+  // Recent EVAs (most-recent first, last 3)
   let evasBlock = '';
-  if (evas.length > 0) {
-    const items = evas.map(e => `<div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);padding:2px 0;">
-      ${escapeHtml(e.verdict || 'unverdicted')} · measured ${e.measured} vs predicted ${e.predicted}${e.surprise != null ? ` · surprise ${Number(e.surprise).toFixed(2)}` : ''}
-    </div>`).join('');
+  if (recentEvas.length > 0) {
+    const items = recentEvas.slice().reverse().map(e => {
+      const verdictColor = e.verdict === 'support' ? '#4a6b3e'
+                          : e.verdict === 'contradict' ? '#95305a'
+                          : e.verdict === 'weaken' ? '#b07a3a' : 'var(--ink-soft)';
+      const measuredStr = (typeof e.measured === 'number') ? e.measured.toFixed(3) : String(e.measured);
+      const predictedStr = Array.isArray(e.predicted) ? `[${e.predicted.join(', ')}]` : String(e.predicted);
+      return `<div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);padding:2px 0;">
+        <span style="color:${verdictColor};font-weight:500;">${escapeHtml(e.verdict || '?')}</span>
+        · measured ${escapeHtml(measuredStr)} vs ${escapeHtml(predictedStr)}${e.surprise != null ? ` · surprise ${Number(e.surprise).toFixed(2)}` : ''}
+      </div>`;
+    }).join('');
     evasBlock = `<div style="margin-top:6px;border-top:1px dashed var(--rule);padding-top:6px;">
-      <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:3px;">recent evas (${evas.length})</div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:3px;">recent evas · ${evas.length} total</div>
       ${items}
     </div>`;
   }
+
+  // Supersession chain: how many revisions led to this def?
+  const chainLen = _revisionChainLength(def);
   let supersedesBlock = '';
-  if (def.supersedes) {
-    supersedesBlock = `<div style="margin-top:4px;font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-faint);">supersedes <code>${escapeHtml(def.supersedes)}</code></div>`;
+  if (def.supersedes || chainLen > 1) {
+    supersedesBlock = `<div style="margin-top:4px;font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-faint);">
+      ${def.supersedes ? `supersedes <code>${escapeHtml(def.supersedes)}</code>` : ''}
+      ${chainLen > 1 ? ` <span style="margin-left:6px;">chain: ${chainLen}</span>` : ''}
+    </div>`;
   }
+
   return `<div style="border:1px solid var(--rule);border-radius:3px;padding:10px 12px;margin-bottom:8px;background:var(--paper);">
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
       <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:500;color:var(--ink);">${escapeHtml(def.key)}</span>
       ${renderTunableStateBadge(state)}
-      <span style="margin-left:auto;display:flex;align-items:center;gap:6px;">
-        ${renderTunableIntensityBar(def.intensity)}
-        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);">${(def.intensity ?? 0.5).toFixed(2)}</span>
-      </span>
+      <span style="margin-left:auto;">${renderTrajectorySparkline(def, evas, shape)}</span>
     </div>
-    <div style="margin-top:4px;display:flex;align-items:baseline;gap:10px;font-family:'IBM Plex Mono',monospace;font-size:11px;">
-      <span style="color:var(--ink);">value: <strong>${escapeHtml(value)}</strong>${unit}</span>
-      <span style="color:var(--ink-faint);">scope: ${escapeHtml(def.sourceKindSignature)}</span>
-      <span style="color:var(--ink-faint);">by: ${escapeHtml(def.authoredBy || '?')}</span>
-    </div>
+    ${valueLine}
     ${def.authorNote ? `<div style="margin-top:4px;font-family:'Newsreader',serif;font-size:11px;color:var(--ink-soft);font-style:italic;line-height:1.4;">${escapeHtml(def.authorNote)}</div>` : ''}
     ${predictionBlock}
     ${supersedesBlock}
@@ -17857,6 +18129,64 @@ document.getElementById('export-btn').addEventListener('click', () => {
 {
   const btn = document.getElementById('tunables-export-btn');
   if (btn) btn.addEventListener('click', () => downloadTunablesExport());
+}
+
+// Inline-edit delegation. Attached once on the static pane container;
+// re-renders of tunable-body innerHTML don't detach the listener.
+// Clicking edit/save/cancel routes through TUNABLES_UI state +
+// applyManualTunableEdit. Save accepts JSON for the value field so
+// numeric, string, and object values are all editable from one input.
+{
+  const body = document.getElementById('tunables-body');
+  if (body) {
+    body.addEventListener('click', (e) => {
+      const t = e.target;
+      const action = t.getAttribute && t.getAttribute('data-action');
+      const id = t.getAttribute && t.getAttribute('data-tdef-id');
+      if (!action || !id) return;
+      if (action === 'edit') {
+        TUNABLES_UI.editingId = id;
+        TUNABLES_UI.editingError = null;
+        renderTunablesView();
+      } else if (action === 'cancel') {
+        TUNABLES_UI.editingId = null;
+        TUNABLES_UI.editingError = null;
+        renderTunablesView();
+      } else if (action === 'save') {
+        const input = body.querySelector(`.tunable-edit-input[data-tdef-id="${CSS.escape(id)}"]`);
+        if (!input) return;
+        let parsed;
+        try { parsed = JSON.parse(input.value); }
+        catch (err) {
+          TUNABLES_UI.editingError = 'value must be valid JSON (e.g. 5, 0.15, "string", {"lower":0.1,"upper":0.6})';
+          renderTunablesView();
+          return;
+        }
+        const result = applyManualTunableEdit(id, { value: parsed }, 'Manual edit via /tunables');
+        if (!result.ok) {
+          TUNABLES_UI.editingError = result.reason || 'edit failed';
+          renderTunablesView();
+          return;
+        }
+        TUNABLES_UI.editingId = null;
+        TUNABLES_UI.editingError = null;
+        renderTunablesView();
+      }
+    });
+    // Enter / Escape on the input
+    body.addEventListener('keydown', (e) => {
+      if (!e.target.classList || !e.target.classList.contains('tunable-edit-input')) return;
+      if (e.key === 'Enter') {
+        const id = e.target.getAttribute('data-tdef-id');
+        const btn = body.querySelector(`button[data-action="save"][data-tdef-id="${CSS.escape(id)}"]`);
+        if (btn) btn.click();
+      } else if (e.key === 'Escape') {
+        TUNABLES_UI.editingId = null;
+        TUNABLES_UI.editingError = null;
+        renderTunablesView();
+      }
+    });
+  }
 }
 
 // Settings modal — backend selection and per-backend config
