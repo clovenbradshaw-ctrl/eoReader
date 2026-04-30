@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Anchorage v25 · Integral RAG · cursor-aware definitions with provenance</title>
+<title>eoREADER v25 · Integral RAG · cursor-aware definitions with provenance</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Newsreader:ital,wght@0,400;0,500;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
@@ -2224,7 +2224,7 @@ code {
 <!-- ── HEADER ────────────────────────────────────────────────── -->
 <header class="app-header">
   <div class="brand">
-    <h1>anchor<em>age</em><span class="ver">v25</span></h1>
+    <h1>eo<em>READER</em><span class="ver">v25</span></h1>
     <div class="sub">integral RAG · cursor-aware · narrow LLM agent · framings</div>
   </div>
   <div class="header-status">
@@ -2528,7 +2528,7 @@ code {
 <div class="init-overlay" id="init-overlay">
   <div class="init-card">
     <div class="stage" id="init-stage">working</div>
-    <h2 id="init-title">Anchorage v25</h2>
+    <h2 id="init-title">eoREADER v25</h2>
     <div class="detail" id="init-detail">…</div>
     <div class="init-progress"><div class="init-fill" id="init-fill" style="right: 100%;"></div></div>
   </div>
@@ -2684,7 +2684,7 @@ code {
 
 <script type="module">
 // ═══════════════════════════════════════════════════════════════════════
-// ANCHORAGE v25 — Integral RAG
+// eoREADER v25 — Integral RAG
 // ═══════════════════════════════════════════════════════════════════════
 //
 // Architecture:
@@ -14897,7 +14897,7 @@ function renderPromptsView() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `anchorage-v25-prompts-${Date.now()}.json`;
+    a.download = `eoreader-v25-prompts-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
   });
@@ -14946,7 +14946,7 @@ const GRAPH = {
   ],
 };
 
-// Operator → palette colour. Calibrated against the existing Anchorage
+// Operator → palette colour. Calibrated against the existing eoREADER
 // paper-tone palette so the cells read as accents rather than UI noise.
 const PHASEPOST_PALETTE = {
   CON: '#4a6b3e',     // earthy green (relating-structure: bindings, ties)
@@ -16878,7 +16878,7 @@ document.getElementById('export-btn').addEventListener('click', () => {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `anchorage-v25-graph-${Date.now()}.json`;
+  a.download = `eoreader-v25-graph-${Date.now()}.json`;
   a.click();
   URL.revokeObjectURL(url);
 });
