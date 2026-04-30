@@ -3972,6 +3972,117 @@ function rejectProposal(proposalId, reviewerNote = null) {
   return { ok: true };
 }
 
+// Build the LLM payload for a hot-pass review of a single tunable.
+// Pure — no side effects — so it's testable in isolation. Includes
+// the trajectory characterization (the SHAPE of the asymptotic
+// approach, not a confidence scalar) plus recent EVAs so the LLM
+// sees the actual sequence rather than a summary statistic.
+function _buildHotPassPayload(def) {
+  const evas = STATE.tunableEvas.filter(e => e.tunableDefId === def.id);
+  const shape = trajectoryShape(def.id);
+  const metric = def.metricDefinitionId ? STATE.tunableMetrics.get(def.metricDefinitionId) : null;
+  const trajectoryOut = (shape.kind === 'ungraded' || shape.kind === 'insufficient')
+    ? { kind: shape.kind, n: shape.n }
+    : {
+        kind: shape.kind, n: shape.n,
+        recentMean: shape.recentMean, priorMean: shape.priorMean,
+        recentVar: shape.recentVar, priorVar: shape.priorVar,
+        direction: shape.direction, estimatedLimit: shape.estimatedLimit,
+      };
+  return {
+    key: def.key,
+    current_value: def.value,
+    unit: def.unit || null,
+    scope: def.sourceKindSignature,
+    note: def.authorNote || null,
+    prediction: def.prediction || null,
+    metric: metric ? { id: metric.id, name: metric.name, description: metric.description, unit: metric.unit } : null,
+    trajectory: trajectoryOut,
+    recent_evas: evas.slice(-12).map(e => ({
+      measured: e.measured, predicted: e.predicted, verdict: e.verdict, surprise: e.surprise,
+    })),
+  };
+}
+
+const HOT_PASS_SYSTEM_PROMPT = `You are reviewing a runtime parameter ("tunable") in a self-tuning system.
+The tunable carries:
+- a current value
+- optionally a prediction the system grades against, plus a metric it measures each run
+- the recent sequence of measurements and verdicts (the asymptotic approach toward the right value)
+
+Decide whether the tunable's behavior warrants a change.
+
+Guidance:
+- "converging" with mostly "support" verdicts → the trajectory is settling on a usable limit. DECLINE.
+- "oscillating" or "diverging" → propose a new value (typically toward where measurements are landing) OR a refined prediction (if the band is misplaced).
+- "ungraded" (no prediction) → propose a candidate prediction in plain English. Reuse the existing metric if relevant; otherwise omit metricId and the system will surface that for follow-up.
+- "insufficient" or "predicted-no-evas" → DECLINE; not enough signal yet.
+
+Respond in JSON only, exactly this shape:
+{
+  "decision": "propose" | "decline",
+  "changes": { "value": <number-or-object>, "prediction": { "statement": "...", "threshold": <number or {"lower":n,"upper":n}>, "direction": "above"|"below"|"within", "metricId": "<existing-metric-id-or-null>" } },
+  "reasoning": "<one or two sentences>"
+}
+
+When decision is "decline", omit "changes". When proposing only one of value/prediction, omit the other key. JSON only — no preamble, no commentary.`;
+
+// Parse the LLM's response into a normalized {decision, changes, reasoning}
+// triple. Tolerant of preambles: extracts the first {...} block.
+function _parseHotPassResponse(raw) {
+  if (!raw) return { ok: false, reason: 'empty-response' };
+  const match = String(raw).match(/\{[\s\S]*\}/);
+  if (!match) return { ok: false, reason: 'no-json-in-response', raw };
+  let parsed;
+  try { parsed = JSON.parse(match[0]); }
+  catch (e) { return { ok: false, reason: 'invalid-json', raw }; }
+  if (parsed.decision === 'decline') {
+    return { ok: true, decision: 'decline', reasoning: parsed.reasoning || null };
+  }
+  if (parsed.decision === 'propose' && parsed.changes && typeof parsed.changes === 'object') {
+    // Filter to recognized keys so a hallucinated field doesn't land
+    const allowed = ['value', 'prediction', 'authorNote'];
+    const changes = {};
+    for (const k of allowed) if (k in parsed.changes) changes[k] = parsed.changes[k];
+    if (Object.keys(changes).length === 0) {
+      return { ok: false, reason: 'propose-with-no-recognized-changes', raw };
+    }
+    return { ok: true, decision: 'propose', changes, reasoning: parsed.reasoning || null };
+  }
+  return { ok: false, reason: 'unexpected-decision-shape', raw };
+}
+
+// On-demand LLM hot-pass for a single tunable. Builds the payload,
+// dispatches the LLM call through the existing callLLM router, parses
+// the response, and lands a pending proposal if the LLM proposes (or
+// returns a decline marker if it declines).
+//
+// The user reviews the resulting proposal via /proposals; nothing
+// applies automatically. Bypass eligibility (per spec: "request LLM
+// review" forces a hot pass on this tunable) — the LLM can still
+// decline if the trajectory looks healthy.
+async function requestTunableHotPass(defId) {
+  const def = STATE.tunableDefs.get(defId);
+  if (!def) return { ok: false, reason: 'unknown-tunable' };
+  const payload = _buildHotPassPayload(def);
+  let raw;
+  try {
+    raw = await callLLM(HOT_PASS_SYSTEM_PROMPT, JSON.stringify(payload, null, 2), 600, 'tunable-hot-pass');
+  } catch (e) {
+    return { ok: false, reason: 'llm-call-failed', error: String(e) };
+  }
+  const parsed = _parseHotPassResponse(raw);
+  if (!parsed.ok) return parsed;
+  if (parsed.decision === 'decline') {
+    return { ok: true, declined: true, reasoning: parsed.reasoning };
+  }
+  // Lands as 'pending' via the canonical write path; the canProposeRevision
+  // guard will reject if a pending proposal already exists or the chain is
+  // frozen. The caller surfaces that reason to the UI.
+  const result = proposeTunableRevision(defId, parsed.changes, parsed.reasoning || 'LLM hot-pass', 'llm');
+  return { ok: result.ok, proposalId: result.proposalId, reason: result.reason, reasoning: parsed.reasoning };
+}
+
 // Canonical write entry-point for EVAs. The EVA is an observation —
 // what was measured, what was predicted, the categorical verdict —
 // not an update to a confidence score. trajectoryShape reads the
@@ -17335,7 +17446,11 @@ function renderTrajectorySparkline(def, evas, shape) {
 // field has an "edit" affordance that swaps to an inline JSON input;
 // pressing Save calls applyManualTunableEdit (which mints a new def,
 // supersedes the old, writes an auto-accepted audit row).
-const TUNABLES_UI = { editingId: null, editingError: null };
+//
+// requestingIds is a Set of tunableDef ids with a hot-pass call in
+// flight, used to disable buttons and show a "reviewing..." state
+// without blocking other interactions.
+const TUNABLES_UI = { editingId: null, editingError: null, requestingIds: new Set(), lastReviewMessage: null };
 
 function renderTunableCard(def) {
   const state = tunableState(def.id);
@@ -17362,10 +17477,15 @@ function renderTunableCard(def) {
       ${errMsg}
     </div>`;
   } else {
-    valueLine = `<div style="margin-top:4px;display:flex;align-items:baseline;gap:10px;font-family:'IBM Plex Mono',monospace;font-size:11px;">
+    const reviewing = TUNABLES_UI.requestingIds.has(def.id);
+    const reviewBtnLabel = reviewing ? 'reviewing…' : 'request LLM review';
+    valueLine = `<div style="margin-top:4px;display:flex;align-items:baseline;gap:10px;font-family:'IBM Plex Mono',monospace;font-size:11px;flex-wrap:wrap;">
       <span style="color:var(--ink);">value: <strong>${escapeHtml(valueStr)}</strong>${unit}</span>
       <button data-tdef-id="${escapeHtml(def.id)}" data-action="edit" title="Edit value (creates a superseding def, audit row, updates active run snapshot)"
         style="font-size:9px;padding:1px 6px;border:1px solid var(--rule);background:transparent;color:var(--ink-soft);border-radius:2px;cursor:pointer;font-family:inherit;">edit</button>
+      <button data-tdef-id="${escapeHtml(def.id)}" data-action="request-review" title="Ask the LLM to review this tunable. Lands as a pending proposal in /proposals if it proposes a change."
+        ${reviewing ? 'disabled' : ''}
+        style="font-size:9px;padding:1px 6px;border:1px solid var(--rule);background:transparent;color:${reviewing ? 'var(--ink-faint)' : 'var(--ink-soft)'};border-radius:2px;cursor:${reviewing ? 'wait' : 'pointer'};font-family:inherit;">${escapeHtml(reviewBtnLabel)}</button>
       <span style="color:var(--ink-faint);">scope: ${escapeHtml(def.sourceKindSignature)}</span>
       <span style="color:var(--ink-faint);">by: ${escapeHtml(def.authoredBy || '?')}</span>
       <span style="color:var(--ink-faint);">${evas.length} eva${evas.length === 1 ? '' : 's'}</span>
@@ -17483,6 +17603,20 @@ function renderTunablesView() {
     </span>
     <span><strong style="color:var(--ink);">${STATE.sourceKindSignatures.size}</strong> signature${STATE.sourceKindSignatures.size === 1 ? '' : 's'}</span>
   </div>`;
+
+  // Last-review message — shown when a hot-pass returns a decline,
+  // or an error, or successfully lands a proposal. Cleared on any
+  // subsequent click.
+  if (TUNABLES_UI.lastReviewMessage) {
+    const m = TUNABLES_UI.lastReviewMessage;
+    const palette = m.kind === 'success' ? { fg: '#4a6b3e', bg: '#4a6b3e15', border: '#4a6b3e60' }
+                  : m.kind === 'declined' ? { fg: '#6c4080', bg: '#6c408015', border: '#6c408060' }
+                  : { fg: '#95305a', bg: '#95305a15', border: '#95305a60' };
+    html += `<div style="margin-bottom:14px;padding:8px 10px;border:1px solid ${palette.border};background:${palette.bg};color:${palette.fg};border-radius:3px;font-family:'Newsreader',serif;font-size:12px;line-height:1.5;">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;margin-right:6px;">${escapeHtml(m.kind)}</span>
+      ${escapeHtml(m.text)}
+    </div>`;
+  }
 
   if (runs.length > 0) {
     html += `<div style="margin-bottom:14px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-faint);">
@@ -18311,11 +18445,39 @@ document.getElementById('export-btn').addEventListener('click', () => {
       if (action === 'edit') {
         TUNABLES_UI.editingId = id;
         TUNABLES_UI.editingError = null;
+        TUNABLES_UI.lastReviewMessage = null;
         renderTunablesView();
       } else if (action === 'cancel') {
         TUNABLES_UI.editingId = null;
         TUNABLES_UI.editingError = null;
         renderTunablesView();
+      } else if (action === 'request-review') {
+        // Avoid double-firing if the button is already disabled
+        if (TUNABLES_UI.requestingIds.has(id)) return;
+        TUNABLES_UI.requestingIds.add(id);
+        TUNABLES_UI.lastReviewMessage = null;
+        renderTunablesView();
+        const def = STATE.tunableDefs.get(id);
+        const keyLabel = def ? def.key : id;
+        requestTunableHotPass(id).then(r => {
+          TUNABLES_UI.requestingIds.delete(id);
+          if (r.declined) {
+            TUNABLES_UI.lastReviewMessage = { kind: 'declined', text: `LLM declined to revise "${keyLabel}". ${r.reasoning || ''}` };
+          } else if (r.ok && r.proposalId) {
+            TUNABLES_UI.lastReviewMessage = { kind: 'success', text: `LLM proposed a revision for "${keyLabel}". Review it in /proposals.` };
+          } else if (!r.ok) {
+            const detail = r.reason === 'has-pending-proposal' ? 'a pending proposal already exists for this tunable'
+                         : r.reason === 'oscillating' ? 'the revision chain is too long; the system has frozen further auto-revisions'
+                         : r.reason === 'llm-call-failed' ? 'LLM call failed: ' + (r.error || '')
+                         : (r.reason || 'unknown error');
+            TUNABLES_UI.lastReviewMessage = { kind: 'error', text: `Could not land a proposal for "${keyLabel}": ${detail}` };
+          }
+          renderTunablesView();
+        }).catch(err => {
+          TUNABLES_UI.requestingIds.delete(id);
+          TUNABLES_UI.lastReviewMessage = { kind: 'error', text: `LLM hot-pass for "${keyLabel}" threw: ${String(err)}` };
+          renderTunablesView();
+        });
       } else if (action === 'save') {
         const input = body.querySelector(`.tunable-edit-input[data-tdef-id="${CSS.escape(id)}"]`);
         if (!input) return;
