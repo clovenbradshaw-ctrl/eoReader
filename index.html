@@ -5118,8 +5118,21 @@ function supersedeDef(targetDef, successorDef, kind, rationale, authoredBy = 'sy
 const _HONORIFICS = new Set(['mr','mrs','ms','dr','prof','rev','sr','jr','hon','st','mt','capt','gen','sen','rep','gov','pres']);
 const _MATCH_STOP = new Set(['the','a','an','of','and','in','on','at','to','for','with','by','from','as','is','are','was','were','his','her','its','their','our']);
 
+// Strip a possessive marker so "Ostrom's" and "Ostrom", "parents'" and
+// "parents", resolve to the same surface for matching. The possessive
+// modifies what's possessed; it never picks out a different referent. We
+// only normalize for COMPARE; the original surface is preserved on the
+// entity's alias list so the audit trail keeps the form the source used.
+//
+// Handles both ASCII (') and curly (’) apostrophes. "don't" /
+// "can't" stay intact (the apostrophe sits between two word characters).
+const _POSSESSIVE_RE = /[’']s(?=$|\W)|[’'](?=$|\W)/g;
+function _stripPossessive(s) {
+  return String(s || '').replace(_POSSESSIVE_RE, '');
+}
+
 function _substantiveWords(s) {
-  return String(s || '').toLowerCase()
+  return _stripPossessive(String(s || '').toLowerCase())
     .replace(/[.,'"`]/g, '')
     .split(/\s+/)
     .filter(w => w.length >= 2 && !_MATCH_STOP.has(w) && !_HONORIFICS.has(w));
@@ -5166,14 +5179,17 @@ function _distinguishersAgree(a, b) {
 // Try to match a surface form to an existing entity using progressively
 // looser tests. Returns the matching entity or null.
 function findEntityByMention(text) {
-  const lower = String(text || '').toLowerCase().trim();
-  if (!lower || isPronoun(lower)) return null;
+  const rawLower = String(text || '').toLowerCase().trim();
+  if (!rawLower || isPronoun(rawLower)) return null;
+  // Normalize for match comparisons; the entity keeps original aliases.
+  const lower = _stripPossessive(rawLower);
 
-  // Tier 1: exact alias match
+  // Tier 1: exact alias match (possessive-normalized both sides — "Ostrom's"
+  // and "Ostrom" must collide here, not survive as separate entities).
   for (const [, info] of STATE.entities) {
     if (!isEntityActive(info.id)) continue;
     for (const alias of info.aliases) {
-      if (alias.toLowerCase() === lower) return info;
+      if (_stripPossessive(alias.toLowerCase()) === lower) return info;
     }
   }
 
@@ -5204,12 +5220,13 @@ function findEntityByMention(text) {
   if (best) return best;
 
   // Tier 3: substring fallback. Same honorific-agreement requirement —
-  // "Mr. Bennet" should not substring-match "Mrs. Bennet".
+  // "Mr. Bennet" should not substring-match "Mrs. Bennet". Possessive
+  // normalization on both sides so "Elinor Ostrom" can absorb "Ostrom's".
   if (lower.length >= 4) {
     for (const [, info] of STATE.entities) {
       if (!isEntityActive(info.id)) continue;
       for (const alias of info.aliases) {
-        const al = alias.toLowerCase();
+        const al = _stripPossessive(alias.toLowerCase());
         if (al.length < 4) continue;
         if (!_distinguishersAgree(text, alias)) continue;
         if (al.includes(lower) || lower.includes(al)) return info;
@@ -5292,12 +5309,18 @@ function mintEntity(canonical, aliases = [], kind = null, opts = {}) {
   // Exact-alias dedup is always safe — we never want two entities with
   // identical alias strings. This catches re-runs and the "Mr. Bennet" /
   // "Mr. Bennet" case where premint of the same principal twice should
-  // collapse, even with bypassMatcher set.
+  // collapse, even with bypassMatcher set. Possessive-normalized so a
+  // late-arriving "Elinor Ostrom" with alias "Ostrom" reconciles an earlier
+  // orphan "Ostrom's" entity (and vice versa).
+  const canonicalNorm = _stripPossessive(String(canonical || '').toLowerCase());
+  const aliasesNorm = aliases.map(a => _stripPossessive(String(a || '').toLowerCase()));
   const existingByExact = (() => {
     for (const [, info] of STATE.entities) {
-      if (info.canonical === canonical) return info;
-      for (const alias of aliases) {
-        if (info.aliases.some(a => a.toLowerCase() === alias.toLowerCase())) return info;
+      if (_stripPossessive(info.canonical.toLowerCase()) === canonicalNorm) return info;
+      for (const alias of info.aliases) {
+        const aN = _stripPossessive(alias.toLowerCase());
+        if (aN === canonicalNorm) return info;
+        if (aliasesNorm.some(qN => qN === aN)) return info;
       }
     }
     return null;
