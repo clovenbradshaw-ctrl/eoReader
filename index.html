@@ -16032,7 +16032,19 @@ function showGraphTooltipForEdge(l) {
     <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);font-style:normal;margin-top:4px;">
       ${l.cell ? `<span style="padding:1px 5px;background:${c}20;color:${c};border:1px solid ${c}60;border-radius:2px;">${escapeHtml(l.cell)}</span>` : '<span style="opacity:0.6;">unclassified</span>'}${sourceTag}
       <span style="margin-left:6px;opacity:0.8;">op: ${escapeHtml(l.op)}</span>
-    </div>`;
+    </div>${renderEdgeSpan(l)}`;
+}
+
+// Render the source span an edge was extracted from. spanText is the
+// clause/sentence text that produced the event; events minted from
+// hypothesis principals carry the hypothesis summary instead, so mark those
+// distinctly (italicised) so the user can tell a real source quote from a
+// hypothesis-derived assertion.
+function renderEdgeSpan(l) {
+  if (!l || !l.spanText) return '';
+  const span = String(l.spanText).trim();
+  if (!span) return '';
+  return `<div style="font-family:'Newsreader',serif;font-size:11px;color:var(--ink-soft);margin-top:4px;padding:4px 6px;background:var(--paper-soft,rgba(0,0,0,0.03));border-left:2px solid var(--rule);line-height:1.45;word-break:break-word;">"${escapeHtml(span)}"</div>`;
 }
 
 function selectGraphNode(idx) {
@@ -16059,6 +16071,7 @@ function selectGraphNode(idx) {
         <span style="color:var(--ink-faint);font-family:'IBM Plex Mono',monospace;font-size:10px;"> → </span>
         ${escapeHtml(target)}
         ${l.cell ? `<span style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:1px 5px;margin-left:4px;background:${c}20;color:${c};border:1px solid ${c}60;border-radius:2px;">${escapeHtml(l.cell)}</span>` : ''}
+        ${renderEdgeSpan(l)}
       </div>`;
     }
   }
@@ -16072,6 +16085,7 @@ function selectGraphNode(idx) {
         <span style="color:var(--ink-faint);font-family:'IBM Plex Mono',monospace;font-size:10px;"> → </span>
         <em style="color:var(--ink-soft);">${escapeHtml(l.predicate)}</em>
         ${l.cell ? `<span style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:1px 5px;margin-left:4px;background:${c}20;color:${c};border:1px solid ${c}60;border-radius:2px;">${escapeHtml(l.cell)}</span>` : ''}
+        ${renderEdgeSpan(l)}
       </div>`;
     }
   }
