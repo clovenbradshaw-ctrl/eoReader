@@ -3333,13 +3333,38 @@ const STATE = {
 // runs-log capped to last 200 entries by endRun, seedTunables is
 // idempotent on re-call, snapshot is frozen at startRun so mid-run
 // mutations to a tunableDef don't shift behavior.
+// Metric seeds — what counts as success for a tunable's prediction.
+// Each metric describes how to compute a value from a finished run.
+// v0 has builtin computers only (BUILTIN_METRICS map below); the
+// 'expression' kind is reserved for sandboxed user-defined formulas.
+const METRIC_SEEDS = [
+  { id: 'metric_div_fire_rate',
+    name: 'divergence-fire-rate',
+    description: 'Fraction of hypothesis-divergence checks that fired a REC during the run. Below the band means we are checking too often (mostly empty checks); above means we are checking too rarely (drift accumulates between checks).',
+    computation: { kind: 'builtin', ref: 'divergenceFireRate' },
+    unit: 'ratio',
+    authoredBy: 'system' },
+];
+
 const TUNABLE_SEEDS = [
   { key: 'hypothesisDivergenceDelta', value: 0.15, unit: 'cosine',
     note: 'Cosine drop from baseline that triggers REC.' },
   { key: 'hypothesisFirstPromotionRingMin', value: 8, unit: 'events',
     note: 'Textbase-ring events that must land before first-promotion REC fires.' },
+  // First end-to-end-graded tunable. Predicts that the fire-rate
+  // (REC firings ÷ divergence checks) stays in a target band per run.
+  // Outside the band means the cadence is wrong: too low → checking
+  // too often (waste); too high → checking too rarely (missed drift).
   { key: 'divergenceCheckEveryN', value: 5, unit: 'events',
-    note: 'Re-check divergence every N classified events.' },
+    note: 'Re-check divergence every N classified events.',
+    prediction: {
+      statement: 'fire-rate of divergence checks stays inside [0.10, 0.60] per run',
+      metricId: 'metric_div_fire_rate',
+      threshold: { lower: 0.10, upper: 0.60 },
+      direction: 'within',
+      window: 1,  // grade per-run
+    },
+    expectedOutcome: 'hold' },
   { key: 'summaryFallbackEveryN', value: 4, unit: 'events',
     note: 'Regenerate summary every N textbase-ring events absent other triggers.' },
   { key: 'summaryDiscontinuityCosine', value: 0.4, unit: 'cosine',
@@ -3377,10 +3402,10 @@ function seedTunables() {
       key: seed.key,
       sourceKindSignature: '*',
       value: seed.value,
-      prediction: null,        // ungraded — surfaces in /tunables as an open question
-      metricDefinitionId: null,
+      prediction: seed.prediction || null,        // ungraded if absent — open question for the next hot pass
+      metricDefinitionId: seed.prediction ? seed.prediction.metricId : null,
       intensity: 0.5,
-      expectedOutcome: 'unknown',
+      expectedOutcome: seed.expectedOutcome || 'unknown',
       supersedes: null,
       authoredBy: 'system',
       authorNote: seed.note,
@@ -3388,6 +3413,14 @@ function seedTunables() {
       active: true,
       createdAt: Date.now(),
     });
+  }
+}
+
+// Idempotent. Mirror of seedTunables for metrics. Boot calls both.
+function seedMetrics() {
+  for (const m of METRIC_SEEDS) {
+    if (STATE.tunableMetrics.has(m.id)) continue;
+    STATE.tunableMetrics.set(m.id, { ...m, supersedes: null, createdAt: Date.now() });
   }
 }
 
@@ -3464,11 +3497,135 @@ function startRun(sourceId) {
   return id;
 }
 
+// Increment a per-run counter on the active run. Silently no-ops
+// outside a run, so call sites don't need to gate on currentRunId.
+// Counters are the substrate metrics consume at endRun.
+function incrementRunCounter(name, delta = 1) {
+  if (!STATE.currentRunId) return;
+  const run = STATE.runs.find(r => r.id === STATE.currentRunId);
+  if (!run) return;
+  if (!run.counters) run.counters = {};
+  run.counters[name] = (run.counters[name] || 0) + delta;
+}
+
+// Builtin metric computers, keyed by computation.ref. Each takes the
+// finished run record and returns either a number (the measured value)
+// or null (the metric is undefined for this run — emit no EVA).
+const BUILTIN_METRICS = {
+  divergenceFireRate(run) {
+    const c = run.counters || {};
+    const checks = c['divergence-checks'] || 0;
+    const fires = c['divergence-fires'] || 0;
+    if (checks === 0) return null;  // no signal this run
+    return fires / checks;
+  },
+};
+
+function computeMetric(metric, run) {
+  if (!metric || !run || !metric.computation) return null;
+  if (metric.computation.kind === 'builtin') {
+    const fn = BUILTIN_METRICS[metric.computation.ref];
+    if (typeof fn !== 'function') return null;
+    try { return fn(run); } catch (e) { console.warn('metric compute failed:', e); return null; }
+  }
+  // 'expression' kind reserved for v1+ (sandboxed user-defined formulas).
+  return null;
+}
+
+// Grade a tunable's prediction against a measured metric value.
+// Returns {verdict, surprise, intensityDelta} or null if ungradable.
+//   direction='above'   threshold: number  → support if measured ≥ threshold
+//   direction='below'   threshold: number  → support if measured ≤ threshold
+//   direction='within'  threshold: {lower, upper} → support if in [lower, upper]
+// Surprise is the distance to the threshold normalized by its scale,
+// clamped at 2. Intensity delta is small-positive on support and
+// negative-and-larger on weaken/contradict, scaled by surprise.
+function gradeTunablePrediction(def, measured) {
+  if (!def || !def.prediction || measured == null) return null;
+  const pred = def.prediction;
+  const t = pred.threshold;
+  let inRange = false, surprise = 0;
+  if (pred.direction === 'above') {
+    if (typeof t !== 'number') return null;
+    inRange = measured >= t;
+    surprise = Math.abs(measured - t) / Math.max(Math.abs(t), 1e-4);
+  } else if (pred.direction === 'below') {
+    if (typeof t !== 'number') return null;
+    inRange = measured <= t;
+    surprise = Math.abs(measured - t) / Math.max(Math.abs(t), 1e-4);
+  } else if (pred.direction === 'within') {
+    if (!t || typeof t !== 'object' || t.lower == null || t.upper == null) return null;
+    inRange = measured >= t.lower && measured <= t.upper;
+    if (!inRange) {
+      const band = Math.max(t.upper - t.lower, 1e-4);
+      const dist = measured < t.lower ? (t.lower - measured) : (measured - t.upper);
+      surprise = dist / band;
+    }
+  } else {
+    return null;
+  }
+  surprise = Math.min(surprise, 2);
+  let verdict, intensityDelta;
+  if (inRange) {
+    verdict = 'support';
+    // Reward small steady support; reward big confirmations slightly more
+    intensityDelta = 0.04 * (1 + surprise * 0.25);
+  } else {
+    verdict = surprise > 1 ? 'contradict' : 'weaken';
+    // Penalize harder than we reward — a single contradict erases
+    // ~3 supports of the same magnitude. This is the ratchet the spec
+    // wants: confirmation moves intensity slowly, contradiction fast.
+    intensityDelta = -0.12 * (1 + surprise);
+  }
+  return { verdict, surprise, intensityDelta, measured };
+}
+
+// At endRun, grade every snapshotted tunable that carries a prediction.
+// Reads the snapshot (not the live def), so a mid-run mutation can't
+// change which prediction was being graded.
+function emitEvasForRun(run) {
+  if (!run || !run.snapshot) return;
+  for (const [, snap] of run.snapshot.entries()) {
+    const def = STATE.tunableDefs.get(snap.tunableDefId);
+    if (!def || !def.prediction || !def.prediction.metricId) continue;
+    const metric = STATE.tunableMetrics.get(def.prediction.metricId);
+    if (!metric) continue;
+    const measured = computeMetric(metric, run);
+    if (measured == null) continue;  // ambiguous — emit nothing
+    const grade = gradeTunablePrediction(def, measured);
+    if (!grade) continue;
+    recordTunableEva({
+      tunableDefId: def.id,
+      runId: run.id,
+      measured: grade.measured,
+      predicted: _prettyPredictedValue(def.prediction),
+      surprise: grade.surprise,
+      verdict: grade.verdict,
+      intensityDelta: grade.intensityDelta,
+      authoredBy: 'system',
+      rationale: null,
+    });
+  }
+}
+
+function _prettyPredictedValue(pred) {
+  if (!pred) return null;
+  const t = pred.threshold;
+  if (typeof t === 'number') return t;
+  if (t && typeof t === 'object' && t.lower != null && t.upper != null) return [t.lower, t.upper];
+  return null;
+}
+
 const RUNS_RETAINED = 200;  // cap on the in-memory runs log; trim oldest first
 function endRun() {
   if (!STATE.currentRunId) return;
   const run = STATE.runs.find(r => r.id === STATE.currentRunId);
-  if (run) run.endedAt = Date.now();
+  if (run) {
+    // Grade snapshotted predictions before stamping endedAt so the
+    // run is fully closed by the time any future sweep reads it.
+    try { emitEvasForRun(run); } catch (e) { console.warn('eva emission failed:', e); }
+    run.endedAt = Date.now();
+  }
   STATE.currentRunId = null;
   // Trim from the head; runs are append-ordered so head is oldest.
   // EVAs and proposals reference runs by id and may persist longer than
@@ -8810,6 +8967,9 @@ function checkHypothesisDivergence(source) {
   const since = STATE.G.length - (STATE.lastDivergenceCheckEventIdx || 0);
   if (since < tunable('divergenceCheckEveryN', 5)) return null;
   STATE.lastDivergenceCheckEventIdx = STATE.G.length;
+  // Count this as an actual check (the gate above filtered no-ops).
+  // The fire-rate metric divides fires by checks at endRun.
+  incrementRunCounter('divergence-checks');
 
   const c = recentEventCentroid(30);
   if (!c) return null;
@@ -11182,6 +11342,10 @@ async function ingestSource(text, opts = {}) {
           try { await ensureHypothesisEmbedding(source); } catch {}
         } else if (div && div.reason === 'divergence') {
           STATE.metaCallSpentThisSentence = true;
+          // Counts toward the fire side of the fire-rate metric. Paired
+          // with the increment in checkHypothesisDivergence (the check
+          // counter); ratio is graded at endRun.
+          incrementRunCounter('divergence-fires');
           try {
             const refreshed = await refreshHypothesis(
               source, i, 'divergence', div.currentCosine, div.baseline
@@ -16853,6 +17017,7 @@ function serializeTunablesSubstrate() {
       startedAt: r.startedAt,
       endedAt: r.endedAt,
       snapshot: r.snapshot ? [...r.snapshot.entries()].map(([key, snap]) => ({ key, ...snap })) : [],
+      counters: r.counters || {},  // raw signal the metrics were computed from
     })),
     currentRunId: STATE.currentRunId,
   };
@@ -19219,7 +19384,7 @@ async function boot() {
   const steps = [
     { stage: 'init', detail: 'starting…', after: () => {} },
     { stage: 'ui', detail: 'wiring tabs and controls', after: () => { renderSamples(); } },
-    { stage: 'state', detail: 'initializing graph', after: () => { seedTunables(); renderHeaderStatus(); } },
+    { stage: 'state', detail: 'initializing graph', after: () => { seedMetrics(); seedTunables(); renderHeaderStatus(); } },
     { stage: 'render', detail: 'rendering panes', after: () => {
       renderCursorStatus();
       renderExampleQueries();
