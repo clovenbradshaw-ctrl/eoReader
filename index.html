@@ -2272,17 +2272,37 @@ code {
       <input type="text" class="text-input" id="source-name" placeholder="source name" style="margin-bottom: 6px;">
       <input type="text" class="text-input" id="source-pubdate" placeholder="publication date (e.g. 2024-03-15) — optional" style="margin-bottom: 6px;">
       <textarea id="ingest-input" placeholder="Paste a paragraph, article, or document..."></textarea>
-      <label style="display: flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--ink-soft); margin: 6px 0; cursor: pointer;">
-        <input type="checkbox" id="clean-chrome-toggle" checked>
-        <span>strip page chrome (nav, share buttons, paywall prompts)</span>
+      <label style="display: flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--ink-soft); margin: 6px 0;">
+        <span>treat as</span>
+        <select id="ingest-mode-select" style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; flex: 1;">
+          <option value="auto" selected>auto (article — chrome filter on, NER on)</option>
+          <option value="article">article / web page (chrome filter on, NER on)</option>
+          <option value="prose">prose / notes (chrome filter off, NER on)</option>
+          <option value="markdown">markdown (chrome filter off, raw mode)</option>
+          <option value="transcript">transcript / dialogue (chrome filter off, NER on)</option>
+          <option value="html">html source (strip tags, then article)</option>
+          <option value="code">code (chrome filter off, NER off, raw mode)</option>
+        </select>
       </label>
       <button class="primary" id="ingest-btn" disabled>Ingest source</button>
       <div id="ingest-progress" style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); margin-top: 6px; min-height: 1em;"></div>
 
       <div style="margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--rule);">
         <div class="label" style="margin-bottom: 6px;">files (no LLM)</div>
-        <div class="helper" style="margin-bottom: 8px;">Upload <strong>.txt</strong>, <strong>.csv</strong>, <strong>.tsv</strong>, or <strong>.pdf</strong>. Files ingest without LLM processing — text is traversable as-is, CSV cells become a queryable graph (one record per row, columns as predicates), PDFs are text-extracted page-by-page with title/author/page-count carried as queryable DEFs. Filename, MIME type, size, and modified-time are preserved as provenance. (Scanned/image-only PDFs without an embedded text layer are not supported.)</div>
-        <input type="file" id="file-input" accept=".txt,.csv,.tsv,.log,.md,.pdf,text/plain,text/csv,text/tab-separated-values,application/pdf" multiple style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; margin-bottom: 6px; width: 100%;">
+        <div class="helper" style="margin-bottom: 8px;">Upload <strong>.txt</strong>, <strong>.csv</strong>/<strong>.tsv</strong>, <strong>.pdf</strong>, <strong>.md</strong>, <strong>.html</strong>, or code files (.js/.ts/.py/.go/etc). Files ingest without LLM processing. CSV cells become a queryable graph (one record per row, columns as predicates), PDFs are text-extracted page-by-page with title/author/page-count carried as queryable DEFs. HTML files are tag-stripped first; code files skip the chrome filter and the NER pre-pass so identifiers don't get minted as people. Filename, MIME type, size, and modified-time are preserved as provenance. (Scanned/image-only PDFs without an embedded text layer are not supported.)</div>
+        <input type="file" id="file-input" accept=".txt,.csv,.tsv,.log,.md,.markdown,.mdx,.rst,.pdf,.html,.htm,.xhtml,.js,.jsx,.ts,.tsx,.mjs,.cjs,.py,.rb,.go,.rs,.java,.kt,.kts,.c,.h,.cc,.cpp,.hpp,.cs,.php,.swift,.sh,.bash,.zsh,.sql,.json,.yaml,.yml,.xml,.toml,.ini,.css,.scss,.lua,.r,.scala,.clj,.dart,.vue,.svelte,text/plain,text/csv,text/tab-separated-values,text/html,text/markdown,application/pdf,application/json,application/xml" multiple style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; margin-bottom: 6px; width: 100%;">
+        <label style="display: flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--ink-soft); margin: 4px 0;">
+          <span>treat as</span>
+          <select id="file-mode-select" style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; flex: 1;">
+            <option value="auto" selected>auto (detect from extension)</option>
+            <option value="article">article (chrome filter on, NER on)</option>
+            <option value="prose">prose / notes</option>
+            <option value="markdown">markdown</option>
+            <option value="transcript">transcript / dialogue</option>
+            <option value="html">html (strip tags first)</option>
+            <option value="code">code (no chrome filter, no NER)</option>
+          </select>
+        </label>
         <button class="secondary" id="ingest-files-btn" disabled>↑ Ingest files</button>
         <div id="files-progress" style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); margin-top: 6px; min-height: 1em;"></div>
       </div>
@@ -9569,6 +9589,74 @@ function deleteSource(sourceId) {
   return { removedEvents: beforeCount - STATE.G.length, sourceName: src.name };
 }
 
+// ─── INGEST MODES ────────────────────────────────────────────────────
+// User-selectable hint about what kind of content is being ingested.
+// The default ('auto'/'article') keeps prior behavior: chrome filter on,
+// NER pre-pass on, full per-sentence LLM reading. Other modes turn off
+// pieces of the pipeline that make wrong assumptions for non-article
+// content — e.g. the chrome filter tags short / non-terminated lines as
+// page chrome, which is fine for scraped news pages but throws away most
+// of a code file or markdown document.
+//
+// Each preset returns the opts overrides that get merged into the call
+// to ingestSource (or the file-ingest dispatch). Presets only set the
+// fields they want to control; everything else stays at the caller's
+// default (e.g. user's chrome-toggle, file-detected rawMode).
+const INGEST_MODES = {
+  auto:       { /* keep caller defaults — current behavior */ },
+  article:    { cleanChrome: true,  skipNer: false, rawMode: false, htmlStrip: false },
+  prose:      { cleanChrome: false, skipNer: false, rawMode: false, htmlStrip: false },
+  markdown:   { cleanChrome: false, skipNer: false, rawMode: true,  htmlStrip: false },
+  transcript: { cleanChrome: false, skipNer: false, rawMode: false, htmlStrip: false },
+  html:       { cleanChrome: true,  skipNer: false, rawMode: false, htmlStrip: true  },
+  code:       { cleanChrome: false, skipNer: true,  rawMode: true,  htmlStrip: false },
+};
+
+function applyIngestMode(opts, mode) {
+  if (!mode || mode === 'auto' || !INGEST_MODES[mode]) return { ...opts, mode: mode || 'auto' };
+  return { ...opts, ...INGEST_MODES[mode], mode };
+}
+
+// Browser-side HTML → text conversion. Used when the user marks an ingest
+// as 'html' (or uploads an .html/.htm file): we want the visible text,
+// not the angle-bracket markup. DOMParser is built into the browser, no
+// CDN dependency. Falls back to a regex strip if parsing fails.
+function stripHTMLTags(html) {
+  if (!html) return '';
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    // Drop script/style/noscript content — never visible body text and
+    // would otherwise pollute the corpus with framework chunks.
+    doc.querySelectorAll('script, style, noscript, template').forEach(n => n.remove());
+    const text = (doc.body && doc.body.innerText) || doc.body?.textContent || doc.documentElement?.textContent || '';
+    return text.replace(/ /g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  } catch {
+    return String(html).replace(/<script[\s\S]*?<\/script>/gi, '')
+                       .replace(/<style[\s\S]*?<\/style>/gi, '')
+                       .replace(/<[^>]+>/g, ' ')
+                       .replace(/\s+/g, ' ')
+                       .trim();
+  }
+}
+
+// Code / markup file extensions we accept on upload. Used both by the
+// <input accept=...> attribute and by classifyUploadedFile to route the
+// upload through the right ingest mode (so a .py file doesn't get its
+// short lines tagged as page chrome and its identifiers minted as people).
+const CODE_EXTENSIONS = [
+  'js','jsx','ts','tsx','mjs','cjs','py','rb','go','rs','java','kt','kts',
+  'c','h','cc','cpp','hpp','cs','php','swift','sh','bash','zsh','fish',
+  'sql','json','yaml','yml','xml','toml','ini','css','scss','sass','less',
+  'lua','r','scala','clj','ex','exs','erl','dart','vue','svelte','dockerfile',
+];
+const MARKDOWN_EXTENSIONS = ['md','markdown','mdx','rst'];
+const HTML_EXTENSIONS = ['html','htm','xhtml'];
+
+function fileExtension(name) {
+  const m = /\.([A-Za-z0-9]+)$/.exec(name || '');
+  return m ? m[1].toLowerCase() : '';
+}
+
 // ─── FILE INGEST (no-LLM) ────────────────────────────────────────────
 // Plain text and CSV files are ingested without any LLM call. Text files
 // flow through ingestSource with rawMode=true (skips hypothesis, skips
@@ -9777,21 +9865,27 @@ async function ingestCSVFile(text, sourceName, fileMetadata) {
   return source;
 }
 
-async function ingestPlainTextFile(text, sourceName, fileMetadata) {
+async function ingestPlainTextFile(text, sourceName, fileMetadata, extraOpts = {}) {
   // Plain text: reuse the prose ingest pipeline. rawMode skips inline
   // phasepost classification (cheaper) but reading still runs — body
   // sentences produce DEF/CON events that drive the textbase ring and
   // the meta-narrative engine. Filename + size/mime/modified are
   // attached as queryable DEFs on a per-file entity.
+  // extraOpts can override rawMode / cleanChrome / skipNer / htmlStrip
+  // when the caller wants mode-specific behavior (markdown, code, html,
+  // transcript, etc.). Defaults stay at rawMode=true so plain .txt is
+  // unchanged.
   const source = await ingestSource(text, {
     name: sourceName,
     rawMode: true,
     fileMetadata,
+    ...extraOpts,
   });
   if (source) {
     const fileEntCanonical = (fileMetadata && fileMetadata.name) || sourceName;
     const fileEnt = mintEntity(fileEntCanonical, [fileEntCanonical], 'file', { bypassMatcher: true });
-    attachFileMetadataDefs(fileEnt, source, fileMetadata, 'raw-text');
+    const tag = extraOpts.contentTypeTag || 'raw-text';
+    attachFileMetadataDefs(fileEnt, source, fileMetadata, tag);
     const lineCount = (text.match(/\n/g) || []).length + 1;
     const charCount = text.length;
     emitFileDef(fileEnt, source, 'line-count', String(lineCount), false, `line-count: ${lineCount}`);
@@ -9949,11 +10043,21 @@ function readFileAsText(file) {
 function classifyUploadedFile(file) {
   const name = (file.name || '').toLowerCase();
   const type = (file.type || '').toLowerCase();
+  const ext = fileExtension(name);
   if (name.endsWith('.pdf') || type === 'application/pdf') {
     return 'pdf';
   }
   if (name.endsWith('.csv') || name.endsWith('.tsv') || type === 'text/csv' || type === 'text/tab-separated-values') {
     return 'csv';
+  }
+  if (HTML_EXTENSIONS.includes(ext) || type === 'text/html') {
+    return 'html';
+  }
+  if (MARKDOWN_EXTENSIONS.includes(ext)) {
+    return 'markdown';
+  }
+  if (CODE_EXTENSIONS.includes(ext)) {
+    return 'code';
   }
   return 'text';
 }
@@ -9961,14 +10065,38 @@ function classifyUploadedFile(file) {
 function defaultMimeForKind(kind) {
   if (kind === 'pdf') return 'application/pdf';
   if (kind === 'csv') return 'text/csv';
+  if (kind === 'html') return 'text/html';
+  if (kind === 'markdown') return 'text/markdown';
+  if (kind === 'code') return 'text/plain';
   return 'text/plain';
 }
 
-async function ingestUploadedFiles(files, onProgress) {
+// Resolve the mode override the caller passed in against what the file
+// looks like. mode='auto' (or unset) defers to extension-based detection
+// from classifyUploadedFile. Anything else forces that mode regardless
+// of extension — so the user can paste a .txt file as 'code' if it's a
+// code listing, or treat an .html file as 'article' if they want chrome
+// stripping.
+function resolveFileKind(file, modeOverride) {
+  if (!modeOverride || modeOverride === 'auto') return classifyUploadedFile(file);
+  if (modeOverride === 'pdf' || modeOverride === 'csv') return modeOverride;
+  if (['html', 'markdown', 'code', 'article', 'prose', 'transcript'].includes(modeOverride)) {
+    // Article / prose / transcript still use the plain-text path; the
+    // mode preset is what gives them their distinct behavior.
+    return modeOverride === 'html' ? 'html'
+         : modeOverride === 'markdown' ? 'markdown'
+         : modeOverride === 'code' ? 'code'
+         : 'text';
+  }
+  return classifyUploadedFile(file);
+}
+
+async function ingestUploadedFiles(files, onProgress, opts = {}) {
+  const modeOverride = opts.mode || 'auto';
   const sources = [];
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
-    const kind = classifyUploadedFile(file);
+    const kind = resolveFileKind(file, modeOverride);
     if (onProgress) onProgress({ current: i + 1, total: files.length, file: file.name, kind });
     const fileMetadata = {
       name: file.name,
@@ -9985,9 +10113,32 @@ async function ingestUploadedFiles(files, onProgress) {
     } else if (kind === 'csv') {
       const text = await readFileAsText(file);
       src = await ingestCSVFile(text, file.name, fileMetadata);
+    } else if (kind === 'html') {
+      const raw = await readFileAsText(file);
+      const text = stripHTMLTags(raw);
+      // Force the article mode on HTML files (chrome filter on, NER on,
+      // full reading) — the markup itself is gone, what's left should be
+      // treated like an article. User can override via the mode select.
+      const modeOpts = applyIngestMode({}, modeOverride === 'auto' ? 'article' : modeOverride);
+      src = await ingestPlainTextFile(text, file.name, fileMetadata, { ...modeOpts, contentTypeTag: 'html' });
+    } else if (kind === 'markdown') {
+      const text = await readFileAsText(file);
+      const modeOpts = applyIngestMode({}, modeOverride === 'auto' ? 'markdown' : modeOverride);
+      src = await ingestPlainTextFile(text, file.name, fileMetadata, { ...modeOpts, contentTypeTag: 'markdown' });
+    } else if (kind === 'code') {
+      const text = await readFileAsText(file);
+      const modeOpts = applyIngestMode({}, modeOverride === 'auto' ? 'code' : modeOverride);
+      src = await ingestPlainTextFile(text, file.name, fileMetadata, { ...modeOpts, contentTypeTag: 'code' });
+    } else if (kind === 'article' || kind === 'prose' || kind === 'transcript') {
+      const text = await readFileAsText(file);
+      const modeOpts = applyIngestMode({}, kind);
+      src = await ingestPlainTextFile(text, file.name, fileMetadata, { ...modeOpts, contentTypeTag: kind });
     } else {
       const text = await readFileAsText(file);
-      src = await ingestPlainTextFile(text, file.name, fileMetadata);
+      // 'text' kind from classifyUploadedFile = unknown extension; honor
+      // mode override if set, otherwise leave at the default raw-text path.
+      const modeOpts = modeOverride === 'auto' ? {} : applyIngestMode({}, modeOverride);
+      src = await ingestPlainTextFile(text, file.name, fileMetadata, modeOpts);
     }
     if (src) sources.push(src);
   }
@@ -10074,6 +10225,15 @@ async function ingestSource(text, opts = {}) {
   const pubDate = opts.publicationDate ? Date.parse(opts.publicationDate) : null;
   const intakeTs = Date.now();
 
+  // Mode-driven HTML strip: when the user marks the ingest as HTML, run
+  // the markup through DOMParser before any other text processing so the
+  // chrome filter / NER / segmenter see the visible body text rather
+  // than tag salad. No-op when opts.htmlStrip is falsy.
+  if (opts.htmlStrip) {
+    const stripped = stripHTMLTags(text);
+    if (stripped) text = stripped;
+  }
+
   // Note if the embedder isn't ready — gestalt-based positioning won't
   // be available for the gestalt pipeline (semantic neighbors, etc.).
   // Site classification works regardless because it reads the per-clause
@@ -10097,6 +10257,7 @@ async function ingestSource(text, opts = {}) {
     rawText: text,
     enabled: true,  // toggle-able from Sources view; gates inclusion in derived state
     contentType: opts.rawMode ? 'raw-text' : 'prose',
+    ingestMode: opts.mode || 'auto',  // user-selected mode hint, surfaced in Sources view
     fileMetadata: opts.fileMetadata || null,
   };
   STATE.sources.set(sourceId, source);
@@ -10156,9 +10317,16 @@ async function ingestSource(text, opts = {}) {
   // matcher when it lands on a pre-minted name are how downstream
   // code "grabs" each occurrence — figuring out what to do with
   // those is a separate concern.
-  const ner = await extractNamedEntitiesFromText(processedText);
+  //
+  // opts.skipNer disables the pre-pass entirely — the right call for
+  // code or other non-prose content where compromise's POS tagger would
+  // mint identifiers / camelCase tokens as people and places.
+  const ner = opts.skipNer
+    ? { entities: new Map(), available: false }
+    : await extractNamedEntitiesFromText(processedText);
   source.nerSurfaces = ner.entities.size;
   source.nerAvailable = ner.available;
+  source.nerSkipped = !!opts.skipNer;
   for (const { surface, kind } of ner.entities.values()) {
     try {
       mintEntity(surface, [surface], kind, {
@@ -16666,7 +16834,7 @@ document.getElementById('ingest-btn').addEventListener('click', async () => {
   if (!text) { alert('Paste a corpus first.'); return; }
   const name = document.getElementById('source-name').value.trim() || `Source ${STATE.sources.size + 1}`;
   const pubDate = document.getElementById('source-pubdate').value.trim() || null;
-  const cleanChrome = document.getElementById('clean-chrome-toggle')?.checked !== false;
+  const mode = document.getElementById('ingest-mode-select')?.value || 'auto';
 
   document.getElementById('ingest-btn').disabled = true;
   document.getElementById('ingest-progress').textContent = 'starting…';
@@ -16678,7 +16846,9 @@ document.getElementById('ingest-btn').addEventListener('click', async () => {
   switchView('sources');
 
   try {
-    await ingestSource(text, { name, publicationDate: pubDate, cleanChrome });
+    const baseOpts = { name, publicationDate: pubDate };
+    const opts = applyIngestMode(baseOpts, mode);
+    await ingestSource(text, opts);
     document.getElementById('ingest-input').value = '';
     document.getElementById('source-name').value = '';
     document.getElementById('source-pubdate').value = '';
@@ -16716,6 +16886,7 @@ document.getElementById('ingest-btn').addEventListener('click', async () => {
     if (progress) progress.textContent = `ingesting ${files.length} file${files.length === 1 ? '' : 's'}…`;
     // Auto-switch to Sources so the user watches the import table fill.
     switchView('sources');
+    const fileMode = document.getElementById('file-mode-select')?.value || 'auto';
     try {
       const sources = await ingestUploadedFiles(files, ({ current, total, file, kind, page, pageCount }) => {
         if (!progress) return;
@@ -16724,9 +16895,9 @@ document.getElementById('ingest-btn').addEventListener('click', async () => {
         } else if (kind === 'pdf') {
           progress.textContent = `[${current}/${total}] ${file} · loading PDF…`;
         } else {
-          progress.textContent = `[${current}/${total}] ${file}`;
+          progress.textContent = `[${current}/${total}] ${file} · ${kind}`;
         }
-      });
+      }, { mode: fileMode });
       const pdfCount = sources.filter(s => s.fileMetadata && (s.fileMetadata.mimeType === 'application/pdf' || /\.pdf$/i.test(s.fileMetadata.name || ''))).length;
       const csvCount = sources.filter(s => s.contentType === 'csv').length;
       const txtCount = sources.length - csvCount - pdfCount;
