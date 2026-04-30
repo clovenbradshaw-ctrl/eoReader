@@ -2257,6 +2257,7 @@ code {
       <button class="more-menu-item" data-view="inspect" role="menuitem">Inspect</button>
       <button class="more-menu-item" data-view="prompts" role="menuitem">Prompts</button>
       <button class="more-menu-item" data-view="tunables" role="menuitem">Tunables</button>
+      <button class="more-menu-item" data-view="proposals" role="menuitem">Proposals</button>
       <button class="more-menu-item" data-view="dream" role="menuitem">Dream</button>
     </div>
   </div>
@@ -2456,6 +2457,16 @@ code {
       </div>
       <div class="pane-body" id="tunables-body">
         <div class="empty-state">No tunables yet.</div>
+      </div>
+    </div>
+
+    <div class="view-pane" id="view-proposals">
+      <div class="pane-header">
+        <div class="pane-title">Proposals · review queue</div>
+        <div class="pane-meta" id="proposals-meta">empty</div>
+      </div>
+      <div class="pane-body" id="proposals-body">
+        <div class="empty-state">No proposals yet.</div>
       </div>
     </div>
 
@@ -3866,50 +3877,29 @@ function proposeTunableRevision(replacingId, proposedShape, reasoning, authoredB
   return { ok: true, reason: 'created', proposalId: id };
 }
 
-// Manual edit entry-point. Bypasses canProposeRevision (the user is
-// the authority here; the audit row records what they did). Mints a
-// new tunableDef with supersedes pointing at the old one, marks the
-// old def inactive so the resolver returns the new one, writes an
-// auto-accepted proposal entry as audit, and — if a run is in flight
-// and was using this exact def — updates the run snapshot too so the
-// edit takes effect for the rest of the run.
-//
-// `changes` is a partial object merged onto the existing def. Common
-// keys: value, prediction, intensity, expectedOutcome, authorNote.
-// Returns { ok, newDef } or { ok: false, reason }.
-function applyManualTunableEdit(oldDefId, changes, reasoning = '') {
+// Internal: mint the new tunableDef, mark the old inactive, and
+// update the active run's snapshot if it was using this exact def.
+// No proposal-row writing — the caller owns the audit semantics
+// (manual edit writes auto-accepted; proposal acceptance updates an
+// existing pending row to accepted). Returns the new def or null.
+function _materializeRevision(oldDefId, changes, authoredBy) {
   const oldDef = STATE.tunableDefs.get(oldDefId);
-  if (!oldDef) return { ok: false, reason: 'unknown-tunable' };
+  if (!oldDef) return null;
   const id = uid('tdef');
   const newDef = {
     ...oldDef,
     ...changes,
     id,
     supersedes: oldDefId,
-    authoredBy: 'human',
+    authoredBy,
     active: true,
     createdAt: Date.now(),
   };
-  // metricDefinitionId tracks prediction.metricId; keep them in sync
-  // when the prediction is being edited.
   if (changes.prediction) {
     newDef.metricDefinitionId = changes.prediction.metricId || null;
   }
   STATE.tunableDefs.set(id, newDef);
   oldDef.active = false;
-  STATE.tunableProposals.push({
-    id: uid('tprop'),
-    replacing: oldDefId,
-    proposed: changes,
-    reasoning: reasoning || `Manual edit (${oldDef.key})`,
-    status: 'auto-accepted',
-    reviewedBy: 'human',
-    authoredBy: 'human',
-    createdAt: Date.now(),
-  });
-  // If an active run was snapshotting this exact def, update the
-  // snapshot so the change takes effect immediately for the rest of
-  // the run. Snapshots from other runs aren't touched.
   if (STATE.currentRunId) {
     const run = STATE.runs.find(r => r.id === STATE.currentRunId);
     if (run && run.snapshot && run.snapshot.has(oldDef.key)) {
@@ -3923,7 +3913,63 @@ function applyManualTunableEdit(oldDefId, changes, reasoning = '') {
       }
     }
   }
+  return newDef;
+}
+
+// Manual edit entry-point. Bypasses canProposeRevision (the user is
+// the authority here). Mints the revision and writes an auto-accepted
+// proposal entry as the audit row.
+//
+// `changes` is a partial object merged onto the existing def. Common
+// keys: value, prediction, intensity, expectedOutcome, authorNote.
+// Returns { ok, newDef } or { ok: false, reason }.
+function applyManualTunableEdit(oldDefId, changes, reasoning = '') {
+  const newDef = _materializeRevision(oldDefId, changes, 'human');
+  if (!newDef) return { ok: false, reason: 'unknown-tunable' };
+  const oldDef = STATE.tunableDefs.get(oldDefId);
+  STATE.tunableProposals.push({
+    id: uid('tprop'),
+    replacing: oldDefId,
+    proposed: changes,
+    reasoning: reasoning || `Manual edit (${oldDef && oldDef.key || ''})`,
+    status: 'auto-accepted',
+    reviewedBy: 'human',
+    authoredBy: 'human',
+    createdAt: Date.now(),
+  });
   return { ok: true, newDef };
+}
+
+// Accept a pending proposal: materialize the revision (with
+// authoredBy = the proposal's original author, since they composed
+// the change), then mark the proposal accepted with the human as
+// reviewer. Idempotent: returns an error rather than mutating again
+// if the proposal isn't pending.
+function acceptProposal(proposalId, reviewerNote = null) {
+  const prop = STATE.tunableProposals.find(p => p.id === proposalId);
+  if (!prop) return { ok: false, reason: 'unknown-proposal' };
+  if (prop.status !== 'pending') return { ok: false, reason: 'already-' + prop.status };
+  const newDef = _materializeRevision(prop.replacing, prop.proposed, prop.authoredBy || 'llm');
+  if (!newDef) return { ok: false, reason: 'replacing-tunable-missing' };
+  prop.status = 'accepted';
+  prop.reviewedBy = 'human';
+  prop.acceptedAt = Date.now();
+  if (reviewerNote) prop.reviewerNote = reviewerNote;
+  return { ok: true, newDef };
+}
+
+// Reject a pending proposal. The replaced tunable continues unchanged;
+// the proposal is preserved with its terminal status so the audit
+// trail records that it was considered and declined.
+function rejectProposal(proposalId, reviewerNote = null) {
+  const prop = STATE.tunableProposals.find(p => p.id === proposalId);
+  if (!prop) return { ok: false, reason: 'unknown-proposal' };
+  if (prop.status !== 'pending') return { ok: false, reason: 'already-' + prop.status };
+  prop.status = 'rejected';
+  prop.reviewedBy = 'human';
+  prop.rejectedAt = Date.now();
+  if (reviewerNote) prop.reviewerNote = reviewerNote;
+  return { ok: true };
 }
 
 // Canonical write entry-point for EVAs. The EVA is an observation —
@@ -5589,12 +5635,13 @@ function notifyDataChanged() {
 function renderActiveView() {
   try {
     switch (STATE.activeView) {
-      case 'sources':  renderSourcesView(); break;
-      case 'inspect':  renderInspectView(); break;
-      case 'cursors':  renderCursorStatus(); break;
-      case 'graph':    renderGraphView(); break;
-      case 'log':      renderLogView(); break;
-      case 'tunables': renderTunablesView(); break;
+      case 'sources':   renderSourcesView(); break;
+      case 'inspect':   renderInspectView(); break;
+      case 'cursors':   renderCursorStatus(); break;
+      case 'graph':     renderGraphView(); break;
+      case 'log':       renderLogView(); break;
+      case 'tunables':  renderTunablesView(); break;
+      case 'proposals': renderProposalsView(); break;
       // 'query' and 'prompts' are interaction-driven, no live rebuild needed
     }
   } catch (e) {
@@ -17430,7 +17477,10 @@ function renderTunablesView() {
   html += `<div style="display:flex;gap:18px;flex-wrap:wrap;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);margin-bottom:14px;">
     <span><strong style="color:var(--ink);">${STATE.runs.length}</strong> run${STATE.runs.length === 1 ? '' : 's'}${STATE.currentRunId ? ' · <span style="color:var(--accent,#b07a3a);">live now</span>' : ''}</span>
     <span><strong style="color:var(--ink);">${STATE.tunableEvas.length}</strong> eva${STATE.tunableEvas.length === 1 ? '' : 's'}</span>
-    <span><strong style="color:var(--ink);">${pendingProposals.length}</strong> pending proposal${pendingProposals.length === 1 ? '' : 's'}</span>
+    <span>
+      <strong style="color:var(--ink);">${pendingProposals.length}</strong> pending proposal${pendingProposals.length === 1 ? '' : 's'}
+      ${pendingProposals.length > 0 ? `<button id="tunables-jump-to-proposals" style="margin-left:6px;font-size:9px;padding:1px 6px;border:1px solid var(--rule);background:transparent;color:var(--ink);border-radius:2px;cursor:pointer;font-family:inherit;letter-spacing:0.04em;text-transform:uppercase;">review →</button>` : ''}
+    </span>
     <span><strong style="color:var(--ink);">${STATE.sourceKindSignatures.size}</strong> signature${STATE.sourceKindSignatures.size === 1 ? '' : 's'}</span>
   </div>`;
 
@@ -17460,6 +17510,113 @@ function renderTunablesView() {
   }
   html += `</div>`;
 
+  el.innerHTML = html;
+}
+
+// ─── /proposals review queue ────────────────────────────────────
+// Pending proposals at the top with accept/reject actions; recent
+// terminal-status proposals (accepted, rejected, auto-accepted)
+// listed below as audit history. The queue is the loop-closing
+// surface between system-proposes and human-accepts.
+const PROPOSAL_STATUS_STYLES = {
+  'pending':       { label: 'pending',       fg: '#b07a3a', bg: '#b07a3a20', border: '#b07a3a60' },
+  'accepted':      { label: 'accepted',      fg: '#4a6b3e', bg: '#4a6b3e20', border: '#4a6b3e60' },
+  'rejected':      { label: 'rejected',      fg: '#95305a', bg: '#95305a20', border: '#95305a60' },
+  'auto-accepted': { label: 'auto-accepted', fg: '#6c4080', bg: '#6c408020', border: '#6c408060' },
+};
+
+function renderProposalStatusBadge(status) {
+  const s = PROPOSAL_STATUS_STYLES[status] || { label: status, fg: '#6a6358', bg: 'transparent', border: '#6a635860' };
+  return `<span style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.04em;text-transform:uppercase;padding:1px 6px;color:${s.fg};background:${s.bg};border:1px solid ${s.border};border-radius:2px;">${escapeHtml(s.label)}</span>`;
+}
+
+function _diffSummaryForProposal(prop) {
+  // Summarize what would change. The replacing def is the live-or-historical
+  // tunableDef this proposal targets; we show its current shape vs. the
+  // proposed delta. If the def isn't found (cleanup, manual purge), we still
+  // show the proposed object.
+  const replacing = STATE.tunableDefs.get(prop.replacing);
+  const lines = [];
+  const proposed = prop.proposed || {};
+  for (const key of Object.keys(proposed)) {
+    const before = replacing ? replacing[key] : undefined;
+    const after = proposed[key];
+    const beforeStr = before === undefined ? '—' : (typeof before === 'object' ? JSON.stringify(before) : String(before));
+    const afterStr = after === undefined ? '—' : (typeof after === 'object' ? JSON.stringify(after) : String(after));
+    lines.push(`<div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-soft);padding:1px 0;">
+      <span style="color:var(--ink-faint);">${escapeHtml(key)}:</span>
+      <span style="text-decoration:line-through;color:var(--ink-faint);">${escapeHtml(beforeStr)}</span>
+      <span style="color:var(--ink-faint);"> → </span>
+      <span style="color:var(--ink);font-weight:500;">${escapeHtml(afterStr)}</span>
+    </div>`);
+  }
+  return lines.join('');
+}
+
+function renderProposalCard(prop) {
+  const replacing = STATE.tunableDefs.get(prop.replacing);
+  const replacingKey = replacing ? replacing.key : `(missing def ${prop.replacing})`;
+  const replacingScope = replacing ? replacing.sourceKindSignature : '?';
+  const dt = new Date(prop.createdAt).toISOString().replace('T', ' ').slice(0, 19);
+  const reviewerNote = prop.reviewerNote ? `<div style="margin-top:4px;font-family:'Newsreader',serif;font-size:11px;color:var(--ink-soft);font-style:italic;">reviewer: ${escapeHtml(prop.reviewerNote)}</div>` : '';
+  const actions = (prop.status === 'pending')
+    ? `<div style="margin-top:8px;display:flex;gap:6px;">
+        <button class="secondary" data-prop-id="${escapeHtml(prop.id)}" data-action="accept" style="font-size:10px;padding:3px 10px;">Accept</button>
+        <button class="secondary" data-prop-id="${escapeHtml(prop.id)}" data-action="reject" style="font-size:10px;padding:3px 10px;">Reject</button>
+      </div>`
+    : '';
+  return `<div style="border:1px solid var(--rule);border-radius:3px;padding:10px 12px;margin-bottom:8px;background:var(--paper);">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:500;color:var(--ink);">${escapeHtml(replacingKey)}</span>
+      ${renderProposalStatusBadge(prop.status)}
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ink-faint);margin-left:auto;">
+        by ${escapeHtml(prop.authoredBy || '?')} · ${escapeHtml(dt)} · scope ${escapeHtml(replacingScope)}
+      </span>
+    </div>
+    <div style="margin-top:6px;">${_diffSummaryForProposal(prop)}</div>
+    ${prop.reasoning ? `<div style="margin-top:6px;font-family:'Newsreader',serif;font-size:11px;color:var(--ink);line-height:1.5;font-style:italic;">${escapeHtml(prop.reasoning)}</div>` : ''}
+    ${reviewerNote}
+    ${actions}
+    <div style="margin-top:4px;font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--ink-faint);">
+      <code>${escapeHtml(prop.id)}</code>
+    </div>
+  </div>`;
+}
+
+function renderProposalsView() {
+  const el = document.getElementById('proposals-body');
+  const meta = document.getElementById('proposals-meta');
+  if (!el) return;
+  const proposals = STATE.tunableProposals;
+  if (proposals.length === 0) {
+    el.innerHTML = `<div class="empty-state">No proposals yet. Manual edits and (future) LLM hot-pass revisions will land here for review.</div>`;
+    if (meta) meta.textContent = 'empty';
+    return;
+  }
+  const counts = { 'pending': 0, 'accepted': 0, 'rejected': 0, 'auto-accepted': 0 };
+  for (const p of proposals) { if (counts[p.status] != null) counts[p.status]++; }
+  if (meta) {
+    const parts = [];
+    if (counts.pending > 0) parts.push(`${counts.pending} pending`);
+    if (counts.accepted > 0) parts.push(`${counts.accepted} accepted`);
+    if (counts.rejected > 0) parts.push(`${counts.rejected} rejected`);
+    if (counts['auto-accepted'] > 0) parts.push(`${counts['auto-accepted']} auto-accepted`);
+    meta.textContent = parts.join(' · ');
+  }
+  // Sort: pending first (oldest pending at top so the queue is FIFO),
+  // then everything else newest first.
+  const pending = proposals.filter(p => p.status === 'pending').sort((a, b) => a.createdAt - b.createdAt);
+  const history = proposals.filter(p => p.status !== 'pending').sort((a, b) => b.createdAt - a.createdAt);
+  let html = `<div style="padding:14px 16px;">`;
+  if (pending.length > 0) {
+    html += `<div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:8px;">pending · ${pending.length}</div>`;
+    for (const p of pending) html += renderProposalCard(p);
+  }
+  if (history.length > 0) {
+    html += `<div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-faint);margin:14px 0 8px;">history · ${history.length}</div>`;
+    for (const p of history) html += renderProposalCard(p);
+  }
+  html += `</div>`;
   el.innerHTML = html;
 }
 
@@ -17820,7 +17977,7 @@ function renderHeaderStatus() {
 // Views surfaced under the "More ▾" overflow rather than directly in
 // the top tab bar. When one of these is active, the More button gets
 // the active underline and the corresponding menu item highlights.
-const MORE_VIEWS = new Set(['cursors', 'inspect', 'prompts', 'tunables', 'dream']);
+const MORE_VIEWS = new Set(['cursors', 'inspect', 'prompts', 'tunables', 'proposals', 'dream']);
 
 function switchView(viewName) {
   STATE.activeView = viewName;
@@ -17841,6 +17998,7 @@ function switchView(viewName) {
   else if (viewName === 'cursors') renderCursorStatus();
   else if (viewName === 'prompts') renderPromptsView();
   else if (viewName === 'tunables') renderTunablesView();
+  else if (viewName === 'proposals') renderProposalsView();
   else if (viewName === 'graph') renderGraphView();
   else if (viewName === 'log') renderLogView();
   else if (viewName === 'dream') renderDreamView();
@@ -18141,6 +18299,12 @@ document.getElementById('export-btn').addEventListener('click', () => {
   if (body) {
     body.addEventListener('click', (e) => {
       const t = e.target;
+      // Cross-link to /proposals — the "review →" button next to the
+      // pending-proposals count in the header.
+      if (t.id === 'tunables-jump-to-proposals') {
+        if (typeof switchView === 'function') switchView('proposals');
+        return;
+      }
       const action = t.getAttribute && t.getAttribute('data-action');
       const id = t.getAttribute && t.getAttribute('data-tdef-id');
       if (!action || !id) return;
@@ -18185,6 +18349,34 @@ document.getElementById('export-btn').addEventListener('click', () => {
         TUNABLES_UI.editingError = null;
         renderTunablesView();
       }
+    });
+  }
+}
+
+// /proposals — accept/reject delegation. Same pattern as the tunables
+// body listener: one click handler on the static container survives
+// re-renders since they only replace innerHTML, not the container.
+{
+  const body = document.getElementById('proposals-body');
+  if (body) {
+    body.addEventListener('click', (e) => {
+      const action = e.target.getAttribute && e.target.getAttribute('data-action');
+      const id = e.target.getAttribute && e.target.getAttribute('data-prop-id');
+      if (!action || !id) return;
+      if (action === 'accept') {
+        const r = acceptProposal(id);
+        if (!r.ok) console.warn('accept failed:', r.reason);
+      } else if (action === 'reject') {
+        const r = rejectProposal(id);
+        if (!r.ok) console.warn('reject failed:', r.reason);
+      } else {
+        return;
+      }
+      // Re-render both views — the live def changed (on accept) and the
+      // proposal status changed (always), so /tunables and /proposals
+      // are both stale. Cheap to rebuild both.
+      renderProposalsView();
+      try { renderTunablesView(); } catch {}
     });
   }
 }
