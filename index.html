@@ -3207,13 +3207,42 @@ const STATE = {
   globalSentencesProcessed: 0,            // counter incremented every sentence (across sources, for triggers)
   lastClassifiedSentenceText: '',         // tracks last sentence text we used for cosine vs prior
   lastSentenceEmbedding: null,            // Int8Array — sentence-embedding of the prior sentence
-  // Tunables
+  // ─── Tunables (legacy mirror) ─────────────────────────────────────
+  // These fields are the original hardcoded runtime parameters. They
+  // remain here so unmigrated read sites continue to work, and so that
+  // seedTunables() at boot has a single source of truth to copy from
+  // when minting the corresponding tunable-DEF records. New code should
+  // prefer `tunable('key')` over `STATE.key` — the resolver reads from
+  // the current run's snapshot when an ingest is in flight, falls back
+  // to the live tunable-DEF, and finally to these mirrors.
   hypothesisDivergenceDelta: 0.15,        // cosine drop from baseline that triggers REC
   hypothesisFirstPromotionAt: 30,         // legacy: sentence idx — superseded by hypothesisFirstPromotionRingMin
   hypothesisFirstPromotionRingMin: 8,     // textbase-ring events that must land before first-promotion REC fires
   divergenceCheckEveryN: 5,               // re-check divergence every N classified events
   summaryFallbackEveryN: 4,               // regenerate summary every N textbase-ring events absent other triggers
   summaryDiscontinuityCosine: 0.4,        // sentence cosine to prior below this triggers regenerate
+
+  // ─── Allostatic-tunables substrate (v0; in-memory only) ───────────
+  // Append-only records for runtime parameters, with provenance,
+  // predictions, and EVA history. Mirrors the DEF/REV/REC/EVA pattern
+  // already used for entity identity claims, generalized to "the
+  // framework is a source about itself." Persistence is deferred until
+  // the rest of STATE persists; everything here lives in memory.
+  //
+  //   tunableDefs       Map<id, def>          current and historical defs (supersedes chains)
+  //   tunableMetrics    Map<id, metric>       what counts as success for a prediction
+  //   tunableEvas       []                    chronological verdicts of predictions
+  //   tunableProposals  []                    staging for revisions before they go live
+  //   sourceKindSignatures Map<id, signature> source-kind groupings; "*" is the universal scope
+  //   runs              []                    chronological run records with snapshots
+  //   currentRunId      string|null           set during ingest by startRun/endRun
+  tunableDefs: new Map(),
+  tunableMetrics: new Map(),
+  tunableEvas: [],
+  tunableProposals: [],
+  sourceKindSignatures: new Map(),
+  runs: [],
+  currentRunId: null,
 
   // Grammar-polish layer toggles. editsEnabled gates whether the
   // polish LLM call runs at all; editsRenderMode picks the global
@@ -3255,6 +3284,331 @@ const STATE = {
     showSpeculation: false,      // render entailment-failed candidates muted
   },
 };
+
+// ─── ALLOSTATIC TUNABLES ─────────────────────────────────────────────
+// Seed list: the historical hardcoded runtime parameters, lifted into
+// tunable-DEF records on boot. Each enters as ungraded (prediction:null)
+// at intensity 0.5 with sourceKindSignature "*" — applies to all kinds
+// until evidence forces a split. The first LLM hot pass after this
+// substrate is observable will be asked to propose predictions and
+// metrics for each. Until then, the system runs identically to before;
+// the substrate is just the visibility/edit/grade surface.
+//
+// LOOP HAZARDS — guard rails that must exist before any hot pass /
+// EVA / proposal flow goes live. v0 (this commit) does not yet trigger
+// any of these flows, but writing the rules down so they don't get
+// re-derived under pressure later:
+//
+//   - Per-tunable oscillation. Don't auto-propose a revision when the
+//     tunable already has a pending proposal, or was revised within
+//     the last K runs. After M revisions in N runs, surface to the
+//     user instead of generating proposal #M+1.
+//   - Premature hot pass. Require ≥ K EVAs accumulated before a
+//     tunable becomes eligible for an LLM hot pass. A single bad run
+//     should not drag intensity through threshold.
+//   - Ungraded-with-stuck-prediction. A tunable can have a prediction
+//     yet no EVAs accumulating (metric never fires). Track this as
+//     a distinct state from "ungraded" so the sweep can surface it.
+//   - Recursive signature splits. After a signature is split, freeze
+//     further auto-splits on the children for K runs and require
+//     explicit human acknowledgement before another split is allowed.
+//   - Signature hierarchy. v0's resolver is two-level (exact OR "*").
+//     When kind-specific splits land, hierarchical fallback
+//     (PDF-low-OCR → PDF → *) becomes necessary; the resolver below
+//     needs extending before that arrives.
+//
+// v0 hardening already in place: leaked-run self-heal in startRun,
+// runs-log capped to last 200 entries by endRun, seedTunables is
+// idempotent on re-call, snapshot is frozen at startRun so mid-run
+// mutations to a tunableDef don't shift behavior.
+const TUNABLE_SEEDS = [
+  { key: 'hypothesisDivergenceDelta', value: 0.15, unit: 'cosine',
+    note: 'Cosine drop from baseline that triggers REC.' },
+  { key: 'hypothesisFirstPromotionRingMin', value: 8, unit: 'events',
+    note: 'Textbase-ring events that must land before first-promotion REC fires.' },
+  { key: 'divergenceCheckEveryN', value: 5, unit: 'events',
+    note: 'Re-check divergence every N classified events.' },
+  { key: 'summaryFallbackEveryN', value: 4, unit: 'events',
+    note: 'Regenerate summary every N textbase-ring events absent other triggers.' },
+  { key: 'summaryDiscontinuityCosine', value: 0.4, unit: 'cosine',
+    note: 'Sentence cosine to prior below this triggers regenerate.' },
+  { key: 'recBaseDelta', value: 0.15, unit: 'cosine',
+    note: 'Base hypothesisDivergenceDelta; modulated by hypothesis.precision.' },
+];
+
+// Idempotent. On boot, seed any missing tunable-DEF for the universal
+// signature. Existing defs (e.g. from a future hot-pass that already
+// proposed a prediction) are not overwritten — seeding is a backstop,
+// not a refresh.
+function seedTunables() {
+  // Seed the universal signature first if absent. Future LLM hot passes
+  // can split this into kind-specific signatures (PDF, HTML, OCR-low, ...)
+  // and propose narrower tunables; until then "*" is the only scope.
+  if (!STATE.sourceKindSignatures.has('*')) {
+    STATE.sourceKindSignatures.set('*', {
+      id: '*',
+      features: { universal: true },
+      exemplarSourceIds: [],
+      splitFrom: null,
+      authoredBy: 'system',
+      createdAt: Date.now(),
+    });
+  }
+  for (const seed of TUNABLE_SEEDS) {
+    const exists = [...STATE.tunableDefs.values()].some(
+      d => d.active && d.key === seed.key && d.sourceKindSignature === '*'
+    );
+    if (exists) continue;
+    const id = uid('tdef');
+    STATE.tunableDefs.set(id, {
+      id,
+      key: seed.key,
+      sourceKindSignature: '*',
+      value: seed.value,
+      prediction: null,        // ungraded — surfaces in /tunables as an open question
+      metricDefinitionId: null,
+      intensity: 0.5,
+      expectedOutcome: 'unknown',
+      supersedes: null,
+      authoredBy: 'system',
+      authorNote: seed.note,
+      unit: seed.unit,
+      active: true,
+      createdAt: Date.now(),
+    });
+  }
+}
+
+// Resolve the active tunable-DEF for (key, signature). Walks the
+// signature hierarchy via splitFrom — PDF-low-OCR → PDF → * — and
+// returns the most-specific active match. The visited set guards
+// against cycles in case a future signature graph isn't a clean tree.
+function resolveTunableDef(key, signature = '*') {
+  const visited = new Set();
+  let cursor = signature;
+  while (cursor && !visited.has(cursor)) {
+    visited.add(cursor);
+    let best = null;
+    for (const d of STATE.tunableDefs.values()) {
+      if (!d.active || d.key !== key) continue;
+      if (d.sourceKindSignature !== cursor) continue;
+      if (!best || d.createdAt > best.createdAt) best = d;
+    }
+    if (best) return best;
+    if (cursor === '*') break;
+    const sig = STATE.sourceKindSignatures.get(cursor);
+    cursor = (sig && sig.splitFrom) ? sig.splitFrom : '*';
+  }
+  return null;
+}
+
+// Public read API. During an active run, reads from the run's snapshot
+// (so a tunable can't shift mid-ingest). Outside a run, reads the live
+// tunable-DEF. Falls back to the legacy STATE field to keep unmigrated
+// code paths correct, then to the optional explicit default.
+function tunable(key, fallback = null) {
+  if (STATE.currentRunId) {
+    const run = STATE.runs[STATE.runs.length - 1];
+    if (run && run.id === STATE.currentRunId && run.snapshot && run.snapshot.has(key)) {
+      return run.snapshot.get(key).value;
+    }
+  }
+  const def = resolveTunableDef(key);
+  if (def && def.value != null) return def.value;
+  if (Object.prototype.hasOwnProperty.call(STATE, key) && STATE[key] != null) return STATE[key];
+  return fallback;
+}
+
+// Begin a run. Snapshots every active tunable for the source's signature
+// into the run record; the run reads from this snapshot for the rest of
+// its lifetime so mid-run mutations don't change behavior. v0: every
+// source maps to "*"; signature classification lands later.
+function startRun(sourceId) {
+  // Self-heal: if a previous run wasn't paired with endRun (an LLM call
+  // threw, the page reloaded mid-ingest, etc.), stamp it as leaked so
+  // the timeline isn't corrupted by a never-finished record. -1 is the
+  // sentinel; the /tunables view (when built) flags these.
+  if (STATE.currentRunId) {
+    const prev = STATE.runs.find(r => r.id === STATE.currentRunId);
+    if (prev && prev.endedAt == null) prev.endedAt = -1;
+  }
+  const id = uid('run');
+  const signatureId = '*';
+  const snapshot = new Map();
+  for (const d of STATE.tunableDefs.values()) {
+    if (!d.active) continue;
+    if (d.sourceKindSignature !== '*' && d.sourceKindSignature !== signatureId) continue;
+    // Exact-signature defs win over universal at snapshot time
+    const prev = snapshot.get(d.key);
+    if (prev && prev.signature === signatureId && d.sourceKindSignature === '*') continue;
+    snapshot.set(d.key, { value: d.value, tunableDefId: d.id, signature: d.sourceKindSignature });
+  }
+  STATE.runs.push({
+    id, sourceId, signatureId,
+    startedAt: Date.now(), endedAt: null,
+    snapshot,
+  });
+  STATE.currentRunId = id;
+  return id;
+}
+
+const RUNS_RETAINED = 200;  // cap on the in-memory runs log; trim oldest first
+function endRun() {
+  if (!STATE.currentRunId) return;
+  const run = STATE.runs.find(r => r.id === STATE.currentRunId);
+  if (run) run.endedAt = Date.now();
+  STATE.currentRunId = null;
+  // Trim from the head; runs are append-ordered so head is oldest.
+  // EVAs and proposals reference runs by id and may persist longer than
+  // the run record itself; that's fine for v0 (they degrade to
+  // "run record dropped" in any future audit view).
+  if (STATE.runs.length > RUNS_RETAINED) {
+    STATE.runs.splice(0, STATE.runs.length - RUNS_RETAINED);
+  }
+}
+
+// ── Loop-hazard guard rails ───────────────────────────────────────────
+// These thresholds are themselves candidates for migration into tunable
+// records once the meta-loop is well-understood. Hardcoding for v0 to
+// avoid the recursion of "the guard that decides when to revise the
+// guard" — promote later, with a separate signature so the meta-loop
+// has its own scope.
+const TUNABLES_GUARD = {
+  MAX_REVISIONS_BEFORE_FREEZE: 4,             // chain length above which we declare oscillation
+  MIN_EVAS_FOR_HOT_PASS: 3,                   // require this many EVAs before hot-pass eligibility
+  SPLIT_DEBOUNCE_MS: 10 * 60 * 1000,          // refuse re-splits within this window of the last split
+  STUCK_PREDICTION_WINDOW_MS: 30 * 60 * 1000, // "predicted but no EVAs" trips after this gap
+};
+
+// Count tunableDefs sharing a key+signature lineage. A long chain
+// signals oscillation: revise → contradict → revise → contradict.
+function _revisionChainLength(def) {
+  if (!def) return 0;
+  let count = 0;
+  for (const d of STATE.tunableDefs.values()) {
+    if (d.key === def.key && d.sourceKindSignature === def.sourceKindSignature) count++;
+  }
+  return count;
+}
+
+// Public state classifier. Drives the /tunables view's badges and
+// gates which queues a tunable joins for the next sweep.
+//   ungraded            no prediction yet → open question for human / hot pass
+//   predicted-no-evas   prediction exists but EVAs aren't accumulating
+//   active              prediction + EVAs landing
+//   frozen-oscillating  too many revisions in chain; freeze auto-revisions
+//   inactive            tunable.active === false
+//   unknown             unrecognized id
+function tunableState(tunableDefId) {
+  const def = STATE.tunableDefs.get(tunableDefId);
+  if (!def) return 'unknown';
+  if (!def.active) return 'inactive';
+  if (_revisionChainLength(def) > TUNABLES_GUARD.MAX_REVISIONS_BEFORE_FREEZE) return 'frozen-oscillating';
+  if (def.prediction == null) return 'ungraded';
+  const cutoff = Date.now() - TUNABLES_GUARD.STUCK_PREDICTION_WINDOW_MS;
+  const recentEvas = STATE.tunableEvas.filter(e => e.tunableDefId === tunableDefId && e.createdAt >= cutoff).length;
+  if (recentEvas === 0) return 'predicted-no-evas';
+  return 'active';
+}
+
+// Guard: may we propose a revision for this tunable right now?
+// Refuses on inactive defs, on chains long enough to suggest oscillation,
+// and on tunables that already have a pending proposal in flight.
+function canProposeRevision(tunableDefId) {
+  const def = STATE.tunableDefs.get(tunableDefId);
+  if (!def) return { ok: false, reason: 'unknown-tunable' };
+  if (!def.active) return { ok: false, reason: 'inactive-tunable' };
+  for (const p of STATE.tunableProposals) {
+    if (p.status === 'pending' && p.replacing === tunableDefId) {
+      return { ok: false, reason: 'has-pending-proposal' };
+    }
+  }
+  if (_revisionChainLength(def) > TUNABLES_GUARD.MAX_REVISIONS_BEFORE_FREEZE) {
+    return { ok: false, reason: 'oscillating' };
+  }
+  return { ok: true, reason: 'ok' };
+}
+
+// Guard: may an LLM hot pass be triggered for this tunable?
+// Layered on top of canProposeRevision (which catches most cases) plus
+// the "premature hot pass" rule — don't ask the LLM to revise a tunable
+// that hasn't accumulated enough graded evidence.
+function isEligibleForHotPass(tunableDefId) {
+  const def = STATE.tunableDefs.get(tunableDefId);
+  if (!def) return { ok: false, reason: 'unknown-tunable' };
+  if (!def.active) return { ok: false, reason: 'inactive-tunable' };
+  // Ungraded tunables ARE eligible — their hot pass proposes a prediction,
+  // not a value revision. Distinct from value-revision hot passes.
+  if (def.prediction != null) {
+    const evaCount = STATE.tunableEvas.filter(e => e.tunableDefId === tunableDefId).length;
+    if (evaCount < TUNABLES_GUARD.MIN_EVAS_FOR_HOT_PASS) {
+      return { ok: false, reason: 'too-few-evas' };
+    }
+  }
+  const guard = canProposeRevision(tunableDefId);
+  if (!guard.ok) return guard;
+  return { ok: true, reason: 'ok' };
+}
+
+// Guard: may we split this signature into a more-specific child?
+// Refuses on pending splits and within the recent-split debounce window
+// (in either direction — recently created from a parent, or recently
+// spawned a child).
+function canSplitSignature(signatureId) {
+  const sig = STATE.sourceKindSignatures.get(signatureId);
+  if (!sig) return { ok: false, reason: 'unknown-signature' };
+  for (const p of STATE.tunableProposals) {
+    if (p.status === 'pending' && p.kind === 'signature-split' && p.target === signatureId) {
+      return { ok: false, reason: 'has-pending-split' };
+    }
+  }
+  const cutoff = Date.now() - TUNABLES_GUARD.SPLIT_DEBOUNCE_MS;
+  if (sig.splitFrom && sig.createdAt >= cutoff) {
+    return { ok: false, reason: 'recently-created-from-split' };
+  }
+  for (const child of STATE.sourceKindSignatures.values()) {
+    if (child.splitFrom === signatureId && child.createdAt >= cutoff) {
+      return { ok: false, reason: 'recently-split' };
+    }
+  }
+  return { ok: true, reason: 'ok' };
+}
+
+// Canonical write entry-point for revision proposals. Calls the guard
+// first; refuses to write if the guard rejects. This is the only path
+// through which automated proposals should land (manual UI overrides
+// will share the same path with authoredBy:'human' set).
+function proposeTunableRevision(replacingId, proposedShape, reasoning, authoredBy = 'llm') {
+  const guard = canProposeRevision(replacingId);
+  if (!guard.ok) return { ok: false, reason: guard.reason, proposalId: null };
+  const id = uid('tprop');
+  STATE.tunableProposals.push({
+    id, replacing: replacingId, proposed: proposedShape,
+    reasoning, status: 'pending', reviewedBy: null,
+    authoredBy, createdAt: Date.now(),
+  });
+  return { ok: true, reason: 'created', proposalId: id };
+}
+
+// Canonical write entry-point for EVAs. Applies the verdict's
+// intensity delta to the def in the same call so callers can't write
+// an EVA without affecting intensity (or vice versa). Clamped to [0,1].
+function recordTunableEva({ tunableDefId, runId, measured, predicted, surprise = 0, verdict, intensityDelta = 0, authoredBy = 'system', rationale = null }) {
+  const def = STATE.tunableDefs.get(tunableDefId);
+  if (!def) return null;
+  const id = uid('teva');
+  const eva = {
+    id, tunableDefId, runId,
+    sourceKindSignature: def.sourceKindSignature,
+    measured, predicted, surprise, verdict, intensityDelta,
+    authoredBy, rationale, createdAt: Date.now(),
+  };
+  STATE.tunableEvas.push(eva);
+  if (Number.isFinite(intensityDelta)) {
+    def.intensity = Math.max(0, Math.min(1, (def.intensity ?? 0.5) + intensityDelta));
+  }
+  return eva;
+}
 
 // Append an event to G with full coordinates
 // ─── EO COORDINATE ASSIGNMENT ────────────────────────────────────────
@@ -8095,13 +8449,13 @@ async function maybeRegenerateRunningSummary(source, sentenceIdx, sentenceText, 
   // update. Default 4 ring-events ≈ the same density as the prior
   // 8-body-sentence threshold but anchored to actual content.
   const sinceLastUpdate = ringNow - ringAtLastUpdate;
-  if (sinceLastUpdate >= (STATE.summaryFallbackEveryN || 4)) {
+  if (sinceLastUpdate >= tunable('summaryFallbackEveryN', 4)) {
     triggers.push('fallback');
   }
   // Trigger 3: semantic discontinuity vs prior sentence.
   if (sentenceEmbedding && STATE.lastSentenceEmbedding) {
     const cos = cosineInt8(sentenceEmbedding, STATE.lastSentenceEmbedding);
-    if (cos < (STATE.summaryDiscontinuityCosine || 0.4)) {
+    if (cos < tunable('summaryDiscontinuityCosine', 0.4)) {
       triggers.push(`discontinuity(${cos.toFixed(2)})`);
     }
   }
@@ -8441,7 +8795,7 @@ function computeHypothesisPrecision(source) {
 function checkHypothesisDivergence(source) {
   if (!source || !source.hypothesis) return null;
   const since = STATE.G.length - (STATE.lastDivergenceCheckEventIdx || 0);
-  if (since < (STATE.divergenceCheckEveryN || 5)) return null;
+  if (since < tunable('divergenceCheckEveryN', 5)) return null;
   STATE.lastDivergenceCheckEventIdx = STATE.G.length;
 
   const c = recentEventCentroid(30);
@@ -8460,8 +8814,7 @@ function checkHypothesisDivergence(source) {
   // resists superficial drift (larger drop required).
   //   threshold = baseDelta * (0.5 + precision)
   // precision 0 → 0.5×base, precision 1 → 1.5×base.
-  const base = STATE.recBaseDelta != null ? STATE.recBaseDelta
-             : (STATE.hypothesisDivergenceDelta != null ? STATE.hypothesisDivergenceDelta : 0.15);
+  const base = tunable('recBaseDelta') ?? tunable('hypothesisDivergenceDelta', 0.15);
   const precision = computeHypothesisPrecision(source);
   source.hypothesis.precision = precision;
   const delta = base * (0.5 + precision);
@@ -10334,6 +10687,10 @@ async function ingestSource(text, opts = {}) {
   const sentences = segmentSentences(processedText);
   // Classify each sentence as chrome-suspect based on its source-line membership
   const chromeSuspectFlags = classifySentences(sentences, processedText, chromeLineFlags);
+  // Take a tunable snapshot for this run. Reads via tunable() during
+  // intake will draw from this snapshot, so mid-run edits to a
+  // tunable-DEF cannot shift behavior partway through a source.
+  startRun(source.id);
   STATE.llmCallsThisIngest = 0;
   STATE.clausesSkippedNonProse = 0;
   STATE.clausesProcessed = 0;
@@ -10432,7 +10789,7 @@ async function ingestSource(text, opts = {}) {
     if (f) STATE.hypothesisEmbedding = quantizeFloat32(f);
   } catch (e) { /* embedder may not be ready yet — divergence monitor lazily catches up */ }
   if (progressEl && isLLMReady() && !opts.rawMode) {
-    progressEl.innerHTML = `metadata-only frame · beginning extraction (grounded refresh after ${STATE.hypothesisFirstPromotionRingMin || 8} propositional events land)…`;
+    progressEl.innerHTML = `metadata-only frame · beginning extraction (grounded refresh after ${tunable('hypothesisFirstPromotionRingMin', 8)} propositional events land)…`;
   }
   // NOTE: metadata stub has NO principals — we deliberately skip
   // preMintHypothesisPrincipals and emitHypothesisDEFs. The grounded
@@ -10748,7 +11105,7 @@ async function ingestSource(text, opts = {}) {
       // attempt and skip until at least FIRST_PROMOTION_RING_BACKOFF more
       // textbase-ring events of fresh propositional evidence have landed.
       // End-of-doc fallback still runs at the bottom of ingestSource.
-      const MIN_RING_FOR_FIRST_PROMOTION = STATE.hypothesisFirstPromotionRingMin ?? 8;
+      const MIN_RING_FOR_FIRST_PROMOTION = tunable('hypothesisFirstPromotionRingMin', 8);
       const FIRST_PROMOTION_RING_BACKOFF = 8;
       const isMinimalNow = source.hypothesis && source.hypothesis.minimal;
       const ringNowH = STATE.textbaseRingTotalSize || 0;
@@ -10907,6 +11264,7 @@ async function ingestSource(text, opts = {}) {
     progressEl.innerHTML = `done · ${sentences.length} sentences · ${STATE.clausesProcessed} processed by LLM · ${STATE.clausesSkippedNonProse} skipped (non-prose) · ${STATE.llmCallsThisIngest} total LLM calls (incl. escalations)`;
   }
   STATE.currentlyProcessing = null;
+  endRun();
   hideIngestBanner();
   // Force fresh render of the active view so any throttle-pending update
   // is flushed and the user sees the final state immediately.
@@ -18637,7 +18995,7 @@ async function boot() {
   const steps = [
     { stage: 'init', detail: 'starting…', after: () => {} },
     { stage: 'ui', detail: 'wiring tabs and controls', after: () => { renderSamples(); } },
-    { stage: 'state', detail: 'initializing graph', after: () => { renderHeaderStatus(); } },
+    { stage: 'state', detail: 'initializing graph', after: () => { seedTunables(); renderHeaderStatus(); } },
     { stage: 'render', detail: 'rendering panes', after: () => {
       renderCursorStatus();
       renderExampleQueries();
