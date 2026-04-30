@@ -5236,6 +5236,25 @@ function findEntityByMention(text) {
   return null;
 }
 
+// When the matcher consolidates an incoming surface onto an existing
+// entity, the incoming canonical may be a fuller form than the stored one
+// — orphan "Ostrom's" gets bound to a later mint of "Elinor Ostrom",
+// orphan "Smith" to "John Smith". The fuller form is almost always the
+// better display label. Promote it; the prior canonical is already in the
+// alias list (mintEntity seeds aliases with the canonical), and the alias
+// add above will have anchored the new surface with a span DEF, so the
+// audit trail keeps the lineage. Honorifics and stop words are stripped
+// before counting, so "Mr. Bennet" (1 substantive word) doesn't displace
+// "Bennet" — same word count, no promotion.
+function maybePromoteCanonical(existing, incomingCanonical) {
+  if (!existing || !incomingCanonical) return;
+  if (existing.canonical === incomingCanonical) return;
+  const oldWords = _substantiveWords(existing.canonical).length;
+  const newWords = _substantiveWords(incomingCanonical).length;
+  if (newWords <= oldWords) return;
+  existing.canonical = incomingCanonical;
+}
+
 function mintEntity(canonical, aliases = [], kind = null, opts = {}) {
   // bypassMatcher: when true, skip the smart-matcher coref tier and only
   // dedupe by exact alias match. Used by preMintHypothesisPrincipals,
@@ -5333,6 +5352,7 @@ function mintEntity(canonical, aliases = [], kind = null, opts = {}) {
         emitAliasDef(existingByExact.id, alias);
       }
     }
+    maybePromoteCanonical(existingByExact, canonical);
     return existingByExact;
   }
 
@@ -5351,6 +5371,7 @@ function mintEntity(canonical, aliases = [], kind = null, opts = {}) {
             emitAliasDef(matched.id, a);
           }
         }
+        maybePromoteCanonical(matched, canonical);
         return matched;
       }
     }
