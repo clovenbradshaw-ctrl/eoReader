@@ -2983,6 +2983,23 @@ function segmentSentences(text) {
     const re = new RegExp(`\\b${abbr}\\.`, 'g');
     masked = masked.replace(re, abbr + '\u0001');  // U+0001 is a placeholder we'll restore
   }
+  // Periods inside initials/acronyms aren't sentence terminators. Two
+  // patterns, both substituting U+0001 so the period gets restored in the
+  // output sentence text.
+  //
+  // (a) Multi-letter acronyms: "U.S.", "F.B.I.", "U.S.S.R." — any run of
+  //     two-or-more dotted single capitals. Mask every period in the run,
+  //     including the trailing one (so "U.S. president" doesn't split).
+  // (b) Lone initials inside names: "Edgar F. Codd", "George W. Bush",
+  //     "J. R. R. Tolkien" — single capital + period followed by
+  //     whitespace + another capital. Loop so chained initials all get
+  //     handled in a single pass.
+  masked = masked.replace(/\b(?:[A-Z]\.){2,}/g, (s) => s.replace(/\./g, '\u0001'));
+  let initialPass;
+  do {
+    initialPass = masked;
+    masked = masked.replace(/\b([A-Z])\.(\s+[A-Z])/g, '$1\u0001$2');
+  } while (masked !== initialPass);
   const out = [];
   const re = /[^.!?\n]+[.!?]+["')\]]?(?=\s|$)|[^.!?\n]+(?=\n|$)/g;
   let m;
@@ -4195,13 +4212,17 @@ async function classifyEventViaLLM(ev, opts) {
       ev.deferReason = validatedR.reason;
       ev.llmClassifyError = `defer×2 (${firstReason} → ${validatedR.reason})`;
       // Append a comprehension SIG so the failure is honest and auditable.
-      try {
-        appendComprehensionSig(ev, {
-          deferReason: validatedR.reason,
-          deferAttempts: ev.deferAttempts,
-          originalClassificationAttempt: null,
-        });
-      } catch (e) { /* non-fatal */ }
+      // suppressNewSig path: caller (rereadPendingComprehensionSigs) already
+      // owns the existing SIG and will update it in place — don't compound.
+      if (!opts || !opts.suppressNewSig) {
+        try {
+          appendComprehensionSig(ev, {
+            deferReason: validatedR.reason,
+            deferAttempts: ev.deferAttempts,
+            originalClassificationAttempt: null,
+          });
+        } catch (e) { /* non-fatal */ }
+      }
       return null;
     } else {
       ev.deferReason = firstReason;
@@ -4220,18 +4241,22 @@ async function classifyEventViaLLM(ev, opts) {
     // Low-confidence path: classification stays on the event for audit
     // but a sibling SIG marker is appended so the comprehension monitor
     // can surface this as not-yet-resolved.
+    // suppressNewSig path: reread owns the existing SIG and updates it
+    // in place — don't compound a fresh marker each cycle.
     ev.lowConfidence = true;
-    try {
-      appendComprehensionSig(ev, {
-        deferReason: null,
-        deferAttempts: 1,
-        originalClassificationAttempt: {
-          q1: validated.q1, q2: validated.q2, q3: validated.q3,
-          cell: validated.cell, confidence: validated.confidence,
-          rationale: validated.rationale,
-        },
-      });
-    } catch (e) { /* non-fatal */ }
+    if (!opts || !opts.suppressNewSig) {
+      try {
+        appendComprehensionSig(ev, {
+          deferReason: null,
+          deferAttempts: 1,
+          originalClassificationAttempt: {
+            q1: validated.q1, q2: validated.q2, q3: validated.q3,
+            cell: validated.cell, confidence: validated.confidence,
+            rationale: validated.rationale,
+          },
+        });
+      } catch (e) { /* non-fatal */ }
+    }
   }
   return validated.cell;
 }
@@ -4239,14 +4264,14 @@ async function classifyEventViaLLM(ev, opts) {
 // Force a re-classification: clear the cached cell and run again with
 // current context. Used by the periodic re-read pass to revisit pending
 // SIGs once the document state has matured.
-async function reclassifyEventViaLLM(ev) {
+async function reclassifyEventViaLLM(ev, opts) {
   if (!ev) return null;
   ev.llmCell = null;
   ev.llmAnswers = null;
   ev.llmConfidence = null;
   ev.llmRationale = null;
   ev.llmClassifyError = null;
-  return classifyEventViaLLM(ev);
+  return classifyEventViaLLM(ev, opts);
 }
 
 // Walk pending comprehension SIGs and re-attempt classification of the
@@ -4267,9 +4292,14 @@ async function rereadPendingComprehensionSigs(source) {
     retried++;
     let cell = null;
     try {
-      cell = await reclassifyEventViaLLM(original);
+      // suppressNewSig: reread already owns this SIG row; updating it in
+      // place is the audit record. Letting classifyEventViaLLM append a
+      // fresh comprehension SIG on each retry causes geometric growth
+      // (one pending SIG → two → four → eight) when failures persist.
+      cell = await reclassifyEventViaLLM(original, { suppressNewSig: true });
     } catch (e) { cell = null; }
     sp.deferAttempts = (sp.deferAttempts || 0) + 1;
+    sp.lastRetryAt = Date.now();
 
     const conf = original.llmConfidence;
     if (cell && typeof conf === 'number' && conf >= SIG_CONFIDENCE_FLOOR) {
@@ -4278,9 +4308,15 @@ async function rereadPendingComprehensionSigs(source) {
       sp.resolvedCell = cell;
       original.lowConfidence = false;
       resolved++;
-    } else if (sp.deferAttempts >= 3) {
-      sp.permanentlyUnresolved = true;
-      permanent++;
+    } else {
+      // Refresh the bookkeeping fields on the existing SIG so the audit
+      // trail reflects the most recent attempt's outcome.
+      if (original.deferReason) sp.deferReason = original.deferReason;
+      if (original.llmClassifyError) sp.lastError = original.llmClassifyError;
+      if (sp.deferAttempts >= 3) {
+        sp.permanentlyUnresolved = true;
+        permanent++;
+      }
     }
   }
   return { resolved, retried, permanent };
@@ -5375,6 +5411,12 @@ const COMMON_INITIAL_CAPS = new Set([
   'don\'t','don','ay','aye','no','nope','yes','yeah','yea','okay','ok',
   'good','bad','true','false','right','wrong','sure','certainly','perhaps','maybe',
   'really','actually','clearly','obviously','frankly','honestly','really',
+  // Sentence-initial polarity / quantifier / frequency adverbs. They commonly
+  // start English sentences ("Not all systems exhibit all three.", "Almost
+  // everything alive does.") and will otherwise be minted as entities.
+  'not','almost','always','never','often','sometimes','usually','rarely',
+  'most','many','few','several','enough','again','still','just','even','only',
+  'instead','though','although','until','unless','whether','either','neither','both',
   // Bare titles (without a following surname) shouldn't mint as entities on their own.
   'mr','mrs','ms','dr','sir','lord','lady','madam','miss',
 ]);
@@ -5490,7 +5532,11 @@ function detectMentions(clauseText) {
   }
   // Capitalized noun phrases. Allow up to 5 cap words connected by optional "of/de/the/and/&".
   // (Was {0,3}; bumped to {0,4} so "Senator Tim Scott of South Carolina" doesn't truncate.)
-  const capRe = /\b([A-Z][\w']*(?:\s+(?:of|de|la|le|the|and|&)?\s*[A-Z][\w']*){0,4})\b/g;
+  // Each token is either a full capitalized word ([A-Z][\w']*) or a lone
+  // single-letter initial with trailing period ([A-Z]\.). The initial form
+  // lets "Edgar F. Codd", "George W. Bush", "J. R. R. Tolkien" match as one
+  // phrase rather than fragmenting at the interior period.
+  const capRe = /\b((?:[A-Z]\.|[A-Z][\w']*)(?:\s+(?:of|de|la|le|the|and|&)?\s*(?:[A-Z]\.|[A-Z][\w']*)){0,4})\b/g;
   while ((m = capRe.exec(clauseText)) !== null) {
     if (honoSpans.some(([s, e]) => m.index >= s && m.index < e)) continue;
     let surface = m[1];
