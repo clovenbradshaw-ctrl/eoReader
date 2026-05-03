@@ -15173,6 +15173,10 @@ const GRAPH = {
   wired: false,
   freezeAt: 0,
   lastBuildHash: '',  // detect when underlying data changed; rebuild only if so
+  // Persistent per-entity position cache. Survives node drop/reappear so
+  // scrubbing the timeline cursor backwards then forwards doesn't scatter
+  // nodes to random spots (the "lost node" bug). Keyed by entity id.
+  nodePositions: new Map(),
   // ── Pivot mode ──
   // When pivotEntityId is set, the layout switches: the pivoted entity
   // anchors at center, all other embedded entities position by their
@@ -15376,7 +15380,11 @@ function renderGraphView() {
     // Topology changed — preserve positions for nodes that survived,
     // and place each new node next to its connected neighbours so the
     // existing layout doesn't get jolted by a single ingest event.
-    const oldPositions = new Map(GRAPH.nodes.map(n => [n.id, { x: n.x, y: n.y, vx: n.vx, vy: n.vy }]));
+    // Refresh the persistent cache from current positions before swap.
+    for (const n of GRAPH.nodes) {
+      GRAPH.nodePositions.set(n.id, { x: n.x, y: n.y, vx: n.vx, vy: n.vy });
+    }
+    const oldPositions = GRAPH.nodePositions;
     const oldCount = GRAPH.nodes.length;
     GRAPH.nodes = data.nodes;
     GRAPH.links = data.links;
@@ -15548,24 +15556,38 @@ function renderGraphScrubber() {
       const llmCells = data.links.filter(l => l.cellSource === 'llm').length;
       const meta = document.getElementById('graph-meta');
       if (meta) meta.textContent = `${data.nodes.length} ent · ${data.links.length} edge · ${llmCells} llm-classified`;
-      // Update GRAPH state in-place: keep node positions for nodes that
-      // still exist, drop ones that don't.
+      // Update GRAPH state in-place. Persist positions across scrubs so
+      // a node that drops out (because its edges aren't behind the cursor
+      // yet) and reappears returns to where the user last saw it, instead
+      // of jumping to a random spot.
+      for (const n of GRAPH.nodes) {
+        GRAPH.nodePositions.set(n.id, { x: n.x, y: n.y, vx: n.vx, vy: n.vy });
+      }
       const oldById = new Map(GRAPH.nodes.map(n => [n.id, n]));
       const newNodes = [];
       const idIdx = new Map();
+      const cv = document.getElementById('graph-canvas');
+      const W = cv.clientWidth || 800;
+      const H = cv.clientHeight || 600;
+      // World-coord center of the current view, so newly-minted nodes
+      // land where the user is actually looking even after pan/zoom.
+      const viewCenter = graphScreenToWorld(W / 2, H / 2);
+      const spread = 400 / GRAPH.view.k;
       for (const n of data.nodes) {
         const old = oldById.get(n.id);
         if (old) {
           newNodes.push(old);
           idIdx.set(n.id, newNodes.length - 1);
         } else {
-          // New entity (revealed by going forward in cursor) — randomize
-          const cv = document.getElementById('graph-canvas');
-          const W = cv.clientWidth || 800;
-          const H = cv.clientHeight || 600;
-          n.x = W/2 + (Math.random() - 0.5) * 400;
-          n.y = H/2 + (Math.random() - 0.5) * 300;
-          n.vx = 0; n.vy = 0;
+          const cached = GRAPH.nodePositions.get(n.id);
+          if (cached) {
+            n.x = cached.x; n.y = cached.y;
+            n.vx = cached.vx || 0; n.vy = cached.vy || 0;
+          } else {
+            n.x = viewCenter.x + (Math.random() - 0.5) * spread;
+            n.y = viewCenter.y + (Math.random() - 0.5) * (spread * 0.75);
+            n.vx = 0; n.vy = 0;
+          }
           newNodes.push(n);
           idIdx.set(n.id, newNodes.length - 1);
         }
