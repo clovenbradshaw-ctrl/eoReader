@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Anchorage tests</title>
+<style>body{font:14px ui-monospace,monospace;padding:1rem;background:#111;color:#ddd}pre{white-space:pre-wrap}h1{font-size:1rem;color:#9cf}</style>
+<h1>Anchorage wire format — round-trip + regression tests</h1>
+<pre id="out">running…</pre>
+<script type="module">
+const out = document.getElementById('out');
+const buf = [];
+const log   = (...a) => { buf.push(a.join(' ')); out.textContent = buf.join('\n'); };
+const error = (...a) => { buf.push('ERR ' + a.join(' ')); out.textContent = buf.join('\n'); };
+console.log = log;
+console.error = error;
+try {
+  await import('./round-trip.test.mjs');
+  await import('./regression.test.mjs');
+} catch (e) {
+  error(e.stack || e.message || String(e));
+}
+</script>
