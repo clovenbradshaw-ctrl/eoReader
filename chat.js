@@ -373,24 +373,33 @@ export async function runChatTurnHybrid(message, opts = {}) {
   const t0 = Date.now();
 
   const recentTurnsTxt = recentTurnsCard(2, 220);
+  const corpusEmpty = !(CTX?.STATE?.G?.length);
 
   // Step 1: parallel reads. The classifier LLM call runs in parallel with
   // no-LLM memory views (span retrieval, vocab card). We deliberately
   // don't await onClassifier — it's a UI hint, fire-and-forget.
-  const classifierPromise = classifyIntent(message, recentTurnsTxt).then(c => {
-    try { opts.onClassifier?.(c); } catch (e) { CTX?.log?.('onClassifier hook threw', e?.message); }
-    return c;
-  });
+  // When there's no corpus, skip the classifier LLM call entirely (it has
+  // nothing to classify against) and skip span retrieval.
+  const classifierPromise = corpusEmpty
+    ? Promise.resolve({ kind: 'chat', needs_graph: false, confidence: 1, reason: 'no corpus', source: 'short-circuit' })
+        .then(c => { try { opts.onClassifier?.(c); } catch (e) { CTX?.log?.('onClassifier hook threw', e?.message); } return c; })
+    : classifyIntent(message, recentTurnsTxt).then(c => {
+        try { opts.onClassifier?.(c); } catch (e) { CTX?.log?.('onClassifier hook threw', e?.message); }
+        return c;
+      });
   const [classifier, spans, vocabTxt] = await Promise.all([
     classifierPromise,
-    retrieveSpansByEmbedding(message, 5).catch(() => []),
-    Promise.resolve(vocabCardLight(16)),
+    corpusEmpty ? Promise.resolve([]) : retrieveSpansByEmbedding(message, 5).catch(() => []),
+    Promise.resolve(corpusEmpty ? '' : vocabCardLight(16)),
   ]);
 
   // Step 2: gate. Low confidence → safe default to 'chat' route.
+  // No corpus → always 'chat' route; the graph pipeline has nothing to walk.
   let route;
   let lowConfidence = false;
-  if (classifier.confidence < 0.55) {
+  if (corpusEmpty) {
+    route = 'chat';
+  } else if (classifier.confidence < 0.55) {
     route = 'chat';
     lowConfidence = true;
   } else if (classifier.needs_graph) {

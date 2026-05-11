@@ -2336,7 +2336,7 @@ code {
       <div class="pane-body librarian-body" id="chat-results">
         <div class="librarian-left">
           <div id="chat-transcript">
-            <div class="empty-state">Ingest a source, then start chatting. Answers come paired with the EO query plan that produced them, when one ran.</div>
+            <div class="empty-state">Start chatting. With no corpus loaded you'll get plain conversational replies; ingest a source and answers will be grounded in it with the EO query plan that produced them.</div>
           </div>
         </div>
         <div class="librarian-divider" aria-hidden="true"></div>
@@ -17130,7 +17130,9 @@ function renderHeaderStatus() {
   }
 
   document.getElementById('ingest-btn').disabled = false;
-  document.getElementById('chat-send').disabled = STATE.G.length === 0;
+  // Chat works even without a corpus — chat.js short-circuits to a
+  // plain conversational reply when STATE.G is empty.
+  document.getElementById('chat-send').disabled = false;
 }
 // ─── UI WIRING ───────────────────────────────────────────────────────
 
