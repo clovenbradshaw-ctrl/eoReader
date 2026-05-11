@@ -5834,19 +5834,49 @@ async function ensureWebLLMEngine() {
     if (pill && STATE.llmBackend === 'webllm') pill.textContent = `loading model: ${(p.progress * 100).toFixed(0)}%`;
   };
 
+  // Network errors during model download (Cache.add() / fetch) are common
+  // on flaky connections — a single failed shard aborts the whole load.
+  // Retry with exponential backoff. Use IndexedDB-backed cache, which is
+  // more robust than the default Cache API (which atomically fails the
+  // whole add() on any partial network error).
+  const MAX_ATTEMPTS = 4;
+  const isNetworkError = (err) => {
+    const msg = String(err?.message || err || '');
+    return /network error|Failed to fetch|NetworkError|Cache\.add|ERR_NETWORK|ERR_INTERNET|timeout|TypeError: Load failed/i.test(msg);
+  };
+
+  let lastErr = null;
   try {
     const mod = await import('https://esm.run/@mlc-ai/web-llm');
     const { CreateMLCEngine } = mod;
-    STATE.webllmEngine = await CreateMLCEngine(STATE.webllmModel, { initProgressCallback: progress });
-    STATE.webllmEngineModel = STATE.webllmModel;
-    const el = document.getElementById('webllm-progress');
-    if (el) el.textContent = `loaded: ${STATE.webllmModel}`;
-    renderHeaderStatus();
-    return STATE.webllmEngine;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        STATE.webllmEngine = await CreateMLCEngine(STATE.webllmModel, {
+          initProgressCallback: progress,
+          useIndexedDBCache: true,
+        });
+        STATE.webllmEngineModel = STATE.webllmModel;
+        const el = document.getElementById('webllm-progress');
+        if (el) el.textContent = `loaded: ${STATE.webllmModel}`;
+        renderHeaderStatus();
+        return STATE.webllmEngine;
+      } catch (e) {
+        lastErr = e;
+        if (attempt === MAX_ATTEMPTS || !isNetworkError(e)) throw e;
+        const delayMs = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s, 8s
+        const el = document.getElementById('webllm-progress');
+        if (el) el.textContent = `network hiccup (attempt ${attempt}/${MAX_ATTEMPTS}) — retrying in ${delayMs / 1000}s…`;
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+    throw lastErr;
   } catch (e) {
     const el = document.getElementById('webllm-progress');
-    if (el) el.textContent = `load failed: ${e.message}`;
-    throw new Error(`WebLLM load failed: ${e.message}`);
+    const hint = isNetworkError(e)
+      ? ' — check your connection, then click Load again. Partial downloads are cached and will resume.'
+      : '';
+    if (el) el.textContent = `load failed: ${e.message}${hint}`;
+    throw new Error(`WebLLM load failed: ${e.message}${hint}`);
   }
 }
 
