@@ -442,6 +442,11 @@ export async function runChatTurnHybrid(message, opts = {}) {
   graphTurn.route = route;
   graphTurn.classifier = classifier;
   graphTurn.evidenceSpans = spans;
+  // For graph turns the templated answer is already mechanical, but we
+  // still render the embedding-retrieved spans on the right so the user
+  // sees both views: the graph walker's structured output, and the raw
+  // sentences embedding retrieval surfaced for the same question.
+  if (!graphTurn.mechanicalAnswer) graphTurn.mechanicalAnswer = buildMechanicalAnswer(spans);
   graphTurn.latencyMs = Date.now() - t0;
   return graphTurn;
 }
@@ -456,6 +461,7 @@ function makeChatReturn({ turnId, message, opts, reply, spans, route, t0, lowCon
     plans: [],
     answer: `<div class="templated chat-reply">${formatMarkdown(reply.text)}${lowConfidence ? '<p class="muted">(low classifier confidence — kind of question was uncertain)</p>' : ''}</div>`,
     answerText: reply.text,
+    mechanicalAnswer: buildMechanicalAnswer(spans),
     summary: null,
     summaryWarning: null,
     pending_disambiguation: false,
@@ -467,6 +473,33 @@ function makeChatReturn({ turnId, message, opts, reply, spans, route, t0, lowCon
     modelUsed: reply.modelUsed,
     latencyMs: Date.now() - t0,
   };
+}
+
+// Mechanical / "cannot lie" companion to the LLM prose answer. Renders
+// the retrieved spans verbatim — no rewriting, no inference. The user
+// can compare the LLM's prose on the left against this on the right and
+// verify that nothing was added or shaded. The spans here are the same
+// ones passed to the LLM via spansCardFromList, so this view literally
+// shows what the model was conditioned on.
+export function buildMechanicalAnswer(spans) {
+  if (!spans || !spans.length) {
+    return `<div class="mechanical-empty">No spans matched. The LLM reply on the left used only the conversation context and general knowledge — there is nothing in the loaded document to verify against.</div>`;
+  }
+  let html = `<ol class="mechanical-spans">`;
+  for (const s of spans) {
+    const entity = escapeHtml(s.entityName || s.entityId || 'unknown');
+    const text = escapeHtml(s.spanText || '');
+    const score = typeof s.score === 'number' ? s.score.toFixed(2) : null;
+    html += `<li class="mechanical-span">
+      <div class="mechanical-span-head">
+        <span class="mechanical-span-entity">${entity}</span>
+        ${score ? `<span class="mechanical-span-score">${score}</span>` : ''}
+      </div>
+      <div class="mechanical-span-text">${text}</div>
+    </li>`;
+  }
+  html += `</ol>`;
+  return html;
 }
 
 function escapeHtml(s) {

@@ -773,6 +773,84 @@ button.secondary.danger:hover { background: var(--accent); color: var(--paper); 
   font-style: italic;
 }
 .chat-turn .turn-answer.loading { color: var(--ink-faint); font-size: 12px; }
+
+/* Side-by-side answer pair: LLM prose on the left, mechanical span-only
+   answer on the right. The pair makes the "integral RAG that cannot
+   lie" promise visible — readers can verify the prose against the
+   verbatim source spans. Collapses to a single column on narrow chats. */
+.chat-turn .turn-answer-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 4px;
+}
+.chat-turn .turn-answer-pair .turn-answer { margin: 0; }
+.chat-turn .turn-answer-pane-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-faint);
+  margin-bottom: 4px;
+  font-style: normal;
+}
+.chat-turn .turn-answer-pane-label .pane-caveat {
+  margin-left: 4px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ink-ghost);
+  font-style: italic;
+}
+.mechanical-answer-pane {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-style: normal;
+  color: var(--ink-soft);
+}
+.mechanical-spans {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mechanical-span {
+  padding: 6px 8px;
+  border-left: 2px solid var(--ink-ghost);
+  background: rgba(0,0,0,0.02);
+}
+.mechanical-span-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.mechanical-span-entity {
+  font-weight: 600;
+  color: var(--ink);
+}
+.mechanical-span-score {
+  margin-left: auto;
+  font-size: 9px;
+  color: var(--ink-faint);
+}
+.mechanical-span-text {
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+.mechanical-empty {
+  font-size: 11px;
+  color: var(--ink-faint);
+  font-style: italic;
+  padding: 6px 8px;
+  border-left: 2px solid var(--ink-ghost);
+  background: rgba(0,0,0,0.02);
+}
+@media (max-width: 900px) {
+  .chat-turn .turn-answer-pair { grid-template-columns: 1fr; }
+}
+
 .chat-turn .turn-meta {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 9px;
@@ -13104,7 +13182,19 @@ function renderChatTranscript() {
       const modeBadge = haveEdits && mode !== 'polished'
         ? `<span class="edits-badge" data-turn-id="${escapeHtml(t.turnId)}">view: ${mode}</span>`
         : '';
-      answerHtml = `<div class="turn-answer">${bodyHTML}${toggle ? ' ' + toggle : ''}${modeBadge ? ' ' + modeBadge : ''}</div>`;
+      const llmPane = `<div class="turn-answer">
+        <div class="turn-answer-pane-label">llm response <span class="pane-caveat">· prose, may drift inside excerpts</span></div>
+        ${bodyHTML}${toggle ? ' ' + toggle : ''}${modeBadge ? ' ' + modeBadge : ''}
+      </div>`;
+      if (t.mechanicalAnswer) {
+        const mechPane = `<div class="turn-answer mechanical-answer-pane">
+          <div class="turn-answer-pane-label">from the spans <span class="pane-caveat">· verbatim, cannot lie</span></div>
+          ${t.mechanicalAnswer}
+        </div>`;
+        answerHtml = `<div class="turn-answer-pair">${llmPane}${mechPane}</div>`;
+      } else {
+        answerHtml = llmPane;
+      }
     } else {
       answerHtml = `<div class="turn-answer loading">nothing matched in the graph — try rephrasing</div>`;
     }
@@ -17759,6 +17849,7 @@ document.getElementById('chat-send').addEventListener('click', async () => {
       t.route = real.route;
       t.classifier = real.classifier || t.classifier;
       t.evidenceSpans = real.evidenceSpans || [];
+      t.mechanicalAnswer = real.mechanicalAnswer || null;
       t.modelUsed = real.modelUsed || null;
       t.latencyMs = real.latencyMs || null;
       t.pending = false;
