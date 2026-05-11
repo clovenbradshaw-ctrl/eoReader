@@ -218,18 +218,18 @@ export function vocabCardLight(maxEntities = 16) {
 // Span retrieval. The plan calls for span-level vectors with optional
 // reranker; we fall back to the existing entity centroids + their best
 // spans as the floor (per plan's "fallback to entity centroids" note).
-export async function retrieveSpansByEmbedding(message, k = 5) {
+export async function retrieveSpansByEmbedding(message, k = 8) {
   if (!CTX?.resolveEntitiesByEmbedding || !CTX?.getSpansForEntity) return [];
   let cands;
   try {
-    cands = await CTX.resolveEntitiesByEmbedding(message, Math.max(k, 3));
+    cands = await CTX.resolveEntitiesByEmbedding(message, Math.max(k, 4));
   } catch { return []; }
   if (!cands?.length) return [];
   const out = [];
   for (const c of cands) {
-    const spans = (CTX.getSpansForEntity(c.id) || []).slice(0, 2);
+    const spans = (CTX.getSpansForEntity(c.id) || []).slice(0, 3);
     for (const s of spans) {
-      const text = String(s.text || s.spanText || '').slice(0, 220);
+      const text = String(s.text || s.spanText || '').slice(0, 500);
       if (!text) continue;
       out.push({
         spanText: text,
@@ -329,22 +329,39 @@ function parseFirstJson(raw) {
 }
 
 // ─── composeChatReply ─────────────────────────────────────────────────
-const CHAT_SYSTEM = `You are eoReader's chat. The user has a corpus loaded and the system has a typed knowledge graph over it. Answer briefly and conversationally. If the question would need structured graph data you can't see, say so plainly — the system will walk the graph for follow-up turns when needed. Don't invent corpus facts; if a fact isn't in the spans you were shown, say you don't know.`;
+// Two modes, chosen by whether we retrieved any spans:
+//
+//   Integral RAG (corpus + retrieved spans) — the bot must not lie.
+//   Answer strictly from the excerpts; if they don't cover it, say so.
+//
+//   Free chat (no spans) — normal chatbot, general knowledge.
+const CHAT_SYSTEM_RAG = `You are an integral-RAG assistant. Excerpts from the user's loaded document appear below their question. Rules:
+- Answer ONLY using facts present in the excerpts.
+- If the excerpts don't contain the answer, reply: "The loaded document doesn't cover that." Don't guess, don't fill from outside knowledge.
+- Paraphrase from the excerpts; keep replies short and direct.
+- General-knowledge questions unrelated to the document are fine to answer normally.`;
 
-export async function composeChatReply({ message, classifier, recentTurnsTxt, vocabTxt, spansTxt }) {
-  if (!CTX?.callLLM || !CTX?.isLLMReady?.()) {
+const CHAT_SYSTEM_PLAIN = `You are a helpful conversational assistant. No document is loaded — answer from general knowledge, briefly and directly.`;
+
+export async function composeChatReply({ message, recentTurnsTxt, spansTxt }) {
+  if (!CTX?.callLLM) {
     return {
-      text: "I can chat — but no LLM backend is available right now. Configure one in settings, or ask a structural question and I'll walk the graph instead.",
+      text: "I can chat — but the chat bridge isn't wired up. Reload the page or check the console for module load errors.",
       modelUsed: null,
     };
   }
-  const sys = CHAT_SYSTEM;
-  // Build the user message inside a budget of ~1000 input tokens total.
+  // We don't gate on isLLMReady(): for WebLLM the host's callLLM lazily
+  // downloads + compiles the engine on first call. The progress hook
+  // updates the api-status pill so the user sees what's happening.
+  // For other backends, callLLM throws a clear error if unconfigured,
+  // which the try/catch below surfaces in the transcript.
+  const grounded = !!spansTxt;
+  const sys = grounded ? CHAT_SYSTEM_RAG : CHAT_SYSTEM_PLAIN;
+
   const parts = [];
   if (recentTurnsTxt) parts.push(clipToTokens(recentTurnsTxt, 200));
-  if (classifier?.kind !== 'meta' && spansTxt) parts.push(clipToTokens(spansTxt, 300));
-  if (vocabTxt) parts.push(clipToTokens(vocabTxt, 180));
-  parts.push(`User: ${clipToTokens(message, 200, { suffix: ' …[truncated]' })}`);
+  if (spansTxt)       parts.push(clipToTokens(spansTxt, 600));
+  parts.push(`Question: ${clipToTokens(message, 300, { suffix: ' …[truncated]' })}`);
   const userMsg = parts.filter(Boolean).join('\n\n');
 
   let text;
@@ -357,79 +374,60 @@ export async function composeChatReply({ message, classifier, recentTurnsTxt, vo
 }
 
 // ─── runChatTurnHybrid — the orchestrator ─────────────────────────────
-// Returns a "turn" shape compatible with the existing transcript renderer:
-//   { turnId, question, cursor, framing, compiled, plans, answer, summary,
-//     pending_disambiguation, usedCompiler, timestamp,
-//     route, classifier, evidenceSpans, modelUsed }
+// Classify the user's intent, retrieve supporting spans in parallel,
+// then either compose a conversational reply (chat / meta / clarify)
+// or delegate to the host's graph walker (portrait / relation_probe /
+// attribute_probe / search / overview).
 //
-// Behaviour:
-//   - All non-LLM views (recent turns, vocab card, span retrieval) run in
-//     parallel with the classifier LLM call.
-//   - Confidence < 0.55 → safe-default to 'chat' route.
-//   - If route is 'chat'/'meta'/'clarify': compose conversational reply.
-//   - Otherwise: defer to the host's runGraphChatTurn (existing pipeline).
+// SIG gate: `needs_graph` is a boolean determination of *whether* the
+// graph is needed. `confidence` qualifies the *kind* classification
+// within the graph branch (portrait vs. relation_probe vs. search).
+// A low-confidence heuristic match for "tell me about X" still routes
+// through the graph — the regex literally fired.
+//
+// Returns a "turn" shape compatible with the existing transcript renderer.
 export async function runChatTurnHybrid(message, opts = {}) {
   const turnId = 'turn-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
   const t0 = Date.now();
-
   const recentTurnsTxt = recentTurnsCard(2, 220);
+  const corpusEmpty = !(CTX?.STATE?.G?.length);
 
-  // Step 1: parallel reads. The classifier LLM call runs in parallel with
-  // no-LLM memory views (span retrieval, vocab card). We deliberately
-  // don't await onClassifier — it's a UI hint, fire-and-forget.
+  // No corpus → straight conversational, no point classifying or retrieving.
+  if (corpusEmpty) {
+    try { opts.onClassifier?.({ kind: 'chat', needs_graph: false, confidence: 1, source: 'no-corpus', resolvedRoute: 'chat' }); } catch {}
+    const reply = await composeChatReply({ message, recentTurnsTxt, spansTxt: '' });
+    return makeChatReturn({ turnId, message, opts, reply, spans: [], route: 'chat', t0 });
+  }
+
+  // Classify + retrieve in parallel. The classifier fire is a UI hint;
+  // we don't await onClassifier itself.
   const classifierPromise = classifyIntent(message, recentTurnsTxt).then(c => {
     try { opts.onClassifier?.(c); } catch (e) { CTX?.log?.('onClassifier hook threw', e?.message); }
     return c;
   });
-  const [classifier, spans, vocabTxt] = await Promise.all([
+  const [classifier, spans] = await Promise.all([
     classifierPromise,
-    retrieveSpansByEmbedding(message, 5).catch(() => []),
-    Promise.resolve(vocabCardLight(16)),
+    retrieveSpansByEmbedding(message, 8).catch(() => []),
   ]);
 
-  // Step 2: gate. Low confidence → safe default to 'chat' route.
-  let route;
-  let lowConfidence = false;
-  if (classifier.confidence < 0.55) {
+  // Gate (SIG fix): needs_graph wins. Confidence only flags kind uncertainty.
+  let route, lowConfidence = false;
+  if (classifier.needs_graph) {
+    route = classifier.kind;
+    lowConfidence = classifier.confidence < 0.55;
+  } else if (classifier.confidence < 0.55) {
     route = 'chat';
     lowConfidence = true;
-  } else if (classifier.needs_graph) {
-    route = classifier.kind;  // overview / portrait / relation_probe / attribute_probe / search
   } else {
-    route = 'chat';  // chat / meta / clarify
+    route = 'chat';
   }
-  // Re-fire the hint with the resolved route so the UI can swap pending
-  // text accurately even if confidence overrode needs_graph.
   try { opts.onClassifier?.({ ...classifier, resolvedRoute: route, lowConfidence }); } catch {}
 
   const spansTxt = spansCardFromList(spans);
 
-  // Step 3: branch.
   if (route === 'chat' || route === 'meta' || route === 'clarify') {
-    const reply = await composeChatReply({ message, classifier, recentTurnsTxt, vocabTxt, spansTxt });
-    return {
-      turnId,
-      question: message,
-      cursor: opts.cursor ?? CTX?.STATE?.activeCursor ?? null,
-      framing: opts.framing ?? CTX?.STATE?.activeFraming ?? 'uniform',
-      compiled: null,
-      plans: [],
-      // Wrap reply in the same template wrapper the renderer uses.
-      // The LLM emits light markdown (**bold**, bullets, headings); render
-      // it to HTML so it doesn't show up as raw asterisks in the transcript.
-      answer: `<div class="templated chat-reply">${formatMarkdown(reply.text)}${lowConfidence ? '<p class="muted">(low classifier confidence — replied conversationally)</p>' : ''}</div>`,
-      answerText: reply.text,
-      summary: null,
-      summaryWarning: null,
-      pending_disambiguation: false,
-      usedCompiler: false,
-      timestamp: Date.now(),
-      route,
-      classifier,
-      evidenceSpans: spans,
-      modelUsed: reply.modelUsed,
-      latencyMs: Date.now() - t0,
-    };
+    const reply = await composeChatReply({ message, recentTurnsTxt, spansTxt });
+    return makeChatReturn({ turnId, message, opts, reply, spans, route, t0, lowConfidence, classifier });
   }
 
   // Graph branch — defer to host.
@@ -441,12 +439,67 @@ export async function runChatTurnHybrid(message, opts = {}) {
     };
   }
   const graphTurn = await CTX.runGraphChatTurn(message, opts.cursor ?? CTX?.STATE?.activeCursor, opts.framing ?? CTX?.STATE?.activeFraming, opts);
-  // Decorate with hybrid metadata.
   graphTurn.route = route;
   graphTurn.classifier = classifier;
   graphTurn.evidenceSpans = spans;
+  // For graph turns the templated answer is already mechanical, but we
+  // still render the embedding-retrieved spans on the right so the user
+  // sees both views: the graph walker's structured output, and the raw
+  // sentences embedding retrieval surfaced for the same question.
+  if (!graphTurn.mechanicalAnswer) graphTurn.mechanicalAnswer = buildMechanicalAnswer(spans);
   graphTurn.latencyMs = Date.now() - t0;
   return graphTurn;
+}
+
+function makeChatReturn({ turnId, message, opts, reply, spans, route, t0, lowConfidence = false, classifier = null }) {
+  return {
+    turnId,
+    question: message,
+    cursor: opts.cursor ?? CTX?.STATE?.activeCursor ?? null,
+    framing: opts.framing ?? CTX?.STATE?.activeFraming ?? 'uniform',
+    compiled: null,
+    plans: [],
+    answer: `<div class="templated chat-reply">${formatMarkdown(reply.text)}${lowConfidence ? '<p class="muted">(low classifier confidence — kind of question was uncertain)</p>' : ''}</div>`,
+    answerText: reply.text,
+    mechanicalAnswer: buildMechanicalAnswer(spans),
+    summary: null,
+    summaryWarning: null,
+    pending_disambiguation: false,
+    usedCompiler: false,
+    timestamp: Date.now(),
+    route,
+    classifier,
+    evidenceSpans: spans,
+    modelUsed: reply.modelUsed,
+    latencyMs: Date.now() - t0,
+  };
+}
+
+// Mechanical / "cannot lie" companion to the LLM prose answer. Renders
+// the retrieved spans verbatim — no rewriting, no inference. The user
+// can compare the LLM's prose on the left against this on the right and
+// verify that nothing was added or shaded. The spans here are the same
+// ones passed to the LLM via spansCardFromList, so this view literally
+// shows what the model was conditioned on.
+export function buildMechanicalAnswer(spans) {
+  if (!spans || !spans.length) {
+    return `<div class="mechanical-empty">No spans matched. The LLM reply on the left used only the conversation context and general knowledge — there is nothing in the loaded document to verify against.</div>`;
+  }
+  let html = `<ol class="mechanical-spans">`;
+  for (const s of spans) {
+    const entity = escapeHtml(s.entityName || s.entityId || 'unknown');
+    const text = escapeHtml(s.spanText || '');
+    const score = typeof s.score === 'number' ? s.score.toFixed(2) : null;
+    html += `<li class="mechanical-span">
+      <div class="mechanical-span-head">
+        <span class="mechanical-span-entity">${entity}</span>
+        ${score ? `<span class="mechanical-span-score">${score}</span>` : ''}
+      </div>
+      <div class="mechanical-span-text">${text}</div>
+    </li>`;
+  }
+  html += `</ol>`;
+  return html;
 }
 
 function escapeHtml(s) {

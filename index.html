@@ -773,6 +773,84 @@ button.secondary.danger:hover { background: var(--accent); color: var(--paper); 
   font-style: italic;
 }
 .chat-turn .turn-answer.loading { color: var(--ink-faint); font-size: 12px; }
+
+/* Side-by-side answer pair: LLM prose on the left, mechanical span-only
+   answer on the right. The pair makes the "integral RAG that cannot
+   lie" promise visible — readers can verify the prose against the
+   verbatim source spans. Collapses to a single column on narrow chats. */
+.chat-turn .turn-answer-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 4px;
+}
+.chat-turn .turn-answer-pair .turn-answer { margin: 0; }
+.chat-turn .turn-answer-pane-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-faint);
+  margin-bottom: 4px;
+  font-style: normal;
+}
+.chat-turn .turn-answer-pane-label .pane-caveat {
+  margin-left: 4px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ink-ghost);
+  font-style: italic;
+}
+.mechanical-answer-pane {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-style: normal;
+  color: var(--ink-soft);
+}
+.mechanical-spans {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mechanical-span {
+  padding: 6px 8px;
+  border-left: 2px solid var(--ink-ghost);
+  background: rgba(0,0,0,0.02);
+}
+.mechanical-span-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.mechanical-span-entity {
+  font-weight: 600;
+  color: var(--ink);
+}
+.mechanical-span-score {
+  margin-left: auto;
+  font-size: 9px;
+  color: var(--ink-faint);
+}
+.mechanical-span-text {
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+.mechanical-empty {
+  font-size: 11px;
+  color: var(--ink-faint);
+  font-style: italic;
+  padding: 6px 8px;
+  border-left: 2px solid var(--ink-ghost);
+  background: rgba(0,0,0,0.02);
+}
+@media (max-width: 900px) {
+  .chat-turn .turn-answer-pair { grid-template-columns: 1fr; }
+}
+
 .chat-turn .turn-meta {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 9px;
@@ -2336,7 +2414,7 @@ code {
       <div class="pane-body librarian-body" id="chat-results">
         <div class="librarian-left">
           <div id="chat-transcript">
-            <div class="empty-state">Ingest a source, then start chatting. Answers come paired with the EO query plan that produced them, when one ran.</div>
+            <div class="empty-state">Start chatting. With no corpus loaded you'll get plain conversational replies; ingest a source and answers will be grounded in it with the EO query plan that produced them.</div>
           </div>
         </div>
         <div class="librarian-divider" aria-hidden="true"></div>
@@ -3152,6 +3230,7 @@ const STATE = {
   webllmModel: 'Llama-3.2-3B-Instruct-q4f16_1-MLC',
   webllmEngine: null,
   webllmEngineModel: null,  // tracks which model the loaded engine is for
+  webllmLoadingPromise: null, // in-flight ensureWebLLMEngine() promise; lets callers (e.g. ingest) await readiness
   ollamaUrl: 'http://localhost:11434',
   ollamaModel: 'llama3.2',
   lmstudioUrl: 'http://localhost:1234',
@@ -6017,34 +6096,41 @@ async function ensureWebLLMEngine() {
   if (STATE.webllmEngine && STATE.webllmEngineModel === STATE.webllmModel) {
     return STATE.webllmEngine;
   }
-  // Tear down old engine if model changed
-  if (STATE.webllmEngine && STATE.webllmEngine.unload) {
-    try { await STATE.webllmEngine.unload(); } catch (e) {}
-    STATE.webllmEngine = null;
-  }
+  // De-dup concurrent callers: if a load is already in flight, await it.
+  if (STATE.webllmLoadingPromise) return STATE.webllmLoadingPromise;
 
-  const progress = (p) => {
-    const text = p.text || `loading ${(p.progress * 100).toFixed(0)}%`;
-    const el = document.getElementById('webllm-progress');
-    if (el) el.textContent = text;
-    const pill = document.getElementById('api-status');
-    if (pill && STATE.llmBackend === 'webllm') pill.textContent = `loading model: ${(p.progress * 100).toFixed(0)}%`;
-  };
-
-  try {
-    const mod = await import('https://esm.run/@mlc-ai/web-llm');
-    const { CreateMLCEngine } = mod;
-    STATE.webllmEngine = await CreateMLCEngine(STATE.webllmModel, { initProgressCallback: progress });
-    STATE.webllmEngineModel = STATE.webllmModel;
-    const el = document.getElementById('webllm-progress');
-    if (el) el.textContent = `loaded: ${STATE.webllmModel}`;
-    renderHeaderStatus();
-    return STATE.webllmEngine;
-  } catch (e) {
-    const el = document.getElementById('webllm-progress');
-    if (el) el.textContent = `load failed: ${e.message}`;
-    throw new Error(`WebLLM load failed: ${e.message}`);
-  }
+  STATE.webllmLoadingPromise = (async () => {
+    // Tear down old engine if model changed
+    if (STATE.webllmEngine && STATE.webllmEngine.unload) {
+      try { await STATE.webllmEngine.unload(); } catch (e) {}
+      STATE.webllmEngine = null;
+    }
+    const progress = (p) => {
+      const text = p.text || `loading ${(p.progress * 100).toFixed(0)}%`;
+      const el = document.getElementById('webllm-progress');
+      if (el) el.textContent = text;
+      const pill = document.getElementById('api-status');
+      if (pill && STATE.llmBackend === 'webllm') pill.textContent = `loading model: ${(p.progress * 100).toFixed(0)}%`;
+    };
+    try {
+      const mod = await import('https://esm.run/@mlc-ai/web-llm');
+      const { CreateMLCEngine } = mod;
+      STATE.webllmEngine = await CreateMLCEngine(STATE.webllmModel, { initProgressCallback: progress });
+      STATE.webllmEngineModel = STATE.webllmModel;
+      const el = document.getElementById('webllm-progress');
+      if (el) el.textContent = `loaded: ${STATE.webllmModel}`;
+      renderHeaderStatus();
+      return STATE.webllmEngine;
+    } catch (e) {
+      const el = document.getElementById('webllm-progress');
+      if (el) el.textContent = `load failed: ${e.message}`;
+      throw new Error(`WebLLM load failed: ${e.message}`);
+    } finally {
+      STATE.webllmLoadingPromise = null;
+      renderHeaderStatus();
+    }
+  })();
+  return STATE.webllmLoadingPromise;
 }
 
 async function callWebLLM(systemPrompt, userMsg, maxTokens = 800, opts = null) {
@@ -10544,6 +10630,48 @@ async function ingestSource(text, opts = {}) {
   const pubDate = opts.publicationDate ? Date.parse(opts.publicationDate) : null;
   const intakeTs = Date.now();
 
+  // ─── NUL gate: register absence of LLM backend before ingest ────────
+  // Without a ready backend the per-sentence loop falls through to a
+  // SIG-only pass — no DEFs, no CONs, no claims in the graph — and the
+  // "done" progress line hides the fact. Wait for an in-flight WebLLM
+  // load if one is happening; if the backend is genuinely unavailable,
+  // append a NUL event so the absence is auditable and ask the user
+  // before proceeding with a degraded ingest.
+  if (!isLLMReady()) {
+    const progressEl = document.getElementById('ingest-progress');
+    if (STATE.llmBackend === 'webllm' && (STATE.webllmLoadingPromise || !STATE.webllmEngine)) {
+      if (progressEl) progressEl.innerHTML = 'awaiting WebLLM model load…';
+      try {
+        await ensureWebLLMEngine();
+      } catch (e) {
+        appendEvent({
+          op: 'NUL',
+          payload: { kind: 'backend-absent', backend: STATE.llmBackend, reason: e?.message || String(e) },
+          intakeTs: Date.now(),
+          authoredBy: 'system',
+        });
+        const proceed = confirm(`LLM backend unavailable (${e?.message || e}).\n\nProceed with entity-only ingest (no claim extraction)?`);
+        if (!proceed) {
+          STATE.currentlyProcessing = null;
+          if (progressEl) progressEl.innerHTML = 'ingest cancelled — backend unavailable';
+          return null;
+        }
+      }
+    } else if (STATE.llmBackend !== 'webllm') {
+      appendEvent({
+        op: 'NUL',
+        payload: { kind: 'backend-absent', backend: STATE.llmBackend, reason: backendNotReadyMessage() },
+        intakeTs: Date.now(),
+        authoredBy: 'system',
+      });
+      const proceed = confirm(`${backendNotReadyMessage()}\n\nProceed with entity-only ingest (no claim extraction)?`);
+      if (!proceed) {
+        STATE.currentlyProcessing = null;
+        return null;
+      }
+    }
+  }
+
   // Mode-driven HTML strip: when the user marks the ingest as HTML, run
   // the markup through DOMParser before any other text processing so the
   // chrome filter / NER / segmenter see the visible body text rather
@@ -13054,7 +13182,19 @@ function renderChatTranscript() {
       const modeBadge = haveEdits && mode !== 'polished'
         ? `<span class="edits-badge" data-turn-id="${escapeHtml(t.turnId)}">view: ${mode}</span>`
         : '';
-      answerHtml = `<div class="turn-answer">${bodyHTML}${toggle ? ' ' + toggle : ''}${modeBadge ? ' ' + modeBadge : ''}</div>`;
+      const llmPane = `<div class="turn-answer">
+        <div class="turn-answer-pane-label">llm response <span class="pane-caveat">· prose, may drift inside excerpts</span></div>
+        ${bodyHTML}${toggle ? ' ' + toggle : ''}${modeBadge ? ' ' + modeBadge : ''}
+      </div>`;
+      if (t.mechanicalAnswer) {
+        const mechPane = `<div class="turn-answer mechanical-answer-pane">
+          <div class="turn-answer-pane-label">from the spans <span class="pane-caveat">· verbatim, cannot lie</span></div>
+          ${t.mechanicalAnswer}
+        </div>`;
+        answerHtml = `<div class="turn-answer-pair">${llmPane}${mechPane}</div>`;
+      } else {
+        answerHtml = llmPane;
+      }
     } else {
       answerHtml = `<div class="turn-answer loading">nothing matched in the graph — try rephrasing</div>`;
     }
@@ -17129,8 +17269,14 @@ function renderHeaderStatus() {
       `${activeEntCount} entities · ${activeSlotCount} slots · ${activePredCount} predicates`;
   }
 
-  document.getElementById('ingest-btn').disabled = false;
-  document.getElementById('chat-send').disabled = STATE.G.length === 0;
+  // Gate ingest while WebLLM is downloading/compiling — without the
+  // engine, ingest falls back to SIG-only (no DEFs / no CONs), and the
+  // user has no way to tell. Once loaded, the button is freed.
+  const backendLoading = STATE.llmBackend === 'webllm' && !!STATE.webllmLoadingPromise && !STATE.webllmEngine;
+  document.getElementById('ingest-btn').disabled = backendLoading;
+  // Chat works even without a corpus — chat.js short-circuits to a
+  // plain conversational reply when STATE.G is empty.
+  document.getElementById('chat-send').disabled = false;
 }
 // ─── UI WIRING ───────────────────────────────────────────────────────
 
@@ -17703,6 +17849,7 @@ document.getElementById('chat-send').addEventListener('click', async () => {
       t.route = real.route;
       t.classifier = real.classifier || t.classifier;
       t.evidenceSpans = real.evidenceSpans || [];
+      t.mechanicalAnswer = real.mechanicalAnswer || null;
       t.modelUsed = real.modelUsed || null;
       t.latencyMs = real.latencyMs || null;
       t.pending = false;
@@ -19106,33 +19253,34 @@ function installChatBridge() {
   async function callLLMForChat(sys, user, args = {}) {
     const role = args.role || 'chat';
     const promptTokens = eoChat.approxTokens(sys) + eoChat.approxTokens(user);
-    let inputCap = null, outputCap = args.maxTokens || 350;
-    let priorWebllmModel = null;
+    let outputCap = args.maxTokens || 350;
     let pickedModelId = null;
 
     if (STATE.llmBackend === 'webllm') {
       const caps = STATE.chatDeviceCaps || (STATE.chatDeviceCaps = await eoChat.probeDeviceCaps());
-      const policy = STATE.chatModelPolicy || 'auto';
-      const pick = eoChat.pickModel({ role, promptTokens, caps, policy, metrics: STATE.chatModelMetrics || {} });
+      // CRITICAL: pin pickModel to the currently loaded model. The host
+      // owns exactly one WebLLM engine (STATE.webllmEngine); mutating
+      // STATE.webllmModel to a different id makes ensureWebLLMEngine
+      // unload the working engine and try to load a different one,
+      // which silently destroys the model on every classify/chat swap.
+      // Per-role specialization is only meaningful with the multi-engine
+      // cache (chat.js getEngine), which the bridge does not yet route
+      // through — so for now: one loaded model serves every role.
+      const pick = eoChat.pickModel({
+        role,
+        promptTokens,
+        caps,
+        policy: STATE.webllmModel,
+        metrics: STATE.chatModelMetrics || {},
+      });
       if (pick) {
         pickedModelId = pick.modelId;
-        inputCap = pick.inputCap;
-        // Honor the smaller of caller's maxTokens vs router's outputCap.
         outputCap = Math.min(outputCap, pick.outputCap);
-        if (pick.modelId !== STATE.webllmModel) {
-          priorWebllmModel = STATE.webllmModel;
-          STATE.webllmModel = pick.modelId;
-        }
       }
     }
 
     const t0 = Date.now();
-    let result;
-    try {
-      result = await callLLM(sys, user, outputCap, `chat.${role}`, args.opts);
-    } finally {
-      if (priorWebllmModel) STATE.webllmModel = priorWebllmModel;
-    }
+    const result = await callLLM(sys, user, outputCap, `chat.${role}`, args.opts);
     // Throughput feedback for the router.
     if (pickedModelId) {
       const wallSec = Math.max(0.001, (Date.now() - t0) / 1000);
@@ -19146,19 +19294,37 @@ function installChatBridge() {
     return result;
   }
 
-  // Pull a few representative spans for an entity. Used by retrieval
-  // when no span-level vector index exists yet (the floor behavior).
+  // Pull representative spans that mention an entity.
+  // Primary: DEF grounding (claimed properties, when the extraction
+  // pipeline actually ran). Floor: SIG event spanTexts (the sentences
+  // where the entity surface was matched). The floor is critical when
+  // ingest ran without an LLM backend — the graph then has SIGs but no
+  // DEFs, and DEF-only retrieval would starve chat replies of context.
   function getSpansForEntity(entityId) {
-    const defs = getAllDefsForSubject(entityId).filter(filterDefToActive);
     const out = [];
     const seen = new Set();
+    const push = (txt, sourceId) => {
+      const t = (txt || '').trim();
+      if (!t || seen.has(t)) return;
+      seen.add(t);
+      out.push({ text: t, sourceId: sourceId || null });
+    };
+    // Primary: DEF grounding
+    const defs = getAllDefsForSubject(entityId).filter(filterDefToActive);
     for (const d of defs) {
       for (const g of (d.grounding || [])) {
-        const txt = g.spanText || '';
-        if (!txt || seen.has(txt)) continue;
-        seen.add(txt);
-        out.push({ text: txt, sourceId: g.sourceId || null });
+        push(g.spanText, g.sourceId);
         if (out.length >= 6) return out;
+      }
+    }
+    // Floor: SIG spanTexts (sentences where the entity was mentioned)
+    if (out.length === 0) {
+      for (const ev of STATE.G) {
+        if (!ev || ev.op !== 'SIG') continue;
+        if (ev.payload?.entity !== entityId) continue;
+        if (!isEventActive(ev)) continue;
+        push(ev.spanText, ev.sourceId);
+        if (out.length >= 4) break;
       }
     }
     return out;
