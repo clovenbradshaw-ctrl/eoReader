@@ -415,7 +415,9 @@ export async function runChatTurnHybrid(message, opts = {}) {
       compiled: null,
       plans: [],
       // Wrap reply in the same template wrapper the renderer uses.
-      answer: `<p class="templated chat-reply">${escapeHtml(reply.text)}${lowConfidence ? ' <span class="muted">(low classifier confidence — replied conversationally)</span>' : ''}</p>`,
+      // The LLM emits light markdown (**bold**, bullets, headings); render
+      // it to HTML so it doesn't show up as raw asterisks in the transcript.
+      answer: `<div class="templated chat-reply">${formatMarkdown(reply.text)}${lowConfidence ? '<p class="muted">(low classifier confidence — replied conversationally)</p>' : ''}</div>`,
       answerText: reply.text,
       summary: null,
       summaryWarning: null,
@@ -449,6 +451,46 @@ export async function runChatTurnHybrid(message, opts = {}) {
 
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Minimal markdown → HTML for chat replies. Escapes first, then transforms
+// bold, italic, inline code, headings, and bullet lists. Block-aware: blank
+// lines separate paragraphs; a run of `- ` / `* ` lines becomes a <ul>.
+function inlineMd(s) {
+  return s
+    .replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[\s(])\*([^*\n]+?)\*(?=[\s.,;:!?)]|$)/g, '$1<em>$2</em>')
+    .replace(/(^|[\s(])_([^_\n]+?)_(?=[\s.,;:!?)]|$)/g, '$1<em>$2</em>')
+    .replace(/`([^`\n]+?)`/g, '<code>$1</code>');
+}
+
+function formatMarkdown(src) {
+  if (!src) return '';
+  const text = escapeHtml(String(src).replace(/\r\n/g, '\n'));
+  const lines = text.split('\n');
+  const out = [];
+  let para = [];
+  let list = [];
+  const flushPara = () => {
+    if (para.length) { out.push('<p>' + inlineMd(para.join(' ')) + '</p>'); para = []; }
+  };
+  const flushList = () => {
+    if (list.length) { out.push('<ul>' + list.map(li => '<li>' + inlineMd(li) + '</li>').join('') + '</ul>'); list = []; }
+  };
+  const bulletRe = /^\s*[-*]\s+(.+)$/;
+  const headingRe = /^(#{1,6})\s+(.+)$/;
+  for (const line of lines) {
+    if (!line.trim()) { flushPara(); flushList(); continue; }
+    const m = line.match(bulletRe);
+    if (m) { flushPara(); list.push(m[1]); continue; }
+    const h = line.match(headingRe);
+    if (h) { flushPara(); flushList(); out.push(`<h${h[1].length}>${inlineMd(h[2])}</h${h[1].length}>`); continue; }
+    flushList();
+    para.push(line);
+  }
+  flushPara();
+  flushList();
+  return out.join('');
 }
 
 // ─── install / boot ───────────────────────────────────────────────────
