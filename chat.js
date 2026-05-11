@@ -218,18 +218,18 @@ export function vocabCardLight(maxEntities = 16) {
 // Span retrieval. The plan calls for span-level vectors with optional
 // reranker; we fall back to the existing entity centroids + their best
 // spans as the floor (per plan's "fallback to entity centroids" note).
-export async function retrieveSpansByEmbedding(message, k = 5) {
+export async function retrieveSpansByEmbedding(message, k = 8) {
   if (!CTX?.resolveEntitiesByEmbedding || !CTX?.getSpansForEntity) return [];
   let cands;
   try {
-    cands = await CTX.resolveEntitiesByEmbedding(message, Math.max(k, 3));
+    cands = await CTX.resolveEntitiesByEmbedding(message, Math.max(k, 4));
   } catch { return []; }
   if (!cands?.length) return [];
   const out = [];
   for (const c of cands) {
-    const spans = (CTX.getSpansForEntity(c.id) || []).slice(0, 2);
+    const spans = (CTX.getSpansForEntity(c.id) || []).slice(0, 3);
     for (const s of spans) {
-      const text = String(s.text || s.spanText || '').slice(0, 220);
+      const text = String(s.text || s.spanText || '').slice(0, 500);
       if (!text) continue;
       out.push({
         spanText: text,
@@ -329,7 +329,19 @@ function parseFirstJson(raw) {
 }
 
 // ─── composeChatReply ─────────────────────────────────────────────────
-const CHAT_SYSTEM = `You are a helpful conversational assistant. When the user has loaded a document, relevant excerpts will be provided below their question — use them to answer when they're relevant. If excerpts don't cover the question, answer from general knowledge. Be direct and useful; don't refuse just because a detail isn't in the excerpts.`;
+// Two modes, chosen by whether we retrieved any spans:
+//
+//   Integral RAG (corpus + retrieved spans) — the bot must not lie.
+//   Answer strictly from the excerpts; if they don't cover it, say so.
+//
+//   Free chat (no spans) — normal chatbot, general knowledge.
+const CHAT_SYSTEM_RAG = `You are an integral-RAG assistant. Excerpts from the user's loaded document appear below their question. Rules:
+- Answer ONLY using facts present in the excerpts.
+- If the excerpts don't contain the answer, reply: "The loaded document doesn't cover that." Don't guess, don't fill from outside knowledge.
+- Paraphrase from the excerpts; keep replies short and direct.
+- General-knowledge questions unrelated to the document are fine to answer normally.`;
+
+const CHAT_SYSTEM_PLAIN = `You are a helpful conversational assistant. No document is loaded — answer from general knowledge, briefly and directly.`;
 
 export async function composeChatReply({ message, recentTurnsTxt, spansTxt }) {
   if (!CTX?.callLLM) {
@@ -343,15 +355,18 @@ export async function composeChatReply({ message, recentTurnsTxt, spansTxt }) {
   // updates the api-status pill so the user sees what's happening.
   // For other backends, callLLM throws a clear error if unconfigured,
   // which the try/catch below surfaces in the transcript.
+  const grounded = !!spansTxt;
+  const sys = grounded ? CHAT_SYSTEM_RAG : CHAT_SYSTEM_PLAIN;
+
   const parts = [];
   if (recentTurnsTxt) parts.push(clipToTokens(recentTurnsTxt, 200));
-  if (spansTxt)       parts.push(clipToTokens(spansTxt, 400));
+  if (spansTxt)       parts.push(clipToTokens(spansTxt, 600));
   parts.push(`Question: ${clipToTokens(message, 300, { suffix: ' …[truncated]' })}`);
   const userMsg = parts.filter(Boolean).join('\n\n');
 
   let text;
   try {
-    text = await CTX.callLLM(CHAT_SYSTEM, userMsg, { role: 'chat', maxTokens: 350 });
+    text = await CTX.callLLM(sys, userMsg, { role: 'chat', maxTokens: 350 });
   } catch (e) {
     return { text: `I hit an error talking to the model: ${e?.message || e}`, modelUsed: null, error: true };
   }
