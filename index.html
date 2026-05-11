@@ -508,25 +508,25 @@ button.secondary.danger:hover { background: var(--accent); color: var(--paper); 
   color: var(--ink-faint);
 }
 
-/* ── QUERY PANE ──────────────────────────────────────────────────── */
-.query-composer {
+/* ── CHAT PANE ───────────────────────────────────────────────────── */
+.chat-composer {
   padding: 14px 22px;
   border-bottom: 1px solid var(--rule);
   background: var(--paper-soft);
 }
-.query-composer textarea {
+.chat-composer textarea {
   font-family: 'Newsreader', serif;
   font-size: 14px;
   min-height: 50px;
 }
-.query-controls {
+.chat-controls {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-top: 10px;
   flex-wrap: wrap;
 }
-.query-go {
+.chat-send {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 10px;
   letter-spacing: 0.14em;
@@ -536,8 +536,8 @@ button.secondary.danger:hover { background: var(--accent); color: var(--paper); 
   background: var(--ink);
   color: var(--paper);
 }
-.query-go:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
-.query-go:disabled { opacity: 0.4; cursor: not-allowed; }
+.chat-send:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
+.chat-send:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .framing-pill, .cursor-pill {
   font-family: 'IBM Plex Mono', monospace;
@@ -2248,7 +2248,7 @@ code {
 <nav class="view-tabs">
   <button class="view-tab active" data-view="sources">Sources</button>
   <button class="view-tab" data-view="graph">Graph</button>
-  <button class="view-tab" data-view="query">Query</button>
+  <button class="view-tab" data-view="chat">Chat</button>
   <button class="view-tab" data-view="log">Log</button>
   <div class="view-tab-more" id="view-tab-more">
     <button class="more-tab-btn" id="more-tab-btn" type="button" aria-haspopup="menu" aria-expanded="false">More ▾</button>
@@ -2324,19 +2324,19 @@ code {
   <!-- ── VIEW AREA ────────────────────────────────────────────── -->
   <div class="view-area">
 
-    <!-- Query pane: ask the librarian, who walks the graph for cited answers -->
-    <div class="view-pane" id="view-query">
+    <!-- Chat pane: conversational by default; walks the graph when the classifier decides the turn needs structured corpus data -->
+    <div class="view-pane" id="view-chat">
       <div class="pane-header">
-        <div class="pane-title">Librarian · ask the corpus</div>
-        <div class="pane-meta" id="query-meta">no corpus</div>
+        <div class="pane-title">Chat · talk to the corpus</div>
+        <div class="pane-meta" id="chat-meta">no corpus</div>
       </div>
-      <!-- Two-pane librarian:
+      <!-- Two-pane chat:
            LEFT  = conversation (question + prose answer per turn)
            RIGHT = evidence + EO plan trace for the focused turn -->
-      <div class="pane-body librarian-body" id="query-results">
+      <div class="pane-body librarian-body" id="chat-results">
         <div class="librarian-left">
           <div id="chat-transcript">
-            <div class="empty-state">Ingest a source, then ask the librarian. Answers come paired with the EO query plan that produced them.</div>
+            <div class="empty-state">Ingest a source, then start chatting. Answers come paired with the EO query plan that produced them, when one ran.</div>
           </div>
         </div>
         <div class="librarian-divider" aria-hidden="true"></div>
@@ -2350,15 +2350,15 @@ code {
           </div>
         </div>
       </div>
-      <div class="query-composer" style="border-top: 1px solid var(--rule); background: var(--paper-soft);">
-        <textarea id="query-input" placeholder="Ask the librarian a question. Subsequent questions can reference earlier turns."></textarea>
-        <div class="query-controls">
-          <button class="query-go" id="query-go">Ask</button>
+      <div class="chat-composer" style="border-top: 1px solid var(--rule); background: var(--paper-soft);">
+        <textarea id="chat-input" placeholder="Chat with the corpus. Ask anything — it'll walk the graph when needed."></textarea>
+        <div class="chat-controls">
+          <button class="chat-send" id="chat-send">Send</button>
           <button id="chat-clear" style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);background:none;border:1px solid var(--rule);padding:4px 8px;cursor:pointer;">clear</button>
         </div>
-        <details class="query-advanced" style="margin: 6px 12px 0;">
+        <details class="chat-advanced" style="margin: 6px 12px 0;">
           <summary style="cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-faint);padding:4px 0;">Advanced</summary>
-          <div class="query-controls" style="margin-top:6px;">
+          <div class="chat-controls" style="margin-top:6px;">
             <span style="font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ink-faint); letter-spacing: 0.06em;">framing:</span>
             <button class="framing-pill active" data-framing="uniform">uniform</button>
             <button class="framing-pill" data-framing="recency">recency-weighted</button>
@@ -2703,6 +2703,11 @@ code {
 </div>
 
 <script type="module">
+// Hybrid chat orchestrator. Loaded as a sibling ES module so the chat
+// path (classifier, retrieval, conversational reply, graph delegate)
+// stays out of this giant file. The host installs a bridge at boot.
+import eoChat from './chat.js';
+
 // ═══════════════════════════════════════════════════════════════════════
 // eoREADER v25 — Integral RAG
 // ═══════════════════════════════════════════════════════════════════════
@@ -4938,7 +4943,7 @@ function renderActiveView() {
       case 'cursors':  renderCursorStatus(); break;
       case 'graph':    renderGraphView(); break;
       case 'log':      renderLogView(); break;
-      // 'query' and 'prompts' are interaction-driven, no live rebuild needed
+      // 'chat' and 'prompts' are interaction-driven, no live rebuild needed
     }
   } catch (e) {
     console.warn('Live re-render failed:', e);
@@ -11897,7 +11902,7 @@ function buildVocabCard() {
 //     fallback: "show_spans" | "ask"
 //   }
 
-const LIBRARIAN_COMPILER_SYSTEM = `You compile natural-language questions about a corpus into structured JSON traversal plans. You do not answer. You translate the question into a plan and stop.
+const CHAT_PLAN_COMPILER_SYSTEM = `You compile natural-language questions about a corpus into structured JSON traversal plans. You do not answer. You translate the question into a plan and stop.
 
 Output: ONE JSON object. No prose around it. No markdown fences. No explanation.
 
@@ -11991,13 +11996,13 @@ function extractJSONObject(raw) {
 // validated plan or null if the model can't be used / produces garbage.
 // On invalid output we re-prompt once with the schema error attached;
 // after that we hand off to the heuristic compiler.
-async function compileQueryPlan(question) {
+async function compilePlanFromMessage(question) {
   if (!isLLMReady()) return null;
   const vocab = buildVocabCard();
   const userMsg = `Registry:\n${vocab}\n\nQuestion: ${question}\n\nReturn the JSON plan only.`;
   let raw;
   try {
-    raw = await callLLM(LIBRARIAN_COMPILER_SYSTEM, userMsg, 280, 'librarian-compiler');
+    raw = await callLLM(CHAT_PLAN_COMPILER_SYSTEM, userMsg, 280, 'librarian-compiler');
   } catch (e) {
     return null;
   }
@@ -12007,7 +12012,7 @@ async function compileQueryPlan(question) {
     // One re-prompt with schema error attached.
     try {
       const reMsg = userMsg + `\n\nPrevious response failed validation (${v.error}). Return ONLY a valid JSON object matching the schema.`;
-      const raw2 = await callLLM(LIBRARIAN_COMPILER_SYSTEM, reMsg, 280, 'librarian-compiler-retry');
+      const raw2 = await callLLM(CHAT_PLAN_COMPILER_SYSTEM, reMsg, 280, 'librarian-compiler-retry');
       obj = extractJSONObject(raw2);
       v = obj ? validateCompiledPlan(obj) : { ok: false, error: 'no JSON found (retry)' };
     } catch (e) { return null; }
@@ -12311,7 +12316,10 @@ async function compiledToEOPlan(compiled, cursor, framing) {
 //   summary   — optional opt-in LLM-prose explanation, separate from
 //               the citation-bearing answer
 
-async function runLibrarianTurn(question, cursor, framing, opts = {}) {
+// Linear plan-and-walk pipeline. The hybrid orchestrator in chat.js
+// delegates here when the classifier picks a graph route. The conversational
+// branch never enters this path.
+async function runGraphChatTurn(question, cursor, framing, opts = {}) {
   const turnId = 'turn-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
 
   // 1. Compile question → structured JSON plan
@@ -12319,14 +12327,14 @@ async function runLibrarianTurn(question, cursor, framing, opts = {}) {
   let usedCompiler = false;
   if (isLLMReady() && !opts.heuristicOnly) {
     usedCompiler = true;
-    compiled = await compileQueryPlan(question);
+    compiled = await compilePlanFromMessage(question);
   }
   if (!compiled) {
     compiled = heuristicCompiledPlan(question);
   }
 
   // 2. If ambiguous, pause execution — the renderer shows a chooser.
-  //    The chooser callback re-runs runLibrarianTurn with a resolved
+  //    The chooser callback re-runs runGraphChatTurn with a resolved
   //    subject prepended to the question (or directly via opts.subject).
   if (compiled.confidence === 'ambiguous' &&
       compiled.subject_candidates.length > 1 &&
@@ -12714,51 +12722,51 @@ function assembleTemplatedAnswer(compiled, result) {
 // compact meta. Click a turn → it focuses and the right pane shows the
 // plan trace + findings + reader composer for that turn.
 //
-// LIBRARIAN_TURNS is the source of truth for what's on screen; both
+// CHAT_TURNS is the source of truth for what's on screen; both
 // panes re-render from it. Turns persist across the session.
 
-const LIBRARIAN_TURNS = [];
+const CHAT_TURNS = [];
 let FOCUSED_TURN_ID = null;
 let FOCUSED_PLAN_INDEX = 0;  // which plan line within the focused turn
 
-function appendLibrarianTurn(turn) {
-  LIBRARIAN_TURNS.push(turn);
+function appendChatTurn(turn) {
+  CHAT_TURNS.push(turn);
   FOCUSED_TURN_ID = turn.turnId;
   FOCUSED_PLAN_INDEX = 0;
-  renderLibrarianTranscript();
+  renderChatTranscript();
   renderEvidencePane();
   // Scroll left pane to show the new turn
   const left = document.querySelector('.librarian-left');
   if (left) left.scrollTop = left.scrollHeight;
 }
 
-function updateLibrarianTurn(turnId, updater) {
-  const t = LIBRARIAN_TURNS.find(x => x.turnId === turnId);
+function updateChatTurn(turnId, updater) {
+  const t = CHAT_TURNS.find(x => x.turnId === turnId);
   if (!t) return;
   updater(t);
-  renderLibrarianTranscript();
+  renderChatTranscript();
   if (FOCUSED_TURN_ID === turnId) renderEvidencePane();
 }
 
-function focusLibrarianTurn(turnId, planIdx = 0) {
+function focusChatTurn(turnId, planIdx = 0) {
   FOCUSED_TURN_ID = turnId;
   FOCUSED_PLAN_INDEX = planIdx;
-  renderLibrarianTranscript();
+  renderChatTranscript();
   renderEvidencePane();
   // Show the right pane if the user collapsed it
   const right = document.querySelector('.librarian-right');
   if (right) right.classList.remove('collapsed');
 }
 
-function renderLibrarianTranscript() {
+function renderChatTranscript() {
   const transcript = document.getElementById('chat-transcript');
   if (!transcript) return;
-  if (LIBRARIAN_TURNS.length === 0) {
-    transcript.innerHTML = `<div class="empty-state">Ingest a source, then ask the librarian. Answers come assembled from the graph with citations to the source spans they came from.</div>`;
+  if (CHAT_TURNS.length === 0) {
+    transcript.innerHTML = `<div class="empty-state">Ingest a source, then start chatting. The chat replies conversationally by default, and walks the graph (with citations) when a turn needs structured corpus data.</div>`;
     return;
   }
   let html = '';
-  for (const t of LIBRARIAN_TURNS) {
+  for (const t of CHAT_TURNS) {
     const isFocused = t.turnId === FOCUSED_TURN_ID;
     const planSummary = t.plans.map(p => p.line).slice(0, 1).join(' · ') + (t.plans.length > 1 ? ` · +${t.plans.length - 1} more` : '');
 
@@ -12769,7 +12777,12 @@ function renderLibrarianTranscript() {
     // the canonical mechanical answer.
     let answerHtml;
     if (t.pending) {
-      answerHtml = `<div class="turn-answer loading">walking the graph…</div>`;
+      const pendingTxt = t.routeKnown === 'graph'
+        ? 'walking the graph…'
+        : t.routeKnown === 'chat'
+          ? 'composing reply…'
+          : 'thinking…';
+      answerHtml = `<div class="turn-answer loading">${pendingTxt}</div>`;
     } else if (t.pending_disambiguation) {
       const cands = (t.compiled?.subject_candidates || []).map(c => escapeHtml(c)).join(' or ');
       answerHtml = `<div class="turn-answer loading">${escapeHtml(t.compiled?.clarifying_question || 'Which one did you mean?')} — ${cands || 'see chooser at right'}</div>`;
@@ -12809,7 +12822,7 @@ function renderLibrarianTranscript() {
         : '';
       answerHtml = `<div class="turn-answer">${bodyHTML}${toggle ? ' ' + toggle : ''}${modeBadge ? ' ' + modeBadge : ''}</div>`;
     } else {
-      answerHtml = `<div class="turn-answer loading">no findings — see right pane for spans matching this query</div>`;
+      answerHtml = `<div class="turn-answer loading">nothing matched in the graph — try rephrasing</div>`;
     }
 
     // Optional summary panel: only shown when the user has revealed it.
@@ -12856,7 +12869,7 @@ function renderLibrarianTranscript() {
       // Don't intercept clicks on entity links, citation markers, or the
       // per-turn polish toggle (handled separately below).
       if (e.target.closest('.entity-link') || e.target.closest('.citation') || e.target.closest('.polish-toggle')) return;
-      focusLibrarianTurn(el.getAttribute('data-turn-id'));
+      focusChatTurn(el.getAttribute('data-turn-id'));
     });
   });
 
@@ -12870,14 +12883,14 @@ function renderLibrarianTranscript() {
       if (!turnId) return;
       if (setMode === 'retry-polish') {
         // Clear the error/requested flags and re-fire the polish.
-        updateLibrarianTurn(turnId, x => {
+        updateChatTurn(turnId, x => {
           x.editsRequested = false;
           x.editsError = null;
         });
         fireEditorForTurn(turnId).catch(err => console.warn('[polish retry]', err));
         return;
       }
-      updateLibrarianTurn(turnId, x => { x.viewMode = setMode; });
+      updateChatTurn(turnId, x => { x.viewMode = setMode; });
     });
   });
 
@@ -12920,13 +12933,46 @@ function openCitationFromMarker(el) {
 function renderEvidencePane() {
   const pane = document.getElementById('evidence-pane');
   if (!pane) return;
-  const turn = LIBRARIAN_TURNS.find(t => t.turnId === FOCUSED_TURN_ID);
+  const turn = CHAT_TURNS.find(t => t.turnId === FOCUSED_TURN_ID);
   if (!turn) {
     pane.innerHTML = `<div class="empty-state">Click a turn on the left to inspect its findings, the citations behind every claim, and the construction trace.</div>`;
     return;
   }
 
   let html = `<div class="evidence-header">${escapeHtml(turn.question)}</div>`;
+
+  // ── Conversational route surface ──
+  // When the hybrid orchestrator answered without walking the graph
+  // (route in {chat, meta, clarify}), there's no plan trace. Show the
+  // classifier's verdict and the spans the chat reply was conditioned
+  // on, so groundedness is still legible.
+  if (turn.route && ['chat', 'meta', 'clarify'].includes(turn.route)) {
+    const cls = turn.classifier;
+    html += `<div class="evidence-section">
+      <div class="label">route · conversational</div>
+      <div class="muted" style="font-family:'IBM Plex Mono',monospace;font-size:10px;line-height:1.5;">
+        kind: <strong>${escapeHtml(turn.route)}</strong>${cls ? ` · confidence ${(cls.confidence ?? 0).toFixed(2)} · via ${escapeHtml(cls.source || 'llm')}${cls.reason ? ` · ${escapeHtml(cls.reason)}` : ''}` : ''}
+        ${turn.latencyMs ? ` · ${Math.round(turn.latencyMs)}ms` : ''}
+      </div>
+    </div>`;
+    if (turn.evidenceSpans && turn.evidenceSpans.length) {
+      html += `<div class="evidence-section">
+        <div class="label">spans the chat saw <span class="muted">· top ${turn.evidenceSpans.length} by embedding similarity</span></div>
+        <div class="live-retrieval-list">`;
+      for (const s of turn.evidenceSpans) {
+        html += `<div class="live-cand">
+          <div class="live-cand-head">
+            <span class="live-cand-label">${escapeHtml(s.entityName || s.entityId)}</span>
+            <span class="match-method embedding">${(s.score ?? 0).toFixed(2)}</span>
+          </div>
+          <div class="live-cand-span">${escapeHtml(s.spanText)}</div>
+        </div>`;
+      }
+      html += `</div></div>`;
+    } else {
+      html += `<div class="evidence-section"><div class="muted">No spans matched — the chat answered from prior turns + general knowledge only.</div></div>`;
+    }
+  }
 
   // ── Disambiguation chooser (rendered when the compiler bailed) ──
   if (turn.pending_disambiguation && turn.compiled) {
@@ -13018,8 +13064,8 @@ function renderEvidencePane() {
       btn.disabled = true;
       btn.style.opacity = '0.5';
       try {
-        const real = await runLibrarianTurn(turn.question, turn.cursor, turn.framing, { subject: cand });
-        updateLibrarianTurn(turn.turnId, t => {
+        const real = await runGraphChatTurn(turn.question, turn.cursor, turn.framing, { subject: cand });
+        updateChatTurn(turn.turnId, t => {
           t.compiled = real.compiled;
           t.plans = real.plans;
           t.answer = real.answer;
@@ -13043,7 +13089,7 @@ function renderEvidencePane() {
     el.addEventListener('click', (e) => {
       e.stopPropagation();
       const idx = parseInt(el.getAttribute('data-plan-idx'), 10);
-      focusLibrarianTurn(FOCUSED_TURN_ID, idx);
+      focusChatTurn(FOCUSED_TURN_ID, idx);
     });
   });
 
@@ -13185,7 +13231,7 @@ function answerToEditableText(html) {
   return { plain: plain.replace(/\s+/g, ' ').trim(), tokens };
 }
 
-const LIBRARIAN_POLISH_SYSTEM = `You polish a templated answer assembled from a typed knowledge graph. The mechanical templating produces broken English. Rewrite for fluent, natural English while preserving every fact, every entity name, and every [N] citation marker.
+const CHAT_POLISH_SYSTEM = `You polish a templated answer assembled from a typed knowledge graph. The mechanical templating produces broken English. Rewrite for fluent, natural English while preserving every fact, every entity name, and every [N] citation marker.
 
 HARD CONSTRAINTS (your output is rejected if any are violated)
 
@@ -13368,7 +13414,7 @@ async function requestStylisticEdits(turn) {
   const polishBudget = Math.max(800, Math.min(2000, Math.ceil(plain.length / 2)));
   let raw;
   try {
-    raw = await callLLM(LIBRARIAN_POLISH_SYSTEM, userMsg, polishBudget, 'librarian-polish');
+    raw = await callLLM(CHAT_POLISH_SYSTEM, userMsg, polishBudget, 'librarian-polish');
   } catch (e) { return { error: e.message }; }
   if (!raw) return { error: 'empty polish response' };
 
@@ -13396,24 +13442,24 @@ async function requestStylisticEdits(turn) {
 // STATE.editsEnabled toggle; default ON.
 async function fireEditorForTurn(turnId) {
   if (!STATE.editsEnabled) return;
-  const t = LIBRARIAN_TURNS.find(x => x.turnId === turnId);
+  const t = CHAT_TURNS.find(x => x.turnId === turnId);
   if (!t || !t.answer) return;
   // Skip pending or no-op answers
   if (t.pending || t.pending_disambiguation) return;
   if (!isLLMReady()) return;
   // Already requested?
   if (t.editsRequested) return;
-  updateLibrarianTurn(turnId, x => { x.editsRequested = true; });
+  updateChatTurn(turnId, x => { x.editsRequested = true; });
   const out = await requestStylisticEdits(t);
   if (!out || out.error) {
-    updateLibrarianTurn(turnId, x => {
+    updateChatTurn(turnId, x => {
       x.editsError = out?.error || 'no editor output';
       x.edits = [];
       x.editedAnswer = null;
     });
     return;
   }
-  updateLibrarianTurn(turnId, x => {
+  updateChatTurn(turnId, x => {
     x.edits = out.ops;
     x.editedAnswer = out.editedHTML;
     x.editsRaw = out.raw;
@@ -13859,7 +13905,7 @@ function flagDefViaModal(defId) {
     btn.textContent = '⚑ Flagged · this claim is now contested in the graph';
   }
   // Re-render the librarian so the contested state appears
-  if (typeof renderLibrarianTranscript === 'function') renderLibrarianTranscript();
+  if (typeof renderChatTranscript === 'function') renderChatTranscript();
   if (typeof renderEvidencePane === 'function') renderEvidencePane();
 }
 
@@ -13948,7 +13994,7 @@ function submitReaderFeedback() {
   // Re-render the librarian transcript + evidence pane so any DEF
   // change is reflected. The legacy feedback modal still functions
   // for direct-from-Inspect actions; this just keeps the chat in sync.
-  if (typeof renderLibrarianTranscript === 'function') renderLibrarianTranscript();
+  if (typeof renderChatTranscript === 'function') renderChatTranscript();
   if (typeof renderEvidencePane === 'function') renderEvidencePane();
   if (STATE.activeView === 'inspect') renderInspectView();
   renderHeaderStatus();
@@ -16828,7 +16874,7 @@ function renderHeaderStatus() {
   }
 
   if (STATE.G.length === 0) {
-    document.getElementById('query-meta').textContent = 'no corpus';
+    document.getElementById('chat-meta').textContent = 'no corpus';
   } else {
     let activeEntCount = 0;
     for (const [id] of STATE.entities) if (isEntityActive(id)) activeEntCount++;
@@ -16845,12 +16891,12 @@ function renderHeaderStatus() {
       if (hasActive) activeSlotCount++;
     }
     activePredCount = seenPreds.size;
-    document.getElementById('query-meta').textContent =
+    document.getElementById('chat-meta').textContent =
       `${activeEntCount} entities · ${activeSlotCount} slots · ${activePredCount} predicates`;
   }
 
   document.getElementById('ingest-btn').disabled = false;
-  document.getElementById('query-go').disabled = STATE.G.length === 0;
+  document.getElementById('chat-send').disabled = STATE.G.length === 0;
 }
 // ─── UI WIRING ───────────────────────────────────────────────────────
 
@@ -16880,6 +16926,27 @@ function switchView(viewName) {
   else if (viewName === 'graph') renderGraphView();
   else if (viewName === 'log') renderLogView();
   else if (viewName === 'dream') renderDreamView();
+  else if (viewName === 'chat') warmChatModelOnce();
+}
+
+// First time the user lands on the Chat tab, fire a 1-token warmup
+// against the router's preferred fast model. WebGPU shader compile
+// dominates first-call latency (5–30s); doing it now means the first
+// real chat reply lands fast. Subsequent tab-opens no-op.
+let CHAT_WARMUP_FIRED = false;
+async function warmChatModelOnce() {
+  if (CHAT_WARMUP_FIRED) return;
+  CHAT_WARMUP_FIRED = true;
+  if (STATE.llmBackend !== 'webllm') return;
+  if (!eoChat?.classifyIntent) return;  // module not loaded
+  try {
+    // classifyIntent runs through the bridged callLLM, which lets the
+    // router pick the appropriate fast model for this device and
+    // triggers download/shader-compile now instead of mid-conversation.
+    await eoChat.classifyIntent('hi', '');
+  } catch (e) {
+    console.debug('[chat warmup]', e?.message);
+  }
 }
 
 document.querySelectorAll('.view-tab').forEach(tab => {
@@ -17035,7 +17102,7 @@ document.getElementById('reset-btn').addEventListener('click', () => {
   STATE.sources.clear();
   STATE.predicates.clear();
   STATE.selectedSourceId = null;
-  document.getElementById('query-results').innerHTML = `<div class="empty-state">Ingest a source, then ask.</div>`;
+  document.getElementById('chat-results').innerHTML = `<div class="empty-state">Ingest a source, then ask.</div>`;
   document.getElementById('ingest-progress').textContent = '';
   renderHeaderStatus();
   if (STATE.activeView === 'sources') renderSourcesView();
@@ -17340,15 +17407,15 @@ document.getElementById('ollama-model').addEventListener('change', e => STATE.ol
 document.getElementById('lmstudio-url').addEventListener('change', e => STATE.lmstudioUrl = e.target.value.trim());
 document.getElementById('lmstudio-model').addEventListener('change', e => STATE.lmstudioModel = e.target.value.trim());
 
-// Query button — "Ask". Drives the compile-execute-template flow:
-// optimistically appends a pending turn so the user sees immediate
-// feedback, then awaits the compiler + runtime and updates in place.
-document.getElementById('query-go').addEventListener('click', async () => {
-  const input = document.getElementById('query-input');
+// Send button. Hands the message to the hybrid orchestrator (chat.js),
+// which classifies intent, retrieves spans, and either composes a
+// conversational reply or delegates to the existing graph pipeline.
+// The pending turn is rendered immediately so the UI never feels frozen.
+document.getElementById('chat-send').addEventListener('click', async () => {
+  const input = document.getElementById('chat-input');
   const q = input.value.trim();
   if (!q) return;
   input.value = '';
-  // Hide live retrieval panel — the actual turn takes over from here
   hideLiveRetrieval();
 
   const pendingId = 'turn-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
@@ -17365,27 +17432,55 @@ document.getElementById('query-go').addEventListener('click', async () => {
     pending_disambiguation: false,
     usedCompiler: isLLMReady(),
     timestamp: Date.now(),
+    routeKnown: null,  // populated by classifier callback so the pending
+                       // text can swap from "thinking…" to "walking the graph…"
   };
-  appendLibrarianTurn(pendingTurn);
+  appendChatTurn(pendingTurn);
 
+  const orchestrator = window.eoChat?.runChatTurnHybrid;
   try {
-    const real = await runLibrarianTurn(q, STATE.activeCursor, STATE.activeFraming);
-    updateLibrarianTurn(pendingId, t => {
+    let real;
+    if (orchestrator) {
+      real = await orchestrator(q, {
+        cursor: STATE.activeCursor,
+        framing: STATE.activeFraming,
+        onClassifier: (cls) => {
+          updateChatTurn(pendingId, t => {
+            t.classifier = cls;
+            // Prefer the resolved route (which incorporates the
+            // confidence gate) when chat.js fires its second hook.
+            const r = cls.resolvedRoute || cls.kind;
+            t.routeKnown = (r && ['chat', 'meta', 'clarify'].includes(r)) ? 'chat' : 'graph';
+          });
+        },
+      });
+    } else {
+      // chat.js failed to load — fall back to the linear graph pipeline
+      // so the user isn't stranded.
+      real = await runGraphChatTurn(q, STATE.activeCursor, STATE.activeFraming);
+    }
+    updateChatTurn(pendingId, t => {
       t.compiled = real.compiled;
       t.plans = real.plans;
       t.answer = real.answer;
+      t.answerText = real.answerText || null;
       t.pending_disambiguation = !!real.pending_disambiguation;
       t.usedCompiler = real.usedCompiler;
+      t.route = real.route;
+      t.classifier = real.classifier || t.classifier;
+      t.evidenceSpans = real.evidenceSpans || [];
+      t.modelUsed = real.modelUsed || null;
+      t.latencyMs = real.latencyMs || null;
       t.pending = false;
     });
-    // Fire the typed-edit layer in the background. The mechanical
-    // answer is already on screen; the editor's output, if it
-    // validates, replaces the rendered version (still toggleable).
-    if (STATE.editsEnabled && real.answer && !real.pending_disambiguation) {
+    // Polish layer only makes sense for templated graph answers — skip
+    // it for the conversational branch (the chat reply is already prose).
+    const isGraphBranch = real.route && !['chat', 'meta', 'clarify'].includes(real.route);
+    if (STATE.editsEnabled && real.answer && isGraphBranch && !real.pending_disambiguation) {
       fireEditorForTurn(pendingId).catch(e => console.warn('[editor]', e));
     }
   } catch (e) {
-    updateLibrarianTurn(pendingId, t => {
+    updateChatTurn(pendingId, t => {
       t.pending = false;
       t.pending_disambiguation = false;
       t.compiled = { intent: 'search', confidence: 'low', subject: null, subject_candidates: [], predicate: null, predicate_class: null, object_filter: null, clarifying_question: null, fallback: 'show_spans' };
@@ -17396,10 +17491,10 @@ document.getElementById('query-go').addEventListener('click', async () => {
 
 // Clear chat — resets all turns and the focused state.
 document.getElementById('chat-clear').addEventListener('click', () => {
-  LIBRARIAN_TURNS.length = 0;
+  CHAT_TURNS.length = 0;
   FOCUSED_TURN_ID = null;
   FOCUSED_PLAN_INDEX = 0;
-  renderLibrarianTranscript();
+  renderChatTranscript();
   renderEvidencePane();
 });
 
@@ -17408,10 +17503,10 @@ document.getElementById('librarian-right-close')?.addEventListener('click', () =
   document.querySelector('.librarian-right')?.classList.add('collapsed');
 });
 
-document.getElementById('query-input').addEventListener('keydown', (e) => {
+document.getElementById('chat-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
     e.preventDefault();
-    document.getElementById('query-go').click();
+    document.getElementById('chat-send').click();
   }
 });
 
@@ -17433,7 +17528,7 @@ let LIVE_RETRIEVAL_TIMER = null;
 const LIVE_RETRIEVAL_DEBOUNCE_MS = 150;
 const LIVE_RETRIEVAL_MIN_CHARS = 3;
 
-document.getElementById('query-input').addEventListener('input', (e) => {
+document.getElementById('chat-input').addEventListener('input', (e) => {
   const v = (e.target.value || '').trim();
   if (LIVE_RETRIEVAL_TIMER) clearTimeout(LIVE_RETRIEVAL_TIMER);
   if (v.length < LIVE_RETRIEVAL_MIN_CHARS) {
@@ -17548,7 +17643,7 @@ function renderLiveRetrievalPanel(text, cands) {
   // If a turn is focused with results, don't override — only show live
   // retrieval when the right pane is empty (no turn yet) or when the
   // user explicitly hasn't focused a turn.
-  const hasTurn = LIBRARIAN_TURNS.length > 0 && FOCUSED_TURN_ID;
+  const hasTurn = CHAT_TURNS.length > 0 && FOCUSED_TURN_ID;
   if (hasTurn) return;  // keep the focused turn visible
   if (!cands.length) {
     pane.innerHTML = `<div class="evidence-header"><em>typing</em>: ${escapeHtml(text)}</div>
@@ -17568,7 +17663,7 @@ function renderLiveRetrievalPanel(text, cands) {
     </div>`;
   }
   html += `</div>`;
-  html += `<div class="muted live-hint">Hit Ask (or Ctrl/Cmd+Enter) to compile this question into a structured query plan.</div>`;
+  html += `<div class="muted live-hint">Hit Send (or Ctrl/Cmd+Enter) to chat. The classifier decides whether to walk the graph for this turn.</div>`;
   pane.innerHTML = html;
 
   pane.querySelectorAll('.live-cand').forEach(el => {
@@ -17611,17 +17706,17 @@ document.querySelectorAll('.edit-mode-pill').forEach(pill => {
     const mode = pill.getAttribute('data-edit-mode');
     STATE.editsRenderMode = mode;
     STATE.editsEnabled = (mode !== 'raw');
-    for (const t of LIBRARIAN_TURNS) t.viewMode = null;
+    for (const t of CHAT_TURNS) t.viewMode = null;
     // If polish was disabled and is now back on, fire it for any
     // turns that don't have one yet.
     if (mode !== 'raw') {
-      for (const t of LIBRARIAN_TURNS) {
+      for (const t of CHAT_TURNS) {
         if (t.answer && !t.editsRequested && !t.pending && !t.pending_disambiguation) {
           fireEditorForTurn(t.turnId).catch(err => console.warn('[polish on enable]', err));
         }
       }
     }
-    if (typeof renderLibrarianTranscript === 'function') renderLibrarianTranscript();
+    if (typeof renderChatTranscript === 'function') renderChatTranscript();
   });
 });
 
@@ -17684,8 +17779,8 @@ function renderExampleQueries() {
   el.innerHTML = html;
   el.querySelectorAll('.example-q').forEach(b => {
     b.addEventListener('click', () => {
-      document.getElementById('query-input').value = b.getAttribute('data-q');
-      document.getElementById('query-go').click();
+      document.getElementById('chat-input').value = b.getAttribute('data-q');
+      document.getElementById('chat-send').click();
     });
   });
 }
@@ -18741,6 +18836,113 @@ async function boot() {
       console.warn('Auto WebLLM load failed (will retry on first call):', err);
     });
   }
+
+  // Install the hybrid chat bridge. chat.js owns the conversational
+  // path; we hand it just the host primitives it needs.
+  installChatBridge();
+}
+
+// Bridge between index.html host and chat.js orchestrator. Kept small
+// on purpose — chat.js shouldn't reach into STATE directly for anything
+// not surfaced here.
+function installChatBridge() {
+  if (!eoChat?.install) {
+    console.warn('eoChat module did not load; conversational chat disabled.');
+    return;
+  }
+
+  // Adapter: chat.js sees `callLLM(sys, user, { role, maxTokens, opts })`
+  // and we translate to the host's positional signature. For WebLLM we
+  // also let the model router pick an appropriate model per-role —
+  // saving heavy roles (chat, plan_compile) for 3B and cheap roles
+  // (classify, summarize) for 1B. Other backends ignore the modelId.
+  async function callLLMForChat(sys, user, args = {}) {
+    const role = args.role || 'chat';
+    const promptTokens = eoChat.approxTokens(sys) + eoChat.approxTokens(user);
+    let inputCap = null, outputCap = args.maxTokens || 350;
+    let priorWebllmModel = null;
+    let pickedModelId = null;
+
+    if (STATE.llmBackend === 'webllm') {
+      const caps = STATE.chatDeviceCaps || (STATE.chatDeviceCaps = await eoChat.probeDeviceCaps());
+      const policy = STATE.chatModelPolicy || 'auto';
+      const pick = eoChat.pickModel({ role, promptTokens, caps, policy, metrics: STATE.chatModelMetrics || {} });
+      if (pick) {
+        pickedModelId = pick.modelId;
+        inputCap = pick.inputCap;
+        // Honor the smaller of caller's maxTokens vs router's outputCap.
+        outputCap = Math.min(outputCap, pick.outputCap);
+        if (pick.modelId !== STATE.webllmModel) {
+          priorWebllmModel = STATE.webllmModel;
+          STATE.webllmModel = pick.modelId;
+        }
+      }
+    }
+
+    const t0 = Date.now();
+    let result;
+    try {
+      result = await callLLM(sys, user, outputCap, `chat.${role}`, args.opts);
+    } finally {
+      if (priorWebllmModel) STATE.webllmModel = priorWebllmModel;
+    }
+    // Throughput feedback for the router.
+    if (pickedModelId) {
+      const wallSec = Math.max(0.001, (Date.now() - t0) / 1000);
+      const outTok = eoChat.approxTokens(result);
+      const tokPerSec = outTok / wallSec;
+      const m = (STATE.chatModelMetrics ||= {});
+      const slot = (m[pickedModelId] ||= { samples: 0, avgTokPerSec: 0 });
+      slot.avgTokPerSec = (slot.avgTokPerSec * slot.samples + tokPerSec) / (slot.samples + 1);
+      slot.samples++;
+    }
+    return result;
+  }
+
+  // Pull a few representative spans for an entity. Used by retrieval
+  // when no span-level vector index exists yet (the floor behavior).
+  function getSpansForEntity(entityId) {
+    const defs = getAllDefsForSubject(entityId).filter(filterDefToActive);
+    const out = [];
+    const seen = new Set();
+    for (const d of defs) {
+      for (const g of (d.grounding || [])) {
+        const txt = g.spanText || '';
+        if (!txt || seen.has(txt)) continue;
+        seen.add(txt);
+        out.push({ text: txt, sourceId: g.sourceId || null });
+        if (out.length >= 6) return out;
+      }
+    }
+    return out;
+  }
+
+  // Multi-engine cache support for chat.js getEngine(). Loads a WebLLM
+  // engine for the requested modelId without touching STATE.webllmEngine
+  // (so the host's existing single-engine path keeps working).
+  async function loadWebLLMModel(modelId, progress) {
+    const mod = await import('https://esm.run/@mlc-ai/web-llm');
+    const { CreateMLCEngine } = mod;
+    return await CreateMLCEngine(modelId, {
+      initProgressCallback: progress || ((p) => {
+        const el = document.getElementById('webllm-progress');
+        if (el) el.textContent = p.text || `loading ${(p.progress * 100).toFixed(0)}%`;
+      }),
+    });
+  }
+
+  eoChat.install({
+    STATE,
+    isLLMReady,
+    callLLM: callLLMForChat,
+    isEntityActive,
+    resolveEntitiesByEmbedding,
+    getSpansForEntity,
+    getChatTurns: () => CHAT_TURNS,
+    runGraphChatTurn,
+    loadWebLLMModel,
+    log: (...a) => console.debug('[chat]', ...a),
+  });
 }
 
 // Re-render examples whenever ingest finishes
