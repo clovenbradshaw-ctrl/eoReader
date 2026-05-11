@@ -329,27 +329,29 @@ function parseFirstJson(raw) {
 }
 
 // ─── composeChatReply ─────────────────────────────────────────────────
-const CHAT_SYSTEM = `You are eoReader's chat. The user has a corpus loaded and the system has a typed knowledge graph over it. Answer briefly and conversationally. If the question would need structured graph data you can't see, say so plainly — the system will walk the graph for follow-up turns when needed. Don't invent corpus facts; if a fact isn't in the spans you were shown, say you don't know.`;
+const CHAT_SYSTEM = `You are a helpful conversational assistant. When the user has loaded a document, relevant excerpts will be provided below their question — use them to answer when they're relevant. If excerpts don't cover the question, answer from general knowledge. Be direct and useful; don't refuse just because a detail isn't in the excerpts.`;
 
-export async function composeChatReply({ message, classifier, recentTurnsTxt, vocabTxt, spansTxt }) {
-  if (!CTX?.callLLM || !CTX?.isLLMReady?.()) {
+export async function composeChatReply({ message, recentTurnsTxt, spansTxt }) {
+  if (!CTX?.callLLM) {
     return {
-      text: "I can chat — but no LLM backend is available right now. Configure one in settings, or ask a structural question and I'll walk the graph instead.",
+      text: "I can chat — but the chat bridge isn't wired up. Reload the page or check the console for module load errors.",
       modelUsed: null,
     };
   }
-  const sys = CHAT_SYSTEM;
-  // Build the user message inside a budget of ~1000 input tokens total.
+  // We don't gate on isLLMReady(): for WebLLM the host's callLLM lazily
+  // downloads + compiles the engine on first call. The progress hook
+  // updates the api-status pill so the user sees what's happening.
+  // For other backends, callLLM throws a clear error if unconfigured,
+  // which the try/catch below surfaces in the transcript.
   const parts = [];
   if (recentTurnsTxt) parts.push(clipToTokens(recentTurnsTxt, 200));
-  if (classifier?.kind !== 'meta' && spansTxt) parts.push(clipToTokens(spansTxt, 300));
-  if (vocabTxt) parts.push(clipToTokens(vocabTxt, 180));
-  parts.push(`User: ${clipToTokens(message, 200, { suffix: ' …[truncated]' })}`);
+  if (spansTxt)       parts.push(clipToTokens(spansTxt, 400));
+  parts.push(`Question: ${clipToTokens(message, 300, { suffix: ' …[truncated]' })}`);
   const userMsg = parts.filter(Boolean).join('\n\n');
 
   let text;
   try {
-    text = await CTX.callLLM(sys, userMsg, { role: 'chat', maxTokens: 350 });
+    text = await CTX.callLLM(CHAT_SYSTEM, userMsg, { role: 'chat', maxTokens: 350 });
   } catch (e) {
     return { text: `I hit an error talking to the model: ${e?.message || e}`, modelUsed: null, error: true };
   }
@@ -357,105 +359,46 @@ export async function composeChatReply({ message, classifier, recentTurnsTxt, vo
 }
 
 // ─── runChatTurnHybrid — the orchestrator ─────────────────────────────
-// Returns a "turn" shape compatible with the existing transcript renderer:
-//   { turnId, question, cursor, framing, compiled, plans, answer, summary,
-//     pending_disambiguation, usedCompiler, timestamp,
-//     route, classifier, evidenceSpans, modelUsed }
+// Linear, single-path RAG: pull relevant spans from the corpus by
+// embedding similarity, hand them to the LLM with the recent turns,
+// return the reply. No intent classifier, no graph routing. If the
+// corpus is empty, spans is just []; the LLM answers from context +
+// general knowledge.
 //
-// Behaviour:
-//   - All non-LLM views (recent turns, vocab card, span retrieval) run in
-//     parallel with the classifier LLM call.
-//   - Confidence < 0.55 → safe-default to 'chat' route.
-//   - If route is 'chat'/'meta'/'clarify': compose conversational reply.
-//   - Otherwise: defer to the host's runGraphChatTurn (existing pipeline).
+// Returns a "turn" shape compatible with the existing transcript renderer.
 export async function runChatTurnHybrid(message, opts = {}) {
   const turnId = 'turn-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
   const t0 = Date.now();
 
+  // UI hint: tell the pending-turn renderer this is a chat (not graph) reply.
+  try { opts.onClassifier?.({ kind: 'chat', needs_graph: false, confidence: 1, source: 'linear', resolvedRoute: 'chat' }); } catch {}
+
   const recentTurnsTxt = recentTurnsCard(2, 220);
-  const corpusEmpty = !(CTX?.STATE?.G?.length);
-
-  // Step 1: parallel reads. The classifier LLM call runs in parallel with
-  // no-LLM memory views (span retrieval, vocab card). We deliberately
-  // don't await onClassifier — it's a UI hint, fire-and-forget.
-  // When there's no corpus, skip the classifier LLM call entirely (it has
-  // nothing to classify against) and skip span retrieval.
-  const classifierPromise = corpusEmpty
-    ? Promise.resolve({ kind: 'chat', needs_graph: false, confidence: 1, reason: 'no corpus', source: 'short-circuit' })
-        .then(c => { try { opts.onClassifier?.(c); } catch (e) { CTX?.log?.('onClassifier hook threw', e?.message); } return c; })
-    : classifyIntent(message, recentTurnsTxt).then(c => {
-        try { opts.onClassifier?.(c); } catch (e) { CTX?.log?.('onClassifier hook threw', e?.message); }
-        return c;
-      });
-  const [classifier, spans, vocabTxt] = await Promise.all([
-    classifierPromise,
-    corpusEmpty ? Promise.resolve([]) : retrieveSpansByEmbedding(message, 5).catch(() => []),
-    Promise.resolve(corpusEmpty ? '' : vocabCardLight(16)),
-  ]);
-
-  // Step 2: gate. Low confidence → safe default to 'chat' route.
-  // No corpus → always 'chat' route; the graph pipeline has nothing to walk.
-  let route;
-  let lowConfidence = false;
-  if (corpusEmpty) {
-    route = 'chat';
-  } else if (classifier.confidence < 0.55) {
-    route = 'chat';
-    lowConfidence = true;
-  } else if (classifier.needs_graph) {
-    route = classifier.kind;  // overview / portrait / relation_probe / attribute_probe / search
-  } else {
-    route = 'chat';  // chat / meta / clarify
-  }
-  // Re-fire the hint with the resolved route so the UI can swap pending
-  // text accurately even if confidence overrode needs_graph.
-  try { opts.onClassifier?.({ ...classifier, resolvedRoute: route, lowConfidence }); } catch {}
-
+  const spans = (CTX?.STATE?.G?.length)
+    ? await retrieveSpansByEmbedding(message, 5).catch(() => [])
+    : [];
   const spansTxt = spansCardFromList(spans);
 
-  // Step 3: branch.
-  if (route === 'chat' || route === 'meta' || route === 'clarify') {
-    const reply = await composeChatReply({ message, classifier, recentTurnsTxt, vocabTxt, spansTxt });
-    return {
-      turnId,
-      question: message,
-      cursor: opts.cursor ?? CTX?.STATE?.activeCursor ?? null,
-      framing: opts.framing ?? CTX?.STATE?.activeFraming ?? 'uniform',
-      compiled: null,
-      plans: [],
-      // Wrap reply in the same template wrapper the renderer uses.
-      // The LLM emits light markdown (**bold**, bullets, headings); render
-      // it to HTML so it doesn't show up as raw asterisks in the transcript.
-      answer: `<div class="templated chat-reply">${formatMarkdown(reply.text)}${lowConfidence ? '<p class="muted">(low classifier confidence — replied conversationally)</p>' : ''}</div>`,
-      answerText: reply.text,
-      summary: null,
-      summaryWarning: null,
-      pending_disambiguation: false,
-      usedCompiler: false,
-      timestamp: Date.now(),
-      route,
-      classifier,
-      evidenceSpans: spans,
-      modelUsed: reply.modelUsed,
-      latencyMs: Date.now() - t0,
-    };
-  }
-
-  // Graph branch — defer to host.
-  if (!CTX?.runGraphChatTurn) {
-    return {
-      turnId, question: message, compiled: null, plans: [],
-      answer: '<p class="templated">Graph backend missing — host did not provide runGraphChatTurn.</p>',
-      timestamp: Date.now(), route, classifier, evidenceSpans: spans, latencyMs: Date.now() - t0,
-    };
-  }
-  const graphTurn = await CTX.runGraphChatTurn(message, opts.cursor ?? CTX?.STATE?.activeCursor, opts.framing ?? CTX?.STATE?.activeFraming, opts);
-  // Decorate with hybrid metadata.
-  graphTurn.route = route;
-  graphTurn.classifier = classifier;
-  graphTurn.evidenceSpans = spans;
-  graphTurn.latencyMs = Date.now() - t0;
-  return graphTurn;
+  const reply = await composeChatReply({ message, recentTurnsTxt, spansTxt });
+  return {
+    turnId,
+    question: message,
+    cursor: opts.cursor ?? CTX?.STATE?.activeCursor ?? null,
+    framing: opts.framing ?? CTX?.STATE?.activeFraming ?? 'uniform',
+    compiled: null,
+    plans: [],
+    answer: `<div class="templated chat-reply">${formatMarkdown(reply.text)}</div>`,
+    answerText: reply.text,
+    summary: null,
+    summaryWarning: null,
+    pending_disambiguation: false,
+    usedCompiler: false,
+    timestamp: Date.now(),
+    route: 'chat',
+    evidenceSpans: spans,
+    modelUsed: reply.modelUsed,
+    latencyMs: Date.now() - t0,
+  };
 }
 
 function escapeHtml(s) {

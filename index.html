@@ -19148,20 +19148,20 @@ function installChatBridge() {
     return result;
   }
 
-  // Pull a few representative spans for an entity. Used by retrieval
-  // when no span-level vector index exists yet (the floor behavior).
+  // Pull representative spans that mention an entity. Scans the full
+  // event log (G) for any event tagged with this entity and collects
+  // its spanText. DEF-grounding-only retrieval starved chat replies of
+  // context because most ingested events are SIG/INS, not DEF.
   function getSpansForEntity(entityId) {
-    const defs = getAllDefsForSubject(entityId).filter(filterDefToActive);
     const out = [];
     const seen = new Set();
-    for (const d of defs) {
-      for (const g of (d.grounding || [])) {
-        const txt = g.spanText || '';
-        if (!txt || seen.has(txt)) continue;
-        seen.add(txt);
-        out.push({ text: txt, sourceId: g.sourceId || null });
-        if (out.length >= 6) return out;
-      }
+    for (const ev of STATE.G) {
+      if (!ev || ev.payload?.entity !== entityId) continue;
+      const txt = ev.spanText;
+      if (!txt || seen.has(txt)) continue;
+      seen.add(txt);
+      out.push({ text: txt, sourceId: ev.sourceId || null });
+      if (out.length >= 8) break;
     }
     return out;
   }
