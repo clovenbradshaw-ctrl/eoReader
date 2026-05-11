@@ -5820,6 +5820,151 @@ async function callAnthropic(systemPrompt, userMsg, maxTokens = 800, opts = null
 // ─── WebLLM backend ──────────────────────────────────────────────────
 // Loads a quantized model into WebGPU. First call downloads & compiles
 // the model (slow, cached afterward). Subsequent calls are fast.
+//
+// First-load failure modes (in observed frequency):
+//   1. Browser shield blocks the cross-origin HuggingFace fetches
+//      (Brave Shields, uBlock with strict mode, Safari ITP). The
+//      Cache.add() call inside @mlc-ai/web-llm rejects with "encountered
+//      a network error" the moment any one shard request fails.
+//   2. Storage quota near full — Cache.add() also rejects when there
+//      isn't room for the ~700MB/1.7GB/2.4GB blob.
+//   3. HuggingFace transient 5xx — usually self-resolves on retry.
+//   4. Stale partial cache from a prior aborted download — can poison
+//      subsequent loads until the cache entry is cleared.
+
+const HF_REACHABILITY_PROBE = 'https://huggingface.co/mlc-ai/Llama-3.2-1B-Instruct-q4f32_1-MLC/resolve/main/mlc-chat-config.json';
+
+// Lightweight pre-flight: HEAD to a tiny HF asset. If this fails we know
+// the model weight fetches will too — surface that before the user waits
+// for a multi-hundred-MB Cache.add() to time out.
+async function probeWebLLMReachability() {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    const res = await fetch(HF_REACHABILITY_PROBE, { method: 'GET', mode: 'cors', signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!res.ok) return { ok: false, reason: `HuggingFace returned ${res.status}` };
+    return { ok: true };
+  } catch (e) {
+    const msg = String(e?.message || e);
+    if (/abort/i.test(msg)) return { ok: false, reason: 'HuggingFace probe timed out (>6s)' };
+    if (/Failed to fetch|NetworkError|blocked/i.test(msg)) {
+      return { ok: false, reason: 'browser blocked the HuggingFace request (Shields, tracker block, or offline)' };
+    }
+    return { ok: false, reason: msg.slice(0, 160) };
+  }
+}
+
+// Returns { okGB, usedGB, quotaGB } in gigabytes (rounded to one decimal),
+// or null when the API is unavailable.
+async function checkStorageQuota() {
+  if (!navigator.storage?.estimate) return null;
+  try {
+    const e = await navigator.storage.estimate();
+    const usedGB = (e.usage || 0) / 1e9;
+    const quotaGB = (e.quota || 0) / 1e9;
+    return { usedGB: +usedGB.toFixed(2), quotaGB: +quotaGB.toFixed(2), okGB: +(quotaGB - usedGB).toFixed(2) };
+  } catch { return null; }
+}
+
+// Wipe WebLLM's Cache Storage entries. WebLLM names them "webllm/<model>"
+// or similar; we delete any cache whose name matches /webllm/i. Returns
+// the count deleted. Safe to call when nothing matches.
+async function clearWebLLMCaches() {
+  if (!('caches' in window)) return 0;
+  let deleted = 0;
+  try {
+    const names = await caches.keys();
+    for (const n of names) {
+      if (/webllm|mlc/i.test(n)) {
+        if (await caches.delete(n)) deleted++;
+      }
+    }
+  } catch (e) {
+    console.warn('clearWebLLMCaches failed:', e);
+  }
+  return deleted;
+}
+
+// Translate a raw WebLLM error into actionable guidance. Returns an HTML
+// string suitable for innerHTML on the progress element.
+function explainWebLLMError(rawMsg) {
+  const msg = String(rawMsg || '');
+  const lines = [`<div style="color: var(--gap); margin-bottom: 6px;">load failed: ${escapeHtml(msg.slice(0, 220))}</div>`];
+
+  if (/Cache\.add\(\) encountered a network error/i.test(msg)) {
+    lines.push(`<div style="margin-top: 6px; line-height: 1.5;">
+      <strong>Most common causes:</strong>
+      <ul style="margin: 4px 0 0 16px; padding: 0;">
+        <li><strong>Browser shield blocking the fetch.</strong> Brave: click the lion icon → Shields DOWN for this site → reload. uBlock/Safari: allowlist this site.</li>
+        <li><strong>Storage full or near-full.</strong> Models are 0.7–2.4GB. Free space, then retry.</li>
+        <li><strong>Stale partial cache from an aborted earlier download.</strong> Use "Clear cached weights" below.</li>
+        <li><strong>HuggingFace 5xx.</strong> If the network probe below succeeds, just retry in a minute.</li>
+      </ul>
+    </div>`);
+  } else if (/quota|QuotaExceeded/i.test(msg)) {
+    lines.push(`<div style="margin-top: 6px;"><strong>Storage quota exceeded.</strong> Free disk space and try again, or pick a smaller model (1B variants are ~700MB).</div>`);
+  } else if (/WebGPU|gpu|adapter/i.test(msg)) {
+    lines.push(`<div style="margin-top: 6px;"><strong>WebGPU not available.</strong> Use Chrome 113+, Edge 113+, or a WebGPU-enabled Firefox/Safari. iOS does not support WebGPU yet.</div>`);
+  } else if (/import|fetch.*esm\.run|Failed to fetch.*esm/i.test(msg)) {
+    lines.push(`<div style="margin-top: 6px;"><strong>Couldn't fetch the WebLLM library itself.</strong> Check that <code>esm.run</code> is reachable, or try a different network.</div>`);
+  }
+
+  lines.push(`<div style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">
+    <button class="secondary" data-webllm-action="retry" style="font-size: 10px;">Retry load</button>
+    <button class="secondary" data-webllm-action="clear-and-retry" style="font-size: 10px;">Clear cached weights & retry</button>
+    <button class="secondary" data-webllm-action="diagnose" style="font-size: 10px;">Run diagnostics</button>
+  </div>`);
+
+  return lines.join('');
+}
+
+function setWebLLMProgressHTML(html) {
+  const el = document.getElementById('webllm-progress');
+  if (!el) return;
+  el.innerHTML = html;
+  // Wire the inline buttons each time we re-render. They live for one
+  // render cycle, so re-wiring per render is cheaper than tracking them.
+  el.querySelectorAll('button[data-webllm-action]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const action = btn.getAttribute('data-webllm-action');
+      try {
+        if (action === 'retry') {
+          el.textContent = 'retrying…';
+          await ensureWebLLMEngine();
+        } else if (action === 'clear-and-retry') {
+          el.textContent = 'clearing cached weights…';
+          const n = await clearWebLLMCaches();
+          el.textContent = `cleared ${n} cache${n === 1 ? '' : 's'} — reloading…`;
+          await ensureWebLLMEngine();
+        } else if (action === 'diagnose') {
+          el.textContent = 'running diagnostics…';
+          const reach = await probeWebLLMReachability();
+          const quota = await checkStorageQuota();
+          const lines = [];
+          lines.push(`<div><strong>Diagnostics</strong></div>`);
+          lines.push(`<div>HuggingFace reachable: ${reach.ok ? '<span style="color:var(--accent);">yes</span>' : `<span style="color:var(--gap);">no — ${escapeHtml(reach.reason)}</span>`}</div>`);
+          if (quota) {
+            const headroom = quota.okGB;
+            const tightStorage = headroom < 2;
+            lines.push(`<div>Storage: ${quota.usedGB}GB used of ${quota.quotaGB}GB (${headroom}GB free)${tightStorage ? ' <span style="color:var(--gap);">⚠ might be too small for 3B models</span>' : ''}</div>`);
+          } else {
+            lines.push(`<div>Storage: API unavailable in this browser</div>`);
+          }
+          lines.push(`<div>WebGPU: ${navigator.gpu ? 'present' : '<span style="color:var(--gap);">not detected</span>'}</div>`);
+          lines.push(`<div>User agent: ${escapeHtml((navigator.userAgent || '').slice(0, 120))}</div>`);
+          lines.push(`<div style="margin-top: 6px; display: flex; gap: 6px;">
+            <button class="secondary" data-webllm-action="retry" style="font-size: 10px;">Retry load</button>
+            <button class="secondary" data-webllm-action="clear-and-retry" style="font-size: 10px;">Clear cached weights & retry</button>
+          </div>`);
+          setWebLLMProgressHTML(lines.join(''));
+        }
+      } catch (e) {
+        setWebLLMProgressHTML(explainWebLLMError(e.message));
+      }
+    });
+  });
+}
 
 async function ensureWebLLMEngine() {
   if (STATE.webllmEngine && STATE.webllmEngineModel === STATE.webllmModel) {
@@ -5839,6 +5984,23 @@ async function ensureWebLLMEngine() {
     if (pill && STATE.llmBackend === 'webllm') pill.textContent = `loading model: ${(p.progress * 100).toFixed(0)}%`;
   };
 
+  // Pre-flight reachability + quota. Fast (≤6s) and they catch the two
+  // most common failure modes before the user pays a 1.7GB Cache.add().
+  // If reachability fails we still attempt the load — the probe could be
+  // a false negative — but we surface the warning up-front.
+  const [reach, quota] = await Promise.all([
+    probeWebLLMReachability(),
+    checkStorageQuota(),
+  ]);
+  if (!reach.ok) {
+    const el = document.getElementById('webllm-progress');
+    if (el) el.textContent = `pre-flight: ${reach.reason} — attempting load anyway…`;
+  }
+  if (quota && quota.okGB < 1) {
+    const el = document.getElementById('webllm-progress');
+    if (el) el.textContent = `pre-flight: only ${quota.okGB}GB free of ${quota.quotaGB}GB — load may fail (storage quota)`;
+  }
+
   try {
     const mod = await import('https://esm.run/@mlc-ai/web-llm');
     const { CreateMLCEngine } = mod;
@@ -5849,10 +6011,20 @@ async function ensureWebLLMEngine() {
     renderHeaderStatus();
     return STATE.webllmEngine;
   } catch (e) {
-    const el = document.getElementById('webllm-progress');
-    if (el) el.textContent = `load failed: ${e.message}`;
+    setWebLLMProgressHTML(explainWebLLMError(e.message));
     throw new Error(`WebLLM load failed: ${e.message}`);
   }
+}
+
+// Expose the WebLLM diagnostic helpers on window so they're callable from
+// the browser console (useful when a user is debugging a load failure)
+// and so smoke tests can exercise them directly without driving the UI.
+if (typeof window !== 'undefined') {
+  window.probeWebLLMReachability = probeWebLLMReachability;
+  window.checkStorageQuota = checkStorageQuota;
+  window.clearWebLLMCaches = clearWebLLMCaches;
+  window.explainWebLLMError = explainWebLLMError;
+  window.setWebLLMProgressHTML = setWebLLMProgressHTML;
 }
 
 async function callWebLLM(systemPrompt, userMsg, maxTokens = 800, opts = null) {
