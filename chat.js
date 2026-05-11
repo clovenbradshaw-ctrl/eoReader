@@ -374,27 +374,79 @@ export async function composeChatReply({ message, recentTurnsTxt, spansTxt }) {
 }
 
 // ─── runChatTurnHybrid — the orchestrator ─────────────────────────────
-// Linear, single-path RAG: pull relevant spans from the corpus by
-// embedding similarity, hand them to the LLM with the recent turns,
-// return the reply. No intent classifier, no graph routing. If the
-// corpus is empty, spans is just []; the LLM answers from context +
-// general knowledge.
+// Classify the user's intent, retrieve supporting spans in parallel,
+// then either compose a conversational reply (chat / meta / clarify)
+// or delegate to the host's graph walker (portrait / relation_probe /
+// attribute_probe / search / overview).
+//
+// SIG gate: `needs_graph` is a boolean determination of *whether* the
+// graph is needed. `confidence` qualifies the *kind* classification
+// within the graph branch (portrait vs. relation_probe vs. search).
+// A low-confidence heuristic match for "tell me about X" still routes
+// through the graph — the regex literally fired.
 //
 // Returns a "turn" shape compatible with the existing transcript renderer.
 export async function runChatTurnHybrid(message, opts = {}) {
   const turnId = 'turn-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
   const t0 = Date.now();
-
-  // UI hint: tell the pending-turn renderer this is a chat (not graph) reply.
-  try { opts.onClassifier?.({ kind: 'chat', needs_graph: false, confidence: 1, source: 'linear', resolvedRoute: 'chat' }); } catch {}
-
   const recentTurnsTxt = recentTurnsCard(2, 220);
-  const spans = (CTX?.STATE?.G?.length)
-    ? await retrieveSpansByEmbedding(message, 5).catch(() => [])
-    : [];
+  const corpusEmpty = !(CTX?.STATE?.G?.length);
+
+  // No corpus → straight conversational, no point classifying or retrieving.
+  if (corpusEmpty) {
+    try { opts.onClassifier?.({ kind: 'chat', needs_graph: false, confidence: 1, source: 'no-corpus', resolvedRoute: 'chat' }); } catch {}
+    const reply = await composeChatReply({ message, recentTurnsTxt, spansTxt: '' });
+    return makeChatReturn({ turnId, message, opts, reply, spans: [], route: 'chat', t0 });
+  }
+
+  // Classify + retrieve in parallel. The classifier fire is a UI hint;
+  // we don't await onClassifier itself.
+  const classifierPromise = classifyIntent(message, recentTurnsTxt).then(c => {
+    try { opts.onClassifier?.(c); } catch (e) { CTX?.log?.('onClassifier hook threw', e?.message); }
+    return c;
+  });
+  const [classifier, spans] = await Promise.all([
+    classifierPromise,
+    retrieveSpansByEmbedding(message, 8).catch(() => []),
+  ]);
+
+  // Gate (SIG fix): needs_graph wins. Confidence only flags kind uncertainty.
+  let route, lowConfidence = false;
+  if (classifier.needs_graph) {
+    route = classifier.kind;
+    lowConfidence = classifier.confidence < 0.55;
+  } else if (classifier.confidence < 0.55) {
+    route = 'chat';
+    lowConfidence = true;
+  } else {
+    route = 'chat';
+  }
+  try { opts.onClassifier?.({ ...classifier, resolvedRoute: route, lowConfidence }); } catch {}
+
   const spansTxt = spansCardFromList(spans);
 
-  const reply = await composeChatReply({ message, recentTurnsTxt, spansTxt });
+  if (route === 'chat' || route === 'meta' || route === 'clarify') {
+    const reply = await composeChatReply({ message, recentTurnsTxt, spansTxt });
+    return makeChatReturn({ turnId, message, opts, reply, spans, route, t0, lowConfidence, classifier });
+  }
+
+  // Graph branch — defer to host.
+  if (!CTX?.runGraphChatTurn) {
+    return {
+      turnId, question: message, compiled: null, plans: [],
+      answer: '<p class="templated">Graph backend missing — host did not provide runGraphChatTurn.</p>',
+      timestamp: Date.now(), route, classifier, evidenceSpans: spans, latencyMs: Date.now() - t0,
+    };
+  }
+  const graphTurn = await CTX.runGraphChatTurn(message, opts.cursor ?? CTX?.STATE?.activeCursor, opts.framing ?? CTX?.STATE?.activeFraming, opts);
+  graphTurn.route = route;
+  graphTurn.classifier = classifier;
+  graphTurn.evidenceSpans = spans;
+  graphTurn.latencyMs = Date.now() - t0;
+  return graphTurn;
+}
+
+function makeChatReturn({ turnId, message, opts, reply, spans, route, t0, lowConfidence = false, classifier = null }) {
   return {
     turnId,
     question: message,
@@ -402,14 +454,15 @@ export async function runChatTurnHybrid(message, opts = {}) {
     framing: opts.framing ?? CTX?.STATE?.activeFraming ?? 'uniform',
     compiled: null,
     plans: [],
-    answer: `<div class="templated chat-reply">${formatMarkdown(reply.text)}</div>`,
+    answer: `<div class="templated chat-reply">${formatMarkdown(reply.text)}${lowConfidence ? '<p class="muted">(low classifier confidence — kind of question was uncertain)</p>' : ''}</div>`,
     answerText: reply.text,
     summary: null,
     summaryWarning: null,
     pending_disambiguation: false,
     usedCompiler: false,
     timestamp: Date.now(),
-    route: 'chat',
+    route,
+    classifier,
     evidenceSpans: spans,
     modelUsed: reply.modelUsed,
     latencyMs: Date.now() - t0,
