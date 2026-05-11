@@ -3309,6 +3309,36 @@ const OP_AXIS = {
   REC: { alpha: 2, eta: SQRT2 },
 };
 
+// Operator registry — the honest "what's actually implemented" table.
+// EVA is reserved for the satisfaction-relation work and not currently
+// emitted from the extractor (the prior dedup-bookkeeping emission has
+// been removed). Reader-authored flag/dispute paths still write to
+// STATE.evas directly; those are out of scope here.
+const OPERATOR_REGISTRY = {
+  NUL: { implemented: true,  role: 'absence / negation' },
+  SIG: { implemented: true,  role: 'signal / surface mention' },
+  INS: { implemented: true,  role: 'instantiation of an entity' },
+  SEG: { implemented: true,  role: 'segmentation / differentiation' },
+  CON: { implemented: true,  role: 'connection / relation' },
+  SYN: { implemented: true,  role: 'synthesis / generation' },
+  DEF: { implemented: true,  role: 'definition / property' },
+  EVA: { implemented: false, planned: 'satisfaction-relation', role: 'evaluation against criterion' },
+  REC: { implemented: true,  role: 'recursive supersession' },
+};
+
+// Placeholder for any extractor path that wants to emit EVA before the
+// satisfaction-relation lands. Logs the call site and returns null so
+// the caller can no-op cleanly. Reader-authored EVA writes (dispute /
+// flag) bypass this and go directly through STATE.evas.push — those
+// represent reader judgment, not extracted evaluation.
+function emitEva(/* sourceEvent, targetDef, verdict, rationale */) {
+  console.warn(
+    'EVA emission attempted but EVA is not yet implemented as the ' +
+    'satisfaction relation. Call site:', new Error().stack?.split('\n')[2]?.trim()
+  );
+  return null;
+}
+
 // Predicates that mark communicative or intentional acts — claims about
 // claims, speech acts, attributions of belief or intention. These push
 // a DEF up to Ω = 2^√2 (the transcendental/recursive cell).
@@ -5115,6 +5145,125 @@ function addDef(subject, predicate, value, valueIsEntity, grounding, authoredBy 
   return def;
 }
 
+// ─── PREDICATE SCHEMAS ──────────────────────────────────────────────
+// A predicate's schema declares how its slot's history folds into a
+// readable value. Schemas live as DEFs whose subject is the synthetic
+// id `predicate::<name>` and whose predicate is `'schema'`. This keeps
+// the meta layer self-describing — schemas are graph nodes, queryable
+// the same way as any other DEF, with the same supersession semantics.
+//
+// Default policy is single-valued / latest-wins. Predicates whose
+// natural reading is enumerative (`progress-through`, `aim-to`,
+// `struggle-to-respond-to`, list-of-arguments-against, etc.) should
+// declare `{ multi: true, policy: 'all' }` or `'union'` via a schema
+// DEF added at startup or by a reader.
+//
+// IMPORTANT: read paths that need a slot's *value* should call
+// foldSlot(); getDefsForSlot() returns the raw history and is for
+// audit / grounding / event-construction code only.
+
+const DEFAULT_PREDICATE_SCHEMA = { multi: false, policy: 'latest' };
+
+const SCHEMA_PREDICATE_PREFIX = 'predicate::';
+
+function predicateSchemaSubjectId(predicate) {
+  return `${SCHEMA_PREDICATE_PREFIX}${predicate}`;
+}
+
+function getPredicateSchema(predicate) {
+  const key = `${predicateSchemaSubjectId(predicate)}::schema`;
+  const schemaDefs = STATE.defs.get(key);
+  if (!schemaDefs || schemaDefs.length === 0) return DEFAULT_PREDICATE_SCHEMA;
+  // Latest-wins for the schema itself, regardless of the schema's own
+  // policy (avoids meta-circular fold).
+  const active = schemaDefs.filter(d => d.status === 'T');
+  const winner = (active.length ? active : schemaDefs)
+    .slice()
+    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+    .pop();
+  const value = winner && winner.value;
+  if (!value || typeof value !== 'object') return DEFAULT_PREDICATE_SCHEMA;
+  return {
+    multi: !!value.multi,
+    policy: value.policy === 'all' || value.policy === 'union' || value.policy === 'latest'
+      ? value.policy
+      : (value.multi ? 'all' : 'latest'),
+  };
+}
+
+// Set a predicate's schema by minting a schema DEF. Idempotent: if the
+// most recent schema for this predicate already matches, no new DEF is
+// emitted.
+function setPredicateSchema(predicate, schema, authoredBy = 'system') {
+  const current = getPredicateSchema(predicate);
+  const next = {
+    multi: !!schema.multi,
+    policy: schema.policy || (schema.multi ? 'all' : 'latest'),
+  };
+  if (current.multi === next.multi && current.policy === next.policy) return null;
+  return addDef(predicateSchemaSubjectId(predicate), 'schema', next, false, [], authoredBy);
+}
+
+// Fold a slot's DEF history per its predicate's schema. Returns:
+//   undefined  — slot is empty
+//   string|object|entityId — for 'latest' policy
+//   array      — for 'all' and 'union' policies
+//
+// Active filtering: superseded DEFs (status !== 'T') are excluded.
+function foldSlot(subjectId, predicate) {
+  const schema = getPredicateSchema(predicate);
+  const key = `${subjectId}::${predicate}`;
+  const defs = STATE.defs.get(key);
+  if (!defs || defs.length === 0) return undefined;
+  const active = defs
+    .filter(d => d.status === 'T')
+    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  if (active.length === 0) return undefined;
+
+  switch (schema.policy) {
+    case 'all':
+      return active.map(d => d.value);
+    case 'union': {
+      const seen = new Set();
+      const out = [];
+      for (const d of active) {
+        const sig = d.valueIsEntity ? `@${d.value}` : `=${String(d.value)}`;
+        if (seen.has(sig)) continue;
+        seen.add(sig);
+        out.push(d.value);
+      }
+      return out;
+    }
+    case 'latest':
+    default:
+      return active[active.length - 1].value;
+  }
+}
+
+// Bootstrap multi-valued predicate schemas for the natural-language
+// enumerative predicates the LLM extractor reaches for. Predicates here
+// stop generating spurious "value differs" conflicts at write time and
+// fold to a list at read time. Add to this list when a new predicate
+// shows up that is naturally a set rather than a single fact.
+const MULTI_VALUED_BOOTSTRAP_PREDICATES = [
+  'progress-through',
+  'aim-to',
+  'struggle-to-respond-to',
+  'discussed',
+  'spoke-about',
+  'agree-to',
+  'argue',
+  'briefed-on',
+  'has-alias',
+  'apply-in',
+];
+
+function bootstrapPredicateSchemas() {
+  for (const pred of MULTI_VALUED_BOOTSTRAP_PREDICATES) {
+    setPredicateSchema(pred, { multi: true, policy: 'all' }, 'system-bootstrap');
+  }
+}
+
 // Strengthen a DEF by adding grounding (EVA confirms)
 function strengthenDef(def, groundingItem, eventId) {
   def.grounding.push(groundingItem);
@@ -5127,7 +5276,13 @@ function strengthenDef(def, groundingItem, eventId) {
   });
 }
 
-// Conflict an existing DEF (does NOT add to grounding)
+// Conflict an existing DEF (does NOT add to grounding).
+// NOTE: This used to be called from the per-clause extractor with the
+// rationale "new value differs from prior DEF" as a dedup bookkeeping
+// emission. Those call sites are gone; multi-valued slots now stay
+// multi-valued (governed by predicate schema + foldSlot). The function
+// is kept for legitimate reader-authored conflicts and future
+// satisfaction-relation work; see emitEva() for the placeholder.
 function conflictDef(def, groundingItem, eventId, rationale) {
   STATE.evas.push({
     id: uid('eva'),
@@ -5137,6 +5292,43 @@ function conflictDef(def, groundingItem, eventId, rationale) {
     rationale,
     timestamp: Date.now(),
   });
+}
+
+// One-shot migration: strip legacy EVA-conflicts entries with the
+// dedup-bookkeeping rationale. Operates on a graph-shaped object
+// (the export shape: { G, evas, ... }). Idempotent.
+function migrateRemoveLegacyEva(graph) {
+  if (!graph) return graph;
+  const before = (graph.G || []).length + (graph.evas || []).length;
+  // Defensive G filter — in this codebase EVAs live in graph.evas, not
+  // in G, but older or future export shapes might inline them.
+  if (Array.isArray(graph.G)) {
+    graph.G = graph.G.filter(ev => !(
+      ev && (ev.op === 'EVA' || ev.operator === 'EVA') &&
+      ev.payload && ev.payload.verdict === 'conflicts' &&
+      ev.payload.rationale === 'new value differs from prior DEF'
+    ));
+  }
+  if (Array.isArray(graph.evas)) {
+    graph.evas = graph.evas.filter(eva => !(
+      eva && eva.verdict === 'conflicts' &&
+      eva.rationale === 'new value differs from prior DEF'
+    ));
+  }
+  const after = (graph.G || []).length + (graph.evas || []).length;
+  const removed = before - after;
+  if (removed > 0) console.info(`Migration: removed ${removed} legacy EVA-conflicts entries`);
+  return graph;
+}
+
+// Convenience wrapper: run the migration against the live in-memory
+// STATE. No-op on a fresh page load (STATE.evas is empty); meaningful
+// only when a tab survives the upgrade with accumulated legacy entries.
+function migrateRemoveLegacyEvaInState() {
+  const stub = { G: STATE.G, evas: STATE.evas };
+  migrateRemoveLegacyEva(stub);
+  STATE.G = stub.G;
+  STATE.evas = stub.evas;
 }
 
 // Supersede DEFs via REC, optionally with a successor
@@ -9617,11 +9809,9 @@ function rebuildDerivedState() {
       }
       if (!matched) {
         addDef(subj, pred, value, valueIsEntity, [grounding], ev.authoredBy || 'system');
-        if (existingDefs.length > 0) {
-          for (const existing of existingDefs) {
-            conflictDef(existing, grounding, ev.id, 'new value differs from prior DEF');
-          }
-        }
+        // No EVA-conflict emission: a new value for an existing slot is
+        // a normal append. How the slot reads back (latest / list /
+        // union) is governed by the predicate's schema; see foldSlot().
       }
     }
   }
@@ -10174,6 +10364,31 @@ function resolveFileKind(file, modeOverride) {
   return classifyUploadedFile(file);
 }
 
+// Refuse JSON files that look like a previous eoReader graph export.
+// The graph eats its own output if you let it — file metadata becomes
+// predicates, summary strings become entities, and you end up with a
+// "Technology" entity extracted from a JSON summaryAtSentence string.
+// Anyone who actually wants to load a saved graph should use the
+// import-graph path (not built yet); this guard keeps the source-ingest
+// path honest in the meantime.
+function looksLikeEoReaderExport(parsed) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+  const keys = new Set(Object.keys(parsed));
+  // Require formatVersion + at least three of the canonical export
+  // sections. That's specific enough to avoid false positives on
+  // unrelated JSON that happens to have a "G" key.
+  if (!keys.has('formatVersion')) return false;
+  let hits = 0;
+  for (const k of ['entities', 'G', 'defs', 'evas', 'recs', 'sources', 'predicates']) {
+    if (keys.has(k)) hits++;
+  }
+  return hits >= 3;
+}
+
+class IngestError extends Error {
+  constructor(msg) { super(msg); this.name = 'IngestError'; }
+}
+
 async function ingestUploadedFiles(files, onProgress, opts = {}) {
   const modeOverride = opts.mode || 'auto';
   const sources = [];
@@ -10181,6 +10396,27 @@ async function ingestUploadedFiles(files, onProgress, opts = {}) {
     const file = files[i];
     const kind = resolveFileKind(file, modeOverride);
     if (onProgress) onProgress({ current: i + 1, total: files.length, file: file.name, kind });
+
+    // eoReader-export sniff: only for files that look like JSON. We
+    // peek at the bytes via FileReader (cheap; the file would be read
+    // anyway for plain-text dispatch) and parse before dispatching.
+    const looksJson = /\.json$/i.test(file.name) || (file.type || '').toLowerCase() === 'application/json';
+    if (looksJson) {
+      let peeked = '';
+      try { peeked = await readFileAsText(file); } catch { peeked = ''; }
+      if (peeked) {
+        let parsed = null;
+        try { parsed = JSON.parse(peeked); } catch { /* not JSON, fall through */ }
+        if (parsed && looksLikeEoReaderExport(parsed)) {
+          throw new IngestError(
+            `"${file.name}" looks like an eoReader graph export. ` +
+            `Source ingest would treat its summary strings and metadata as fresh prose ` +
+            `(that's what produced "Technology" and "Source" as entities in earlier graphs). ` +
+            `An import-graph path will land separately; for now this file is refused.`
+          );
+        }
+      }
+    }
     const fileMetadata = {
       name: file.name,
       mimeType: file.type || defaultMimeForKind(kind),
@@ -11089,14 +11325,12 @@ async function foldEvents(proposedEvents, clauseText, source, sentenceIdx, chrom
         }
       }
       if (!matched) {
-        // Either first DEF for this slot, or new value → superposition
+        // Either first DEF for this slot, or another value to append.
+        // Append-only: how the slot reads back (latest / list / union)
+        // is governed by the predicate's schema; see foldSlot(). No
+        // EVA-conflict is emitted — that was dedup bookkeeping in the
+        // wrong operator.
         const newDef = addDef(subj.id, predicate, value, valueIsEntity, [grounding], 'system');
-        if (existingDefs.length > 0) {
-          // Superposition: mark via EVA conflict against existing
-          for (const existing of existingDefs) {
-            conflictDef(existing, grounding, ev.id, 'new value differs from prior DEF');
-          }
-        }
       }
     } else if (pe.op === 'EVA') {
       // Reader-authored EVAs would land here in production
@@ -18738,6 +18972,19 @@ async function boot() {
   const detail = document.getElementById('init-detail');
   const fill = document.getElementById('init-fill');
   overlay.classList.add('active');
+
+  // Predicate schema bootstrap — multi-valued predicates declare their
+  // fold policy as DEFs so foldSlot() returns lists rather than the
+  // most-recent-wins of a single-valued slot. Safe to call repeatedly:
+  // setPredicateSchema() no-ops when the existing schema matches.
+  try { bootstrapPredicateSchemas(); } catch (e) { console.warn('bootstrapPredicateSchemas failed:', e); }
+
+  // One-shot in-memory migration: strip legacy EVA-conflicts entries
+  // ("new value differs from prior DEF") left over from prior sessions.
+  // STATE is in-memory, so this is normally a no-op on a fresh page
+  // load; kept as belt-and-suspenders for held-open tabs across the
+  // upgrade and for any future import-graph path.
+  try { migrateRemoveLegacyEvaInState(); } catch (e) { console.warn('legacy-EVA migration failed:', e); }
 
   // Restore persisted settings first — the API key, cost ceiling, and
   // caching toggle are kept in localStorage so they survive reloads.
