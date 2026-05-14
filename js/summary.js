@@ -26,6 +26,7 @@ function summaryEntitiesFromArticle(item) {
   walkLog.forEach((l) => {
     if (l.op === 'SIG' || l.op === 'DEF' || l.op === 'EVA' || l.op === 'REC' || l.op === 'SEG') {
       for (const [id, e] of Object.entries(graph.entities)) {
+        if (!e) continue;
         if (e.canonical === l.text) { ids.add(id); break; }
       }
     } else if (l.op === 'CON') {
@@ -568,7 +569,9 @@ function summarySpansFromArticle(item) {
   const wantUrl = item.link || '';
   const wantTitle = item.title || '';
   Object.entries(graph.entities || {}).forEach(([id, e]) => {
+    if (!e) return;
     (e.spans || []).forEach((sp, i) => {
+      if (!sp) return;
       const u = sp.sourceUrl || '';
       const t = sp.sourceTitle || '';
       if ((wantUrl && u === wantUrl) || (!u && wantTitle && t === wantTitle)) {
@@ -586,6 +589,7 @@ function summaryConnectionsFromArticle(item) {
   const wantUrl = item.link || '';
   const wantTitle = item.title || '';
   (graph.connections || []).forEach((c, i) => {
+    if (!c) return;
     const u = c.sourceUrl || '';
     const t = c.sourceTitle || '';
     if ((wantUrl && u === wantUrl) || (!u && wantTitle && t === wantTitle)) {
@@ -771,8 +775,13 @@ function switchToSummarizeView() {
     const caret = document.getElementById('caret-summarize');
     if (caret) caret.classList.remove('collapsed');
   }
-  renderSummarizeLpList();
+  // Transition the view first so a render failure can't strand the user on feed.
   showView('summarize');
+  try {
+    renderSummarizeLpList();
+  } catch (err) {
+    console.error('renderSummarizeLpList failed', err);
+  }
 }
 
 function renderSummarizeMainIfActive() {

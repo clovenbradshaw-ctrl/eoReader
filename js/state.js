@@ -439,7 +439,9 @@ function showView(view) {
   if (lbl) lbl.textContent = view === 'index' ? lastNonIndexView : 'index';
   if (view === 'index') renderGraphPanel();
   if (view === 'discover' && typeof renderDiscover === 'function') renderDiscover();
-  if (view === 'summarize' && typeof renderSummarizeMainView === 'function') renderSummarizeMainView();
+  if (view === 'summarize' && typeof renderSummarizeMainView === 'function') {
+    try { renderSummarizeMainView(); } catch (err) { console.error('renderSummarizeMainView failed', err); }
+  }
 }
 
 function toggleGraph() {
