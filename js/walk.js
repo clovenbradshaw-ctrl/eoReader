@@ -35,9 +35,11 @@ async function startWalk(idx) {
   walk.sentences = splitSentences(item.body);
   walk.current = 0;
   walk.log = [];
+  walk.donePromise = new Promise((resolve) => { walk._resolveDone = resolve; });
 
   renderWalkStep();
   runWalk();
+  return walk.donePromise;
 }
 
 async function runWalk() {
@@ -65,6 +67,7 @@ async function runWalk() {
     if (activeGraphTab === 'walk') renderWalkStep();
     const walkTab = document.getElementById('tab-walk');
     if (walkTab) walkTab.innerHTML = '<i class="ph ph-cpu"></i> process';
+    if (walk._resolveDone) { walk._resolveDone(); walk._resolveDone = null; }
   }
 }
 
@@ -251,6 +254,7 @@ function endWalk() {
     saveGraph();
   }
   renderWalkStep();
+  if (walk._resolveDone) { walk._resolveDone(); walk._resolveDone = null; }
 }
 
 function renderWalkStep() {
@@ -347,19 +351,84 @@ async function generateDigest(idx, btn) {
   });
   if (framing === null) return;
 
-  btn.textContent = 'generating...';
   btn.classList.remove('copied', 'errored');
   btn.classList.add('generating');
   btn.disabled = true;
 
-  const articleSites = findRelevantSites(item.body);
+  // If this article hasn't been walked yet, walk it first so generate
+  // has the graph context (linked nodes + hypotheses + connections) to work from.
+  const viewBeforeWalk = currentView;
+  let autoWalked = false;
+  if (!item._processed) {
+    btn.textContent = 'processing...';
+    autoWalked = true;
+    try {
+      await startWalk(idx);
+    } catch (e) {
+      console.warn('auto-walk failed:', e);
+    }
+    if (!item._processed) {
+      btn.textContent = '✗ process failed';
+      btn.classList.add('errored');
+      btn.classList.remove('generating');
+      btn.disabled = false;
+      setTimeout(() => { btn.textContent = 'generate'; btn.classList.remove('errored'); }, 3000);
+      return;
+    }
+  }
+  btn.textContent = 'generating...';
+
+  // Build the article-linked node set from the walk log, then render each
+  // with its current canonical/kind/hypothesis and the article's connections.
+  const walkLog = item._walkLog || [];
+  const articleEntityIds = new Set();
+  walkLog.forEach((l) => {
+    if (l.op === 'SIG' || l.op === 'DEF' || l.op === 'EVA' || l.op === 'REC') {
+      // walk.log stores text=canonical; look up by canonical match
+      for (const [id, e] of Object.entries(graph.entities)) {
+        if (e.canonical === l.text) { articleEntityIds.add(id); break; }
+      }
+    } else if (l.op === 'CON') {
+      if (l.from && graph.entities[l.from]) articleEntityIds.add(l.from);
+      if (l.to && graph.entities[l.to]) articleEntityIds.add(l.to);
+    } else if (l.op === 'SEG') {
+      for (const [id, e] of Object.entries(graph.entities)) {
+        if (e.canonical === l.text) { articleEntityIds.add(id); break; }
+      }
+    }
+  });
+
   const articleCons = graph.connections
-    .filter(c => c.sourceUrl === item.link || c.sourceTitle === item.title)
-    .map(c => {
-      const fn = graph.entities[c.from]?.canonical || c.from;
-      const tn = graph.entities[c.to]?.canonical || c.to;
-      return fn + ' →[' + c.relation + ']→ ' + tn + (c.evidence ? ' (' + c.evidence + ')' : '');
-    }).join('\n');
+    .filter(c => c.sourceUrl === item.link || c.sourceTitle === item.title);
+
+  const articleConsLines = articleCons.map((c) => {
+    const fn = graph.entities[c.from]?.canonical || c.from;
+    const tn = graph.entities[c.to]?.canonical || c.to;
+    const ev = c.evidence ? ' — "' + c.evidence + '"' : '';
+    const conf = c.confidence ? ' [' + c.confidence + ']' : '';
+    return '`{' + fn + '}` →' + c.relation + '→ `{' + tn + '}`' + conf + ev;
+  }).join('\n');
+
+  const nodeLines = [];
+  articleEntityIds.forEach((id) => {
+    const e = graph.entities[id];
+    if (!e) return;
+    let line = '`{' + e.canonical + '}` (' + id + ', ' + e.kind + (e.subtype ? '/' + e.subtype : '') + ')';
+    if (e.aliases && e.aliases.length) line += ' [aliases: ' + e.aliases.join(', ') + ']';
+    if (e.hypothesis) line += '\n  Hypothesis: ' + e.hypothesis;
+    const localCons = graph.connections.filter(c =>
+      (c.from === id || c.to === id) && (articleEntityIds.has(c.from) || articleEntityIds.has(c.to))
+    );
+    if (localCons.length) {
+      const conLines = localCons.slice(0, 6).map((c) => {
+        const other = c.from === id ? c.to : c.from;
+        const otherName = graph.entities[other]?.canonical || other;
+        return '    ' + (c.from === id ? '→' : '←') + ' ' + c.relation + ' `{' + otherName + '}`';
+      });
+      line += '\n  Linked in graph:\n' + conLines.join('\n');
+    }
+    nodeLines.push(line);
+  });
 
   const framingHasContent = !!(framing.notes || framing.preset !== 'default');
   const framingLines = [
@@ -380,10 +449,11 @@ async function generateDigest(idx, btn) {
     'Source: ' + item.sourceName,
     'URL: ' + item.link,
     '',
-    articleSites ? 'Indexed sites referenced:\n' + articleSites + '\n' : '',
-    articleCons ? 'Connections found in this article:\n' + articleCons + '\n' : '',
-    'Full body:',
-    item.body.slice(0, 5000),
+    'You are writing the digest from this article\'s walked graph context. The raw body is not provided; each linked node carries its current hypothesis, and the connection list carries the evidence quotes the walk extracted. Treat hypotheses and evidence as authoritative material for the digest.',
+    '',
+    nodeLines.length ? 'Article-linked nodes (from walk):\n' + nodeLines.join('\n\n') : 'Article-linked nodes (from walk): (none)',
+    '',
+    articleConsLines ? 'Connections evidenced in this article:\n' + articleConsLines : 'Connections evidenced in this article: (none)',
   ].filter(Boolean).join('\n');
 
   try {
@@ -474,6 +544,7 @@ async function generateDigest(idx, btn) {
     btn.disabled = false;
     setTimeout(() => { btn.textContent = 'generate'; btn.classList.remove('copied'); }, 2000);
 
+    if (autoWalked && viewBeforeWalk !== currentView) showView(viewBeforeWalk);
   } catch (e) {
     console.error('Claude API error:', e);
     btn.textContent = '✗ ' + (e.message || 'error');
