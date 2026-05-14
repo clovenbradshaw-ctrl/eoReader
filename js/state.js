@@ -59,6 +59,7 @@ let summaryPicks = {
   includeSources: true,
   includeNotes: true,
   includeHypotheses: true,
+  lpExpanded: new Set(),
 };
 let summaryOutput = null;
 let summaryPickerTab = 'entities';
@@ -421,12 +422,15 @@ function showView(view) {
   document.getElementById('view-index').style.display = view === 'index' ? 'flex' : 'none';
   const disc = document.getElementById('view-discover');
   if (disc) disc.style.display = view === 'discover' ? 'flex' : 'none';
+  const sum = document.getElementById('view-summarize');
+  if (sum) sum.style.display = view === 'summarize' ? 'flex' : 'none';
   const btn = document.getElementById('graph-toggle');
   if (btn) btn.classList.toggle('active', view === 'index');
   const lbl = document.getElementById('graph-toggle-label');
   if (lbl) lbl.textContent = view === 'index' ? lastNonIndexView : 'index';
   if (view === 'index') renderGraphPanel();
   if (view === 'discover' && typeof renderDiscover === 'function') renderDiscover();
+  if (view === 'summarize' && typeof renderSummarizeMainView === 'function') renderSummarizeMainView();
 }
 
 function toggleGraph() {

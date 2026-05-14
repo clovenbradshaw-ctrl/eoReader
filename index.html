@@ -394,6 +394,18 @@
   </div>
 
   <div class="lp-section">
+    <div class="lp-label" style="cursor:pointer;"><span onclick="toggleLpSection('summarize')" style="display:flex;align-items:center;gap:4px;flex:1;"><i class="ph ph-caret-down lp-caret" id="caret-summarize"></i><i class="ph ph-file-text"></i> summarize</span><span id="summarize-comp-pill" style="font-size:9px;color:var(--text-dim);font-weight:400;text-transform:none;letter-spacing:0;"></span></div>
+    <div id="section-summarize">
+      <p style="font-size:10px;color:var(--text-dim);line-height:1.45;margin:0 0 6px;">pick docs, drill into them. toggles drive the focused subgraph.</p>
+      <button class="act-btn" style="width:100%;padding:4px 8px;font-size:11px;background:var(--accent);color:#1a1a1a;border-color:var(--accent);font-weight:600;margin-bottom:6px;" onclick="switchToSummarizeView()"><i class="ph ph-play"></i> open summarize</button>
+      <div id="summarize-lp-list" style="font-size:11px;max-height:280px;overflow-y:auto;border-top:1px solid var(--border);padding-top:4px;"></div>
+      <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap;">
+        <button class="act-btn" style="font-size:9px;padding:2px 4px;" onclick="clearSummaryPicks('all');renderSummarizeLpList();renderSummarizeMainIfActive();">clear all</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="lp-section">
     <div class="lp-label" onclick="toggleLpSection('sources')" style="cursor:pointer;"><i class="ph ph-caret-down lp-caret" id="caret-sources"></i><i class="ph ph-rss"></i> feeds</div>
     <div id="section-sources">
       <div id="lp-sources"></div>
@@ -442,6 +454,7 @@
       <div class="graph-main" id="graph-main-content" style="flex:1;padding:16px;overflow-y:auto;"></div>
     </div>
   </div>
+  <div id="view-summarize" style="display:none;flex-direction:column;flex:1;overflow:hidden;"></div>
   <div id="view-discover" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
     <div class="index-toolbar">
       <button class="graph-tab active" id="disc-tab-medium" onclick="discoverTab('medium')"><i class="ph ph-squares-four"></i> by medium</button>
