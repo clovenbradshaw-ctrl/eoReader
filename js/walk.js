@@ -96,16 +96,18 @@ function ensureSourceSites(item) {
 // Resolve a voice descriptor from the walk LLM into a site id. Reuses
 // existing person ids when the voice name matches a known canonical/alias
 // (per user decision: people speak through their own voice). Lazy-SIGs a
-// new voice site otherwise. Returns the resolved id.
-function resolveVoice(voiceDesc, articleId, ts) {
+// new voice site otherwise. Returns the resolved id. Takes ws (per-job walk
+// state) so parallel walks don't share a journalist-voice fallback.
+function resolveVoice(voiceDesc, articleId, ts, ws) {
+  ws = ws || walk;
   if (!voiceDesc || !voiceDesc.kind) {
-    return walk.context && walk.context.journalistVoiceId;
+    return ws.context && ws.context.journalistVoiceId;
   }
   if (voiceDesc.kind === 'journalist') {
-    return walk.context.journalistVoiceId;
+    return ws.context.journalistVoiceId;
   }
   const name = (voiceDesc.name || '').trim();
-  if (!name) return walk.context.journalistVoiceId;
+  if (!name) return ws.context.journalistVoiceId;
 
   // Match existing entity by canonical/alias
   const lower = name.toLowerCase();
@@ -140,6 +142,9 @@ function resolveVoice(voiceDesc, articleId, ts) {
   return slug;
 }
 
+// Public entry point — now a thin wrapper around the queue. Each call
+// enqueues a walk job (deduped by article) and returns a promise that
+// resolves when that job finishes (or is cancelled/errors).
 async function startWalk(idx) {
   const item = allItems[idx];
   if (!item) { console.error('No item at index', idx); return; }
@@ -159,66 +164,155 @@ async function startWalk(idx) {
   if (currentView !== 'index') toggleGraph();
   graphTab('walk');
 
+  const id = enqueueJob('walk', {
+    articleIdx: idx,
+    sourceId: item._sourceId || null,
+    link: item.link || null,
+    title: item.title || '',
+  });
+  return awaitJob(id);
+}
+
+// Confirms before re-walking an already-indexed article. Called from the
+// "reprocess" button in the feed (see render.js).
+async function confirmReprocess(idx) {
+  const item = allItems[idx];
+  if (!item) return;
+  const ok = await showConfirm(
+    'This article is already indexed. Re-walking will create a new diff entry in its reprocess history. Continue?',
+    { title: 'Reprocess article', okLabel: 'Reprocess', cancelLabel: 'Cancel' }
+  );
+  if (!ok) return;
+  return startWalk(idx);
+}
+
+// Resolve a walk job to its current articleIdx, accounting for the fact
+// that allItems is re-sorted on each fetch. Falls back to sourceId/link.
+function resolveWalkArticleIdx(job) {
+  const t = job.target || {};
+  if (typeof t.articleIdx === 'number' && allItems[t.articleIdx]) {
+    const it = allItems[t.articleIdx];
+    if ((t.sourceId && it._sourceId === t.sourceId) || (t.link && it.link === t.link)) {
+      return t.articleIdx;
+    }
+  }
+  if (t.sourceId) {
+    const i = allItems.findIndex(it => it._sourceId === t.sourceId);
+    if (i >= 0) return i;
+  }
+  if (t.link) {
+    const i = allItems.findIndex(it => it.link === t.link);
+    if (i >= 0) return i;
+  }
+  return -1;
+}
+
+// Mirror the focused job's walk state into the legacy `walk` global so
+// renderWalkStep + UI controls keep working unchanged.
+function setFocusedWalkFromState(ws) {
+  walk.active = ws.active;
+  walk.paused = ws.paused;
+  walk.idx = ws.idx;
+  walk.sentences = ws.sentences;
+  walk.current = ws.current;
+  walk.log = ws.log;
+  walk.context = ws.context;
+  walk._priorSnapshot = ws._priorSnapshot;
+}
+
+// runWalkJob — invoked by the queue scheduler. Owns its own walk state
+// (ws) so multiple walks can be interleaved at await boundaries without
+// clobbering each other. Mirrors into the legacy `walk` global only when
+// this job is the focused one (so renderWalkStep displays it).
+async function runWalkJob(job, signal) {
+  const idx = resolveWalkArticleIdx(job);
+  if (idx < 0) throw new Error('article not found (was it removed?)');
+  const item = allItems[idx];
+  if (!item || !item.body) throw new Error('article body missing');
+
   const srcIdxPre = sources.findIndex(s =>
     (item._sourceId && s.id === item._sourceId) ||
     (item.link && s.url === item.link)
   );
-  walk._priorSnapshot = (srcIdxPre >= 0 && sources[srcIdxPre].processed)
-    ? snapshotSourceEo(srcIdxPre) : null;
 
-  walk.active = true;
-  walk.paused = false;
-  walk.idx = idx;
-  walk.sentences = splitSentences(item.body);
-  walk.current = 0;
-  walk.log = [];
-  walk.context = ensureSourceSites(item);
-  walk.donePromise = new Promise((resolve) => { walk._resolveDone = resolve; });
+  const sentences = splitSentences(item.body);
+  const resumeAt = (job.checkpoint && typeof job.checkpoint.current === 'number')
+    ? Math.min(job.checkpoint.current, sentences.length)
+    : 0;
 
-  renderWalkStep();
-  runWalk();
-  return walk.donePromise;
-}
+  const ws = {
+    jobId: job.id,
+    active: true,
+    paused: false,
+    idx,
+    sentences,
+    current: resumeAt,
+    log: [],
+    context: ensureSourceSites(item),
+    _priorSnapshot: (srcIdxPre >= 0 && sources[srcIdxPre].processed && resumeAt === 0)
+      ? snapshotSourceEo(srcIdxPre) : null,
+  };
 
-async function runWalk() {
-  while (walk.active && !walk.paused && walk.current < walk.sentences.length) {
-    const pct = Math.round(((walk.current + 1) / walk.sentences.length) * 100);
-    updateItemProgress(walk.idx, pct);
+  // record worker reference so cancelJob can find walkState if needed
+  const worker = activeWorkers.get(job.id);
+  if (worker) worker.walkState = ws;
 
-    await processAndAccept();
-    walk.current++;
-    if (activeGraphTab === 'walk') renderWalkStep();
+  // auto-focus this job if no walk is currently focused
+  if (!focusedWalkJobId) {
+    focusedWalkJobId = job.id;
+    setFocusedWalkFromState(ws);
+  } else if (focusedWalkJobId === job.id) {
+    setFocusedWalkFromState(ws);
+  }
+
+  // initial render + checkpoint
+  job.checkpoint = { current: ws.current, total: sentences.length, logLen: 0 };
+  if (activeGraphTab === 'walk') renderProcessTab();
+
+  while (ws.active && ws.current < ws.sentences.length) {
+    if (signal && signal.aborted) throw new DOMException('aborted', 'AbortError');
+    if (ws.paused) { await new Promise(r => setTimeout(r, 200)); continue; }
+
+    const pct = Math.round(((ws.current + 1) / ws.sentences.length) * 100);
+    updateItemProgress(ws.idx, pct);
+
+    await processAndAccept(ws, signal);
+    if (signal && signal.aborted) throw new DOMException('aborted', 'AbortError');
+    ws.current++;
+
+    // checkpoint after each sentence so a reload mid-walk resumes here
+    job.checkpoint = { current: ws.current, total: sentences.length, logLen: ws.log.length };
+    checkpointJob(job, job.checkpoint);
+
+    if (focusedWalkJobId === job.id) {
+      setFocusedWalkFromState(ws);
+      if (activeGraphTab === 'walk') renderProcessTab();
+    }
     renderEntityList();
-    const walkTab = document.getElementById('tab-walk');
-    if (walkTab && activeGraphTab !== 'walk') {
-      walkTab.innerHTML = '<i class="ph ph-cpu"></i> process <span style="color:#d4a84d;">●</span>';
-    }
   }
 
-  if (walk.active && walk.current >= walk.sentences.length) {
-    walk.active = false;
-    if (walk.idx != null && allItems[walk.idx]) {
-      allItems[walk.idx]._walkLog = [...walk.log];
+  if (ws.current >= ws.sentences.length) {
+    ws.active = false;
+    if (ws.idx != null && allItems[ws.idx]) {
+      allItems[ws.idx]._walkLog = [...ws.log];
     }
-    markItemProcessed(walk.idx);
-    // Auto-EVA: aggregate voices across sites this article touched.
-    // Pure log-fold, no LLM. Dedup-by-verdict ensures repeated walks
-    // don't spam identical EVAs.
-    if (walk.context && walk.context.articleId && typeof evaluateAllSitesForArticle === 'function') {
-      try { evaluateAllSitesForArticle(walk.context.articleId); } catch (e) { console.warn('auto-EVA failed', e); }
+    markItemProcessed(ws.idx);
+    if (ws.context && ws.context.articleId && typeof evaluateAllSitesForArticle === 'function') {
+      try { evaluateAllSitesForArticle(ws.context.articleId); } catch (e) { console.warn('auto-EVA failed', e); }
     }
-    storeWalkToMatrix();
-    finalizeWalkSource();
-    if (activeGraphTab === 'walk') renderWalkStep();
-    const walkTab = document.getElementById('tab-walk');
-    if (walkTab) walkTab.innerHTML = '<i class="ph ph-cpu"></i> process';
-    if (walk._resolveDone) { walk._resolveDone(); walk._resolveDone = null; }
+    storeWalkToMatrix(ws);
+    finalizeWalkSource(ws);
+    if (focusedWalkJobId === job.id) {
+      setFocusedWalkFromState(ws);
+      if (activeGraphTab === 'walk') renderProcessTab();
+    }
   }
 }
 
-async function processAndAccept() {
-  const item = allItems[walk.idx];
-  const sentence = walk.sentences[walk.current];
+async function processAndAccept(ws, signal) {
+  ws = ws || walk;
+  const item = allItems[ws.idx];
+  const sentence = ws.sentences[ws.current];
   const siteContext = buildSentenceContext(sentence);
 
   const totalEntities = Object.keys(graph.entities).length;
@@ -249,7 +343,7 @@ async function processAndAccept() {
   ].filter(Boolean).join('\n');
 
   try {
-    const raw = await callClaude(WALK_PROMPT, userMsg, 1500);
+    const raw = await callClaude(WALK_PROMPT, userMsg, 1500, null, { signal });
     const clean = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
     const parsed = JSON.parse(clean);
 
@@ -265,7 +359,7 @@ async function processAndAccept() {
     // Resolve the sentence's voice to a site id. Lazy-SIGs a new voice
     // site if the speaker is new. Returns the journalist voice when no
     // wrapper provided.
-    const voiceId = resolveVoice(voiceDesc, walk.context.articleId, baseTs);
+    const voiceId = resolveVoice(voiceDesc, ws.context.articleId, baseTs, ws);
     const voiceRelation = (voiceDesc && voiceDesc.relation)
       || (voiceDesc && voiceDesc.kind === 'document' ? 'documented_in'
           : voiceDesc && voiceDesc.kind === 'characterization' ? 'characterized_by'
@@ -274,12 +368,12 @@ async function processAndAccept() {
 
     const span = sentence;
     const spanMeta = {
-      text: span, sentenceIdx: walk.current,
+      text: span, sentenceIdx: ws.current,
       sourceUrl: item.link, sourceTitle: item.title,
-      sourceId: walk.context.articleId,
+      sourceId: ws.context.articleId,
       voice: voiceId, voiceRelation,
     };
-    const sourceMeta = { title: item.title, url: item.link, id: walk.context.articleId };
+    const sourceMeta = { title: item.title, url: item.link, id: ws.context.articleId };
 
     for (const p of proposals) {
       const ts = baseTs + Math.floor(Math.random() * 100);
@@ -297,7 +391,7 @@ async function processAndAccept() {
           voice: voiceId, voiceRelation,
           ts, provenance,
         });
-        walk.log.push({ op: 'SIG', text: p.canonical || p.id, kind: p.site || p.kind, sentence: walk.current, span: span, provenance, voice: voiceId, voiceRelation });
+        ws.log.push({ op: 'SIG', text: p.canonical || p.id, kind: p.site || p.kind, sentence: ws.current, span: span, provenance, voice: voiceId, voiceRelation });
       } else if (p.op === 'DEF' && p.id && graph.entities[p.id]) {
         pushEvent({
           op: 'DEF', id: p.id,
@@ -310,7 +404,7 @@ async function processAndAccept() {
           voice: voiceId, voiceRelation,
           ts, provenance,
         });
-        walk.log.push({ op: 'DEF', text: graph.entities[p.id].canonical, hyp: p.hypothesis, sentence: walk.current, span: span, provenance, voice: voiceId, voiceRelation });
+        ws.log.push({ op: 'DEF', text: graph.entities[p.id].canonical, hyp: p.hypothesis, sentence: ws.current, span: span, provenance, voice: voiceId, voiceRelation });
       } else if (p.op === 'CON' && p.from && p.to) {
         pushEvent({
           op: 'CON',
@@ -322,7 +416,7 @@ async function processAndAccept() {
           voice: voiceId, voiceRelation,
           ts, provenance,
         });
-        walk.log.push({ op: 'CON', from: p.from, to: p.to, rel: p.relation, sentence: walk.current, span: span, provenance, voice: voiceId, voiceRelation });
+        ws.log.push({ op: 'CON', from: p.from, to: p.to, rel: p.relation, sentence: ws.current, span: span, provenance, voice: voiceId, voiceRelation });
       } else if (p.op === 'EVA' && p.id && graph.entities[p.id]) {
         pushEvent({
           op: 'EVA', id: p.id,
@@ -333,7 +427,7 @@ async function processAndAccept() {
           bySite: 'walk',
           ts, provenance,
         });
-        walk.log.push({ op: 'EVA', text: graph.entities[p.id].canonical, verdict: p.verdict, note: p.note, sentence: walk.current, span: span, provenance, voice: voiceId, voiceRelation });
+        ws.log.push({ op: 'EVA', text: graph.entities[p.id].canonical, verdict: p.verdict, note: p.note, sentence: ws.current, span: span, provenance, voice: voiceId, voiceRelation });
       } else if (p.op === 'REC' && p.id && graph.entities[p.id] && p.rename) {
         pushEvent({
           op: 'REC', id: p.id,
@@ -343,7 +437,7 @@ async function processAndAccept() {
           voice: voiceId, voiceRelation,
           ts, provenance,
         });
-        walk.log.push({ op: 'REC', text: graph.entities[p.id].canonical, rename: p.rename, sentence: walk.current, span: span, provenance, voice: voiceId, voiceRelation });
+        ws.log.push({ op: 'REC', text: graph.entities[p.id].canonical, rename: p.rename, sentence: ws.current, span: span, provenance, voice: voiceId, voiceRelation });
       } else if (p.op === 'SEG' && p.id && p.into && Array.isArray(p.into) && graph.entities[p.id]) {
         pushEvent({
           op: 'SEG', id: p.id,
@@ -358,7 +452,7 @@ async function processAndAccept() {
           voice: voiceId, voiceRelation,
           ts, provenance,
         });
-        walk.log.push({ op: 'SEG', text: graph.entities[p.id].canonical, into: p.into.map(s => s.canonical).join(', '), sentence: walk.current });
+        ws.log.push({ op: 'SEG', text: graph.entities[p.id].canonical, into: p.into.map(s => s.canonical).join(', '), sentence: ws.current });
       }
     }
 
@@ -367,16 +461,19 @@ async function processAndAccept() {
     saveGraph();
 
   } catch (e) {
+    if (e && e.name === 'AbortError') throw e;
     console.warn('Walk sentence error:', e);
-    walk.log.push({ op: 'ERR', text: e.message, sentence: walk.current });
+    ws.log.push({ op: 'ERR', text: e.message, sentence: ws.current });
   }
 }
 
-function storeWalkToMatrix() {
+function storeWalkToMatrix(ws) {
+  ws = ws || walk;
   if (!mx.accessToken || !mx.roomId) return;
-  const item = allItems[walk.idx];
+  const item = allItems[ws.idx];
+  if (!item) return;
 
-  const events = walk.log
+  const events = ws.log
     .filter(l => l.op !== 'ERR')
     .map(l => {
       const voiceMeta = l.voice ? { voice: l.voice, voiceRelation: l.voiceRelation || null } : {};
@@ -395,7 +492,7 @@ function storeWalkToMatrix() {
       title: item.title,
       url: item.link,
       source: item.sourceName,
-      walkSentences: walk.sentences.length,
+      walkSentences: ws.sentences.length,
     }).catch(e => console.warn('matrix batch store failed', e));
   }
 }
@@ -413,15 +510,16 @@ function snapshotSourceEo(srcIdx) {
   return { ts: Date.now(), ents, sites };
 }
 
-function finalizeWalkSource() {
-  const item = walk.idx != null ? allItems[walk.idx] : null;
+function finalizeWalkSource(ws) {
+  ws = ws || walk;
+  const item = ws.idx != null ? allItems[ws.idx] : null;
   if (!item) return;
 
   let srcIdx = sources.findIndex(s =>
     (item._sourceId && s.id === item._sourceId) ||
     (item.link && s.url === item.link)
   );
-  const sitesFound = walk.log.filter(l => l.op === 'SIG').map(l => l.text);
+  const sitesFound = ws.log.filter(l => l.op === 'SIG').map(l => l.text);
 
   if (srcIdx < 0 && item.link) {
     sources.unshift({
@@ -442,13 +540,13 @@ function finalizeWalkSource() {
     sources[srcIdx].sitesFound = sitesFound;
   }
 
-  if (walk._priorSnapshot && srcIdx >= 0) {
+  if (ws._priorSnapshot && srcIdx >= 0) {
     const next = snapshotSourceEo(srcIdx);
-    const before = new Set(walk._priorSnapshot.ents.map(e => e.id));
+    const before = new Set(ws._priorSnapshot.ents.map(e => e.id));
     const after = new Set(next.ents.map(e => e.id));
     const added = next.ents.filter(e => !before.has(e.id));
-    const removed = walk._priorSnapshot.ents.filter(e => !after.has(e.id));
-    const sitesB = new Set(walk._priorSnapshot.sites);
+    const removed = ws._priorSnapshot.ents.filter(e => !after.has(e.id));
+    const sitesB = new Set(ws._priorSnapshot.sites);
     const sitesA = new Set(next.sites);
     const sitesAdded = [...sitesA].filter(x => !sitesB.has(x));
     const sitesRemoved = [...sitesB].filter(x => !sitesA.has(x));
@@ -456,22 +554,45 @@ function finalizeWalkSource() {
     sources[srcIdx].reprocessHistory = sources[srcIdx].reprocessHistory || [];
     sources[srcIdx].reprocessHistory.push({
       at: Date.now(),
-      prevAt: walk._priorSnapshot.ts,
+      prevAt: ws._priorSnapshot.ts,
       op: isNul ? 'NUL' : 'DIFF',
       added, removed, sitesAdded, sitesRemoved,
     });
   }
-  walk._priorSnapshot = null;
+  ws._priorSnapshot = null;
   saveGraph();
 }
 
+// endWalk now cancels the currently-focused walk job via the queue.
 function endWalk() {
+  const focused = (typeof getFocusedWalkJob === 'function') ? getFocusedWalkJob() : null;
+  if (focused) {
+    cancelJob(focused.id);
+  }
   walk.active = false;
   walk.paused = false;
-  storeWalkToMatrix();
-  finalizeWalkSource();
-  renderWalkStep();
-  if (walk._resolveDone) { walk._resolveDone(); walk._resolveDone = null; }
+}
+
+function pauseFocusedWalk() {
+  const focused = (typeof getFocusedWalkJob === 'function') ? getFocusedWalkJob() : null;
+  if (!focused) return;
+  const worker = activeWorkers.get(focused.id);
+  if (worker && worker.walkState) {
+    worker.walkState.paused = true;
+    walk.paused = true;
+    if (activeGraphTab === 'walk') renderProcessTab();
+  }
+}
+
+function resumeFocusedWalk() {
+  const focused = (typeof getFocusedWalkJob === 'function') ? getFocusedWalkJob() : null;
+  if (!focused) return;
+  const worker = activeWorkers.get(focused.id);
+  if (worker && worker.walkState) {
+    worker.walkState.paused = false;
+    walk.paused = false;
+    if (activeGraphTab === 'walk') renderProcessTab();
+  }
 }
 
 function renderWalkStep() {
@@ -501,9 +622,9 @@ function renderWalkStep() {
   html += '<div class="walk-controls">';
   if (walk.active) {
     if (walk.paused) {
-      html += '<button onclick="walk.paused=false;runWalk();"><i class="ph ph-play"></i> resume</button>';
+      html += '<button onclick="resumeFocusedWalk()"><i class="ph ph-play"></i> resume</button>';
     } else {
-      html += '<button onclick="walk.paused=true;" style="border-color:#d4a84d;color:#d4a84d;"><i class="ph ph-pause"></i> pause</button>';
+      html += '<button onclick="pauseFocusedWalk()" style="border-color:#d4a84d;color:#d4a84d;"><i class="ph ph-pause"></i> pause</button>';
     }
     html += '<button onclick="endWalk()" style="border-color:var(--text-dim);color:var(--text-dim);"><i class="ph ph-stop"></i> stop</button>';
   } else if (walk.log.length) {

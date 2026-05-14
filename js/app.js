@@ -5,6 +5,7 @@ async function init() {
   loadGraph();
   loadCustomFeeds();
   loadDreamCandidates();
+  if (typeof hydrateQueue === 'function') hydrateQueue();
   customFeeds.forEach(f => SOURCES.push(f));
   renderSourcesList();
   renderLibrary();
@@ -25,6 +26,11 @@ async function init() {
   if (typeof renderSummarizeLpList === 'function') renderSummarizeLpList();
 
   document.getElementById('search').addEventListener('input', applyFilters);
+
+  // Resume any queue items that were running at shutdown — their walks
+  // checkpoint per sentence so they pick up where they left off.
+  if (typeof tickScheduler === 'function') tickScheduler();
+  if (typeof updateProcessTabBadge === 'function') updateProcessTabBadge();
 }
 
 window.addEventListener('DOMContentLoaded', init);
