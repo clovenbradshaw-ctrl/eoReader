@@ -151,6 +151,9 @@ function foldEvents(events, ts) {
           span: e.span || null,
           sourceUrl: e.source?.url || null,
           sourceTitle: e.source?.title || null,
+          sourceId: e.source?.id || e.sourceId || null,
+          voice: e.voice || null,
+          voiceRelation: e.voiceRelation || null,
           feedback: null,
           provenance: e.provenance,
           ts: e.ts,
@@ -159,7 +162,13 @@ function foldEvents(events, ts) {
     } else if (e.op === 'EVA' && entities[e.id]) {
       const ent = entities[e.id];
       ent.evaHistory = ent.evaHistory || [];
-      ent.evaHistory.push({ verdict: e.verdict, note: e.note, span: e.span, ts: e.ts, provenance: e.provenance });
+      ent.evaHistory.push({
+        verdict: e.verdict, note: e.note, span: e.span,
+        ts: e.ts, provenance: e.provenance,
+        voice: e.voice || null, voiceRelation: e.voiceRelation || null,
+        bySite: e.bySite || 'walk',
+        verdictHash: e.verdictHash || null,
+      });
     } else if (e.op === 'REC' && entities[e.id]) {
       const ent = entities[e.id];
       if (e.rename && e.rename !== ent.canonical) {
@@ -501,6 +510,62 @@ function hydrateProcessedFlags() {
     if (!it._sourceId) it._sourceId = src.id;
     if (src.processed) it._processed = true;
   });
+}
+
+// ---- voice/provenance prompt helpers ----
+// Single source of truth for how a span or a connection is rendered into
+// LLM-bound context. Every prompt builder (walk targeted context, digest,
+// summary, librarian, dream) routes spans/cons through these so voice
+// attribution travels with the text, not silently stripped off.
+function voiceCanonicalFor(id) {
+  if (!id) return null;
+  const e = graph.entities[id];
+  return e ? (e.canonical || id) : id;
+}
+
+function formatSpanForPrompt(sp, opts) {
+  if (!sp) return '';
+  opts = opts || {};
+  const max = opts.max || 220;
+  const v = voiceCanonicalFor(sp.voice);
+  const rel = sp.voiceRelation;
+  const pub = sp.sourceTitle || '';
+  const attrib = v
+    ? 'according to ' + v + (rel ? ' (' + rel + ')' : '') + (pub ? ' in ' + pub : '')
+    : (pub ? 'in ' + pub : 'unattributed');
+  return '"' + (sp.text || '').slice(0, max) + '" — ' + attrib;
+}
+
+function formatConnectionForPrompt(c, opts) {
+  if (!c) return '';
+  opts = opts || {};
+  const fn = voiceCanonicalFor(c.from) || c.from;
+  const tn = voiceCanonicalFor(c.to) || c.to;
+  const v = voiceCanonicalFor(c.voice);
+  const rel = c.voiceRelation;
+  const attrib = v ? ' [according to ' + v + (rel ? ' (' + rel + ')' : '') + ']' : '';
+  const evMax = opts.evidenceMax || 180;
+  const ev = c.evidence ? ' — "' + c.evidence.slice(0, evMax) + '"' : '';
+  return '`' + c.from + '` (' + fn + ') --[' + c.relation
+       + (c.confidence ? ', ' + c.confidence : '') + ']--> `' + c.to + '` (' + tn + ')'
+       + attrib + ev;
+}
+
+// Returns distinct (voiceId, voiceRelation) pairs across an entity's spans.
+// Used by buildSentenceContext to surface "Voices on record" so the walk's
+// DEF/EVA decisions weigh attribution, not just text.
+function voicesOnRecord(e) {
+  if (!e || !e.spans) return [];
+  const seen = new Set();
+  const out = [];
+  for (const sp of e.spans) {
+    if (!sp || !sp.voice) continue;
+    const key = sp.voice + '|' + (sp.voiceRelation || '');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ voice: sp.voice, voiceRelation: sp.voiceRelation || null, canonical: voiceCanonicalFor(sp.voice) });
+  }
+  return out;
 }
 
 // ---- utilities ----

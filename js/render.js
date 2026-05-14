@@ -288,6 +288,8 @@ function renderGraphPanel() {
     renderLibrarianView();
   } else if (activeGraphTab === 'summary') {
     renderSummaryGeneratorView();
+  } else if (activeGraphTab === 'eva') {
+    renderEvaView();
   }
 
   const walkTab = document.getElementById('tab-walk');
@@ -640,12 +642,48 @@ function renderEntityDetail(id) {
 
   if (e.spans && e.spans.length) {
     html += '<label><i class="ph ph-quotes"></i> source spans (' + e.spans.length + ') — the Given</label>';
-    e.spans.forEach(sp => {
-      html += '<div style="padding:3px 0;border-bottom:1px solid var(--border);font-size:10px;">';
-      html += '<div style="color:var(--text);background:#1a1a2e;padding:3px 6px;border-radius:2px;border-left:2px solid #5588aa;font-style:italic;">"' + escapeAttr(sp.text || '') + '"</div>';
-      html += '<div style="color:var(--text-dim);font-size:9px;">' + escapeAttr(sp.sourceTitle || '') + (sp.sourceUrl ? ' · <a href="' + escapeAttr(sp.sourceUrl) + '" target="_blank" style="color:var(--accent);">source</a>' : '') + '</div>';
-      html += '</div>';
-    });
+    // Group by voice when there's more than one distinct voice on this site.
+    const distinctVoices = new Set();
+    e.spans.forEach(sp => { if (sp && sp.voice) distinctVoices.add(sp.voice); });
+    const showGrouped = distinctVoices.size > 1;
+
+    const renderSpan = (sp) => {
+      const rel = sp.voiceRelation || null;
+      const badgeColor = rel === 'attested_by' ? '#88C070'
+                       : rel === 'asserted_by' ? '#5588aa'
+                       : rel === 'documented_in' ? '#d4a84d'
+                       : rel === 'characterized_by' ? '#9a55cc'
+                       : '#888';
+      const badgeLabel = rel ? rel.replace('_by', '').replace('_in', '') : null;
+      const vName = voiceCanonicalFor(sp.voice);
+      let out = '<div style="padding:3px 0;border-bottom:1px solid var(--border);font-size:10px;">';
+      if (badgeLabel || vName) {
+        out += '<div style="margin-bottom:2px;display:flex;gap:6px;align-items:center;">';
+        if (badgeLabel) out += '<span style="font-size:9px;background:' + badgeColor + '22;color:' + badgeColor + ';padding:1px 5px;border-radius:2px;letter-spacing:0.5px;text-transform:uppercase;">' + escapeAttr(badgeLabel) + '</span>';
+        if (vName) out += '<span style="color:var(--text-bright);font-size:10px;">' + escapeAttr(vName) + '</span>';
+        out += '</div>';
+      }
+      out += '<div style="color:var(--text);background:#1a1a2e;padding:3px 6px;border-radius:2px;border-left:2px solid ' + badgeColor + ';font-style:italic;">"' + escapeAttr(sp.text || '') + '"</div>';
+      out += '<div style="color:var(--text-dim);font-size:9px;">' + escapeAttr(sp.sourceTitle || '') + (sp.sourceUrl ? ' · <a href="' + escapeAttr(sp.sourceUrl) + '" target="_blank" style="color:var(--accent);">source</a>' : '') + '</div>';
+      out += '</div>';
+      return out;
+    };
+
+    if (showGrouped) {
+      const byVoice = new Map();
+      e.spans.forEach(sp => {
+        const key = sp.voice || '__unattributed__';
+        if (!byVoice.has(key)) byVoice.set(key, []);
+        byVoice.get(key).push(sp);
+      });
+      byVoice.forEach((spans, vId) => {
+        const vName = vId === '__unattributed__' ? '(unattributed)' : (voiceCanonicalFor(vId) || vId);
+        html += '<div style="margin-top:6px;font-size:10px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;">' + escapeAttr(vName) + ' — ' + spans.length + '</div>';
+        spans.forEach(sp => { html += renderSpan(sp); });
+      });
+    } else {
+      e.spans.forEach(sp => { html += renderSpan(sp); });
+    }
   }
 
   if (e.sources && e.sources.length) {

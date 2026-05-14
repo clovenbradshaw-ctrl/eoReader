@@ -38,6 +38,7 @@ function buildLibrarianCatalog() {
     cat.byRelation[r] = (cat.byRelation[r] || 0) + 1;
   }
 
+  cat.byVoice = {};
   for (const [id, e] of Object.entries(graph.entities || {})) {
     cat.totalEntities++;
     const k = e.kind || 'Entity';
@@ -48,12 +49,21 @@ function buildLibrarianCatalog() {
       if (!cat.bySource[src]) cat.bySource[src] = { spans: 0, entities: new Set() };
       cat.bySource[src].spans++;
       cat.bySource[src].entities.add(id);
+      if (sp.voice) {
+        const vkey = (voiceCanonicalFor(sp.voice) || sp.voice) + '|' + (sp.voiceRelation || '');
+        if (!cat.byVoice[vkey]) cat.byVoice[vkey] = { spans: 0, entities: new Set() };
+        cat.byVoice[vkey].spans++;
+        cat.byVoice[vkey].entities.add(id);
+      }
     }
   }
 
   // flatten source entity sets to counts
   for (const src of Object.keys(cat.bySource)) {
     cat.bySource[src] = { spans: cat.bySource[src].spans, entities: cat.bySource[src].entities.size };
+  }
+  for (const v of Object.keys(cat.byVoice)) {
+    cat.byVoice[v] = { spans: cat.byVoice[v].spans, entities: cat.byVoice[v].entities.size };
   }
 
   cat.topByDegree = Object.entries(degree)
@@ -83,6 +93,16 @@ function formatCatalogForPrompt(cat) {
   if (srcs.length) {
     lines.push('Sources observed (sourceTitle on spans):');
     srcs.forEach(([s, v]) => lines.push('  - ' + s + ': ' + v.spans + ' spans across ' + v.entities + ' sites'));
+  }
+
+  const voices = Object.entries(cat.byVoice || {}).sort((a, b) => b[1].spans - a[1].spans).slice(0, 20);
+  if (voices.length) {
+    lines.push('Voices observed (voice/relation on spans):');
+    voices.forEach(([vkey, v]) => {
+      const parts = vkey.split('|');
+      const display = parts[0] + (parts[1] ? ' (' + parts[1] + ')' : '');
+      lines.push('  - ' + display + ': ' + v.spans + ' spans across ' + v.entities + ' sites');
+    });
   }
 
   if (cat.feedRegistry.length) {
@@ -233,11 +253,15 @@ function buildLibrarianContextMechanical(question, routeInfo) {
     }
     if (includeSpans && wantsEvidence) {
       const spans = (e.spans || []).slice(0, 2);
-      spans.forEach(sp => { lines.push('  span: "' + (sp.text || '').slice(0, 200) + '" — ' + (sp.sourceTitle || '')); composition.spans++; });
+      spans.forEach(sp => { lines.push('  span: ' + formatSpanForPrompt(sp, { max: 200 })); composition.spans++; });
     } else if (includeSpans && routeInfo.route === 'entity' && (e.spans || []).length) {
-      const sp = e.spans[0];
-      lines.push('  example span: "' + (sp.text || '').slice(0, 160) + '" — ' + (sp.sourceTitle || ''));
+      lines.push('  example span: ' + formatSpanForPrompt(e.spans[0], { max: 160 }));
       composition.spans++;
+    }
+    // Voice summary for the focused site, so the chat LLM knows attribution.
+    const voices = voicesOnRecord(e);
+    if (voices.length) {
+      lines.push('  voices on record: ' + voices.map(v => v.canonical + ' (' + (v.voiceRelation || '?') + ')').join('; '));
     }
   }
 
@@ -247,9 +271,7 @@ function buildLibrarianContextMechanical(question, routeInfo) {
     lines.push('CONNECTIONS:');
     const cap = routeInfo.route === 'connection' ? 80 : 40;
     focusedCons.slice(0, cap).forEach(c => {
-      const fn = graph.entities[c.from]?.canonical || c.from;
-      const tn = graph.entities[c.to]?.canonical || c.to;
-      lines.push('  `' + c.from + '` (' + fn + ') --[' + c.relation + ', ' + (c.confidence || '?') + ']--> `' + c.to + '` (' + tn + ')' + (c.evidence ? ' — ' + c.evidence : ''));
+      lines.push('  ' + formatConnectionForPrompt(c));
       composition.connections++;
     });
   }
@@ -375,10 +397,14 @@ function buildLibrarianDigestContext(scope, opts) {
       const spans = (e.spans || []).slice(0, perSeed);
       spans.forEach(sp => {
         if (spansLeft <= 0) return;
-        lines.push('  span: "' + (sp.text || '').slice(0, 220) + '" — ' + (sp.sourceTitle || ''));
+        lines.push('  span: ' + formatSpanForPrompt(sp));
         composition.spans++;
         spansLeft--;
       });
+      const voices = voicesOnRecord(e);
+      if (voices.length > 1) {
+        lines.push('  voices on record: ' + voices.map(v => v.canonical + ' (' + (v.voiceRelation || '?') + ')').join('; '));
+      }
 
       // most recent processing trail tied to the seed (1 of each, latest)
       const lastDef = (e.defHistory || []).slice(-1)[0];
@@ -422,11 +448,7 @@ function buildLibrarianDigestContext(scope, opts) {
     lines.push('');
     lines.push('CONNECTIONS (' + Math.min(incidentCons.length, LIBRARIAN_DIGEST_MAX_CONNECTIONS) + ' of ' + incidentCons.length + ', seed-incident, confidence-ranked):');
     incidentCons.slice(0, LIBRARIAN_DIGEST_MAX_CONNECTIONS).forEach(c => {
-      const fn = graph.entities[c.from]?.canonical || c.from;
-      const tn = graph.entities[c.to]?.canonical || c.to;
-      let line = '  `' + c.from + '` (' + fn + ') --[' + c.relation + ', ' + (c.confidence || '?') + ']--> `' + c.to + '` (' + tn + ')';
-      if (c.evidence) line += ' — "' + c.evidence.slice(0, 180) + '"';
-      lines.push(line);
+      lines.push('  ' + formatConnectionForPrompt(c));
       composition.connections++;
     });
   }

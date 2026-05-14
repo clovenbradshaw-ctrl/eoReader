@@ -10,6 +10,136 @@ function splitSentences(text) {
     .filter(s => s.length > 10);
 }
 
+function slugify(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+}
+
+// Promote an article's publication + article + journalist-voice into the
+// graph as Entity sites. Idempotent — each id is only SIG'd once. Returns
+// {articleId, pubId, journalistVoiceId} for the walk loop to attach to
+// every span.
+function ensureSourceSites(item) {
+  const ts = Date.now();
+  const provenance = 'system-inferred';
+
+  // 1. Publication site
+  const pubKey = (SOURCES.find(s => s.name === item.sourceName) || {}).key;
+  const pubId = 'pub-' + (pubKey || slugify(item.sourceName || 'unknown'));
+  const pubCanonical = item.sourceName || 'Unknown publication';
+  if (!graph.entities[pubId]) {
+    pushEvent({
+      op: 'SIG', id: pubId,
+      canonical: pubCanonical,
+      kind: 'Entity', subtype: 'publication',
+      hypothesis: 'Publication producing journalism. Source of attested_by voices.',
+      aliases: [],
+      ts, provenance,
+    });
+  }
+
+  // 2. Article site
+  const articleId = 'art-' + slugify((item.title || '') + '-' + (item.link || ''));
+  if (!graph.entities[articleId]) {
+    pushEvent({
+      op: 'SIG', id: articleId,
+      canonical: item.title || '(untitled)',
+      kind: 'Entity', subtype: 'article',
+      hypothesis: 'Article published in ' + pubCanonical + '. Source spans flow from this artifact.',
+      aliases: [],
+      source: { title: item.title, url: item.link, id: articleId },
+      ts: ts + 1, provenance,
+    });
+    pushEvent({
+      op: 'CON',
+      from: articleId, to: pubId,
+      relation: 'published_in',
+      evidence: '',
+      confidence: 'high',
+      provenance,
+      ts: ts + 2,
+    });
+  }
+
+  // 3. Journalist voice site (one per article — the reporting voice)
+  const journalistVoiceId = articleId + '-journalist';
+  if (!graph.entities[journalistVoiceId]) {
+    pushEvent({
+      op: 'SIG', id: journalistVoiceId,
+      canonical: pubCanonical + ' reporter',
+      kind: 'Entity', subtype: 'voice',
+      hypothesis: 'Reporting voice for the article. attested_by relation to its claims.',
+      aliases: [],
+      voiceRelation: 'attested_by',
+      ts: ts + 3, provenance,
+    });
+    pushEvent({
+      op: 'CON',
+      from: journalistVoiceId, to: articleId,
+      relation: 'voice_in',
+      evidence: '',
+      confidence: 'high',
+      provenance,
+      ts: ts + 4,
+    });
+  }
+
+  refoldLive();
+  saveGraph();
+
+  return { articleId, pubId, journalistVoiceId };
+}
+
+// Resolve a voice descriptor from the walk LLM into a site id. Reuses
+// existing person ids when the voice name matches a known canonical/alias
+// (per user decision: people speak through their own voice). Lazy-SIGs a
+// new voice site otherwise. Returns the resolved id.
+function resolveVoice(voiceDesc, articleId, ts) {
+  if (!voiceDesc || !voiceDesc.kind) {
+    return walk.context && walk.context.journalistVoiceId;
+  }
+  if (voiceDesc.kind === 'journalist') {
+    return walk.context.journalistVoiceId;
+  }
+  const name = (voiceDesc.name || '').trim();
+  if (!name) return walk.context.journalistVoiceId;
+
+  // Match existing entity by canonical/alias
+  const lower = name.toLowerCase();
+  for (const [id, e] of Object.entries(graph.entities)) {
+    if ((e.canonical || '').toLowerCase() === lower) return id;
+    if ((e.aliases || []).some(a => (a || '').toLowerCase() === lower)) return id;
+  }
+
+  // Otherwise SIG a new voice site
+  const subtype = voiceDesc.kind === 'document' ? 'document'
+                : voiceDesc.kind === 'characterization' ? 'frame'
+                : 'voice';
+  const slug = slugify(name) || ('voice-' + ts);
+  pushEvent({
+    op: 'SIG', id: slug,
+    canonical: name,
+    kind: 'Entity', subtype,
+    hypothesis: 'Voice introduced by walk: ' + voiceDesc.kind + ' (' + (voiceDesc.relation || '') + ').',
+    aliases: [],
+    voiceRelation: voiceDesc.relation || null,
+    ts, provenance: 'source-attested',
+  });
+  pushEvent({
+    op: 'CON',
+    from: slug, to: articleId,
+    relation: 'voice_in',
+    evidence: '',
+    confidence: 'high',
+    provenance: 'source-attested',
+    ts: ts + 1,
+  });
+  return slug;
+}
+
 async function startWalk(idx) {
   const item = allItems[idx];
   if (!item) { console.error('No item at index', idx); return; }
@@ -42,6 +172,7 @@ async function startWalk(idx) {
   walk.sentences = splitSentences(item.body);
   walk.current = 0;
   walk.log = [];
+  walk.context = ensureSourceSites(item);
   walk.donePromise = new Promise((resolve) => { walk._resolveDone = resolve; });
 
   renderWalkStep();
@@ -70,6 +201,12 @@ async function runWalk() {
       allItems[walk.idx]._walkLog = [...walk.log];
     }
     markItemProcessed(walk.idx);
+    // Auto-EVA: aggregate voices across sites this article touched.
+    // Pure log-fold, no LLM. Dedup-by-verdict ensures repeated walks
+    // don't spam identical EVAs.
+    if (walk.context && walk.context.articleId && typeof evaluateAllSitesForArticle === 'function') {
+      try { evaluateAllSitesForArticle(walk.context.articleId); } catch (e) { console.warn('auto-EVA failed', e); }
+    }
     storeWalkToMatrix();
     finalizeWalkSource();
     if (activeGraphTab === 'walk') renderWalkStep();
@@ -114,14 +251,35 @@ async function processAndAccept() {
   try {
     const raw = await callClaude(WALK_PROMPT, userMsg, 1500);
     const clean = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-    const proposals = JSON.parse(clean);
+    const parsed = JSON.parse(clean);
+
+    // Accept both shapes: legacy array OR new wrapper {voice, events}.
+    let proposals, voiceDesc;
+    if (Array.isArray(parsed)) { proposals = parsed; voiceDesc = null; }
+    else { proposals = parsed.events || []; voiceDesc = parsed.voice || null; }
     if (!Array.isArray(proposals)) return;
 
-    const span = sentence;
-    const spanMeta = { text: span, sentenceIdx: walk.current, sourceUrl: item.link, sourceTitle: item.title };
-    const sourceMeta = { title: item.title, url: item.link };
     const baseTs = Date.now();
     const provenance = 'source-attested';
+
+    // Resolve the sentence's voice to a site id. Lazy-SIGs a new voice
+    // site if the speaker is new. Returns the journalist voice when no
+    // wrapper provided.
+    const voiceId = resolveVoice(voiceDesc, walk.context.articleId, baseTs);
+    const voiceRelation = (voiceDesc && voiceDesc.relation)
+      || (voiceDesc && voiceDesc.kind === 'document' ? 'documented_in'
+          : voiceDesc && voiceDesc.kind === 'characterization' ? 'characterized_by'
+          : voiceDesc && voiceDesc.kind === 'quoted-person' ? 'asserted_by'
+          : 'attested_by');
+
+    const span = sentence;
+    const spanMeta = {
+      text: span, sentenceIdx: walk.current,
+      sourceUrl: item.link, sourceTitle: item.title,
+      sourceId: walk.context.articleId,
+      voice: voiceId, voiceRelation,
+    };
+    const sourceMeta = { title: item.title, url: item.link, id: walk.context.articleId };
 
     for (const p of proposals) {
       const ts = baseTs + Math.floor(Math.random() * 100);
@@ -136,9 +294,10 @@ async function processAndAccept() {
           aliases: p.aliases || [],
           hypothesis: p.hypothesis || '',
           span: spanMeta, source: sourceMeta,
+          voice: voiceId, voiceRelation,
           ts, provenance,
         });
-        walk.log.push({ op: 'SIG', text: p.canonical || p.id, kind: p.site || p.kind, sentence: walk.current, span: span, provenance });
+        walk.log.push({ op: 'SIG', text: p.canonical || p.id, kind: p.site || p.kind, sentence: walk.current, span: span, provenance, voice: voiceId, voiceRelation });
       } else if (p.op === 'DEF' && p.id && graph.entities[p.id]) {
         pushEvent({
           op: 'DEF', id: p.id,
@@ -148,9 +307,10 @@ async function processAndAccept() {
           displayName: p.displayName || null,
           nameGroup: p.nameGroup || null,
           span: spanMeta, source: sourceMeta,
+          voice: voiceId, voiceRelation,
           ts, provenance,
         });
-        walk.log.push({ op: 'DEF', text: graph.entities[p.id].canonical, hyp: p.hypothesis, sentence: walk.current, span: span, provenance });
+        walk.log.push({ op: 'DEF', text: graph.entities[p.id].canonical, hyp: p.hypothesis, sentence: walk.current, span: span, provenance, voice: voiceId, voiceRelation });
       } else if (p.op === 'CON' && p.from && p.to) {
         pushEvent({
           op: 'CON',
@@ -159,27 +319,31 @@ async function processAndAccept() {
           evidence: p.evidence || '',
           confidence: p.confidence || 'medium',
           span: spanMeta, source: sourceMeta,
+          voice: voiceId, voiceRelation,
           ts, provenance,
         });
-        walk.log.push({ op: 'CON', from: p.from, to: p.to, rel: p.relation, sentence: walk.current, span: span, provenance });
+        walk.log.push({ op: 'CON', from: p.from, to: p.to, rel: p.relation, sentence: walk.current, span: span, provenance, voice: voiceId, voiceRelation });
       } else if (p.op === 'EVA' && p.id && graph.entities[p.id]) {
         pushEvent({
           op: 'EVA', id: p.id,
           verdict: p.verdict || 'holds',
           note: p.note || '',
           span: spanMeta, source: sourceMeta,
+          voice: voiceId, voiceRelation,
+          bySite: 'walk',
           ts, provenance,
         });
-        walk.log.push({ op: 'EVA', text: graph.entities[p.id].canonical, verdict: p.verdict, note: p.note, sentence: walk.current, span: span, provenance });
+        walk.log.push({ op: 'EVA', text: graph.entities[p.id].canonical, verdict: p.verdict, note: p.note, sentence: walk.current, span: span, provenance, voice: voiceId, voiceRelation });
       } else if (p.op === 'REC' && p.id && graph.entities[p.id] && p.rename) {
         pushEvent({
           op: 'REC', id: p.id,
           rename: p.rename,
           reason: p.reason || '',
           span: spanMeta, source: sourceMeta,
+          voice: voiceId, voiceRelation,
           ts, provenance,
         });
-        walk.log.push({ op: 'REC', text: graph.entities[p.id].canonical, rename: p.rename, sentence: walk.current, span: span, provenance });
+        walk.log.push({ op: 'REC', text: graph.entities[p.id].canonical, rename: p.rename, sentence: walk.current, span: span, provenance, voice: voiceId, voiceRelation });
       } else if (p.op === 'SEG' && p.id && p.into && Array.isArray(p.into) && graph.entities[p.id]) {
         pushEvent({
           op: 'SEG', id: p.id,
@@ -191,6 +355,7 @@ async function processAndAccept() {
           })),
           reason: p.reason || '',
           span: spanMeta, source: sourceMeta,
+          voice: voiceId, voiceRelation,
           ts, provenance,
         });
         walk.log.push({ op: 'SEG', text: graph.entities[p.id].canonical, into: p.into.map(s => s.canonical).join(', '), sentence: walk.current });
@@ -214,12 +379,13 @@ function storeWalkToMatrix() {
   const events = walk.log
     .filter(l => l.op !== 'ERR')
     .map(l => {
-      if (l.op === 'SIG') return { op: 'SIG', site: 'entity:' + l.text, resolution: { kind: l.kind } };
-      if (l.op === 'DEF') return { op: 'DEF', site: 'entity:' + l.text, resolution: { hypothesis: l.hyp || l.def } };
-      if (l.op === 'CON') return { op: 'CON', site: 'entity:' + l.from, resolution: { joined: 'entity:' + l.to, relation: l.rel } };
-      if (l.op === 'EVA') return { op: 'EVA', site: 'entity:' + l.text, resolution: { verdict: l.verdict, note: l.note } };
-      if (l.op === 'REC') return { op: 'REC', site: 'entity:' + l.text, resolution: { rename: l.rename } };
-      if (l.op === 'SEG') return { op: 'SEG', site: 'entity:' + l.text, resolution: { into: l.into } };
+      const voiceMeta = l.voice ? { voice: l.voice, voiceRelation: l.voiceRelation || null } : {};
+      if (l.op === 'SIG') return { op: 'SIG', site: 'entity:' + l.text, resolution: { kind: l.kind, ...voiceMeta } };
+      if (l.op === 'DEF') return { op: 'DEF', site: 'entity:' + l.text, resolution: { hypothesis: l.hyp || l.def, ...voiceMeta } };
+      if (l.op === 'CON') return { op: 'CON', site: 'entity:' + l.from, resolution: { joined: 'entity:' + l.to, relation: l.rel, ...voiceMeta } };
+      if (l.op === 'EVA') return { op: 'EVA', site: 'entity:' + l.text, resolution: { verdict: l.verdict, note: l.note, ...voiceMeta } };
+      if (l.op === 'REC') return { op: 'REC', site: 'entity:' + l.text, resolution: { rename: l.rename, ...voiceMeta } };
+      if (l.op === 'SEG') return { op: 'SEG', site: 'entity:' + l.text, resolution: { into: l.into, ...voiceMeta } };
       return null;
     })
     .filter(Boolean);
@@ -457,8 +623,30 @@ async function generateDigest(idx, btn) {
     const tn = graph.entities[c.to]?.canonical || c.to;
     const ev = c.evidence ? ' — "' + c.evidence + '"' : '';
     const conf = c.confidence ? ' [' + c.confidence + ']' : '';
-    return '`{' + fn + '}` →' + c.relation + '→ `{' + tn + '}`' + conf + ev;
+    const v = voiceCanonicalFor(c.voice);
+    const attrib = v ? ' [according to ' + v + (c.voiceRelation ? '/' + c.voiceRelation : '') + ']' : '';
+    return '`{' + fn + '}` →' + c.relation + '→ `{' + tn + '}`' + conf + attrib + ev;
   }).join('\n');
+
+  // Aggregate distinct voices that contributed to this article's spans.
+  // Lets the digest LLM see who's speaking before it writes the bullets.
+  const articleVoiceSet = new Map();
+  articleEntityIds.forEach((id) => {
+    const e = graph.entities[id];
+    if (!e) return;
+    (e.spans || []).forEach(sp => {
+      if (!sp || !sp.voice) return;
+      const isThisArticle = (sp.sourceUrl && sp.sourceUrl === item.link) || (sp.sourceTitle && sp.sourceTitle === item.title);
+      if (!isThisArticle) return;
+      const key = sp.voice + '|' + (sp.voiceRelation || '');
+      if (!articleVoiceSet.has(key)) {
+        articleVoiceSet.set(key, { voice: sp.voice, rel: sp.voiceRelation || null, canonical: voiceCanonicalFor(sp.voice) });
+      }
+    });
+  });
+  const articleVoiceLines = [...articleVoiceSet.values()]
+    .map(v => '  - ' + v.canonical + (v.rel ? ' (' + v.rel + ')' : ''))
+    .join('\n');
 
   const nodeLines = [];
   articleEntityIds.forEach((id) => {
@@ -474,7 +662,9 @@ async function generateDigest(idx, btn) {
       const conLines = localCons.slice(0, 6).map((c) => {
         const other = c.from === id ? c.to : c.from;
         const otherName = graph.entities[other]?.canonical || other;
-        return '    ' + (c.from === id ? '→' : '←') + ' ' + c.relation + ' `{' + otherName + '}`';
+        const v = voiceCanonicalFor(c.voice);
+        const attrib = v ? ' [according to ' + v + (c.voiceRelation ? '/' + c.voiceRelation : '') + ']' : '';
+        return '    ' + (c.from === id ? '→' : '←') + ' ' + c.relation + ' `{' + otherName + '}`' + attrib;
       });
       line += '\n  Linked in graph:\n' + conLines.join('\n');
     }
@@ -505,6 +695,8 @@ async function generateDigest(idx, btn) {
     nodeLines.length ? 'Article-linked nodes (from walk):\n' + nodeLines.join('\n\n') : 'Article-linked nodes (from walk): (none)',
     '',
     articleConsLines ? 'Connections evidenced in this article:\n' + articleConsLines : 'Connections evidenced in this article: (none)',
+    '',
+    articleVoiceLines ? 'Voices behind these claims (attribution matters — never present an asserted_by claim as if attested_by):\n' + articleVoiceLines : '',
   ].filter(Boolean).join('\n');
 
   try {
@@ -542,7 +734,7 @@ async function generateDigest(idx, btn) {
           subtype: e.subtype || null,
           hypothesis: e.hypothesis,
           spans: (e.spans || []).filter(sp => sp.sourceUrl === item.link || sp.sourceTitle === item.title)
-            .map(sp => ({ sentenceIdx: sp.sentenceIdx, text: sp.text })),
+            .map(sp => ({ sentenceIdx: sp.sentenceIdx, text: sp.text, voice: sp.voice || null, voiceRelation: sp.voiceRelation || null })),
           roleProfile: computeRoleProfile(id),
         })),
       connections: graph.connections
@@ -555,6 +747,8 @@ async function generateDigest(idx, btn) {
           confidence: c.confidence,
           provenance: c.provenance || 'source-attested',
           span: c.span ? { sentenceIdx: c.span.sentenceIdx, text: c.span.text } : null,
+          voice: c.voice || null,
+          voiceRelation: c.voiceRelation || null,
         })),
     };
     item._articleJson = articleJson;
@@ -568,6 +762,9 @@ async function generateDigest(idx, btn) {
       linkedHtml += '<div style="margin-bottom:12px;">' + mdToHtml(rawOutput, { linkNodes: true, inlineSpans: sentenceMap, sentences }) + '</div>';
       linkedHtml += '<hr style="border:none;border-top:1px solid var(--border);margin:12px 0;">';
       linkedHtml += '<div style="font-size:10px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;"><i class="ph ph-quotes"></i> source sentences with evidence</div>';
+      const pubCanonical = walk.context && graph.entities[walk.context.pubId]
+        ? graph.entities[walk.context.pubId].canonical
+        : (item.sourceName || '');
       sentences.forEach((s, si) => {
         const events = sentenceMap[si];
         if (!events || !events.length) return;
@@ -575,8 +772,17 @@ async function generateDigest(idx, btn) {
           const color = e.op === 'SIG' ? '#88C070' : e.op === 'DEF' ? '#d4a84d' : e.op === 'CON' ? '#5588aa' : e.op === 'EVA' ? '#c06060' : e.op === 'REC' ? '#9a55cc' : '#888';
           return '<span style="font-size:9px;background:' + color + '22;color:' + color + ';padding:0 4px;border-radius:2px;margin-left:4px;">' + e.op + ' ' + escapeAttr(e.text || e.from || '') + '</span>';
         }).join('');
+        // Voice prefix — all events from one sentence share the wrapper voice.
+        const ve = events[0] || {};
+        const voiceCanonical = voiceCanonicalFor(ve.voice);
+        const attribPrefix = voiceCanonical
+          ? 'According to <strong>' + escapeAttr(voiceCanonical) + '</strong>'
+            + (ve.voiceRelation ? ' (' + escapeAttr(ve.voiceRelation) + ')' : '')
+            + (pubCanonical ? ' in <em>' + escapeAttr(pubCanonical) + '</em>' : '') + ': '
+          : (pubCanonical ? 'According to ' + escapeAttr(pubCanonical) + ': ' : '');
         linkedHtml += '<div id="s' + si + '" style="padding:4px 0;border-bottom:1px solid var(--border);">';
         linkedHtml += '<span style="color:var(--text-dim);font-size:9px;margin-right:6px;">s' + si + '</span>';
+        linkedHtml += '<span style="color:var(--text-dim);font-size:10px;">' + attribPrefix + '</span>';
         linkedHtml += '<span style="color:var(--text);">' + escapeAttr(s) + '</span>' + tags;
         linkedHtml += '</div>';
       });
