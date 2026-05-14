@@ -3,16 +3,16 @@
 // DREAM_PROMPT, LIBRARIAN_PROMPT, findRelevantSites, buildSentenceContext.
 
 const SOURCES = [
-  { key: 'richtext', name: '{Rich Text}', url: 'https://readrichtext.substack.com/feed', home: 'https://readrichtext.substack.com' },
-  { key: 'jesusurbanist', name: 'Jesus Urbanist', url: 'https://jesusurbanist.substack.com/feed', home: 'https://jesusurbanist.substack.com' },
-  { key: 'micheleflynn', name: 'Michele Flynn', url: 'https://micheleflynn.substack.com/feed', home: 'https://micheleflynn.substack.com' },
-  { key: 'citycast', name: 'City Cast Nashville', url: 'https://feeds.megaphone.fm/CC2002452330', home: 'https://nashville.citycast.fm' },
-  { key: 'banner', name: 'Nashville Banner', url: 'https://nashvillebanner.com/feed/', home: 'https://nashvillebanner.com' },
-  { key: 'contributor', name: 'The Contributor', url: 'https://thecontributor.org/feed/', home: 'https://thecontributor.org' },
-  { key: 'scene', name: 'Nashville Scene', url: 'https://www.nashvillescene.com/search/?f=rss', home: 'https://www.nashvillescene.com' },
-  { key: 'tennessean', name: 'The Tennessean', url: 'https://www.tennessean.com/news/', home: 'https://www.tennessean.com' },
-  { key: 'wpln', name: 'WPLN News', url: 'https://wpln.org/feed/', home: 'https://wpln.org' },
-  { key: 'lookout', name: 'TN Lookout', url: 'https://tennesseelookout.com/feed/', home: 'https://tennesseelookout.com' },
+  { key: 'richtext', name: '{Rich Text}', url: 'https://readrichtext.substack.com/feed', home: 'https://readrichtext.substack.com', medium: 'newsletter', publisher: 'Substack' },
+  { key: 'jesusurbanist', name: 'Jesus Urbanist', url: 'https://jesusurbanist.substack.com/feed', home: 'https://jesusurbanist.substack.com', medium: 'newsletter', publisher: 'Substack' },
+  { key: 'micheleflynn', name: 'Michele Flynn', url: 'https://micheleflynn.substack.com/feed', home: 'https://micheleflynn.substack.com', medium: 'newsletter', publisher: 'Substack' },
+  { key: 'citycast', name: 'City Cast Nashville', url: 'https://feeds.megaphone.fm/CC2002452330', home: 'https://nashville.citycast.fm', medium: 'podcast', publisher: 'City Cast' },
+  { key: 'banner', name: 'Nashville Banner', url: 'https://nashvillebanner.com/feed/', home: 'https://nashvillebanner.com', medium: 'newspaper', publisher: 'Nashville Banner' },
+  { key: 'contributor', name: 'The Contributor', url: 'https://thecontributor.org/feed/', home: 'https://thecontributor.org', medium: 'newspaper', publisher: 'The Contributor' },
+  { key: 'scene', name: 'Nashville Scene', url: 'https://www.nashvillescene.com/search/?f=rss', home: 'https://www.nashvillescene.com', medium: 'alt-weekly', publisher: 'FW Publishing' },
+  { key: 'tennessean', name: 'The Tennessean', url: 'https://www.tennessean.com/news/', home: 'https://www.tennessean.com', medium: 'newspaper', publisher: 'Gannett' },
+  { key: 'wpln', name: 'WPLN News', url: 'https://wpln.org/feed/', home: 'https://wpln.org', medium: 'public radio', publisher: 'Nashville Public Radio' },
+  { key: 'lookout', name: 'TN Lookout', url: 'https://tennesseelookout.com/feed/', home: 'https://tennesseelookout.com', medium: 'newspaper', publisher: 'States Newsroom' },
 ];
 
 const PROXY = 'https://n8n.intelechia.com/webhook/feed?url=';

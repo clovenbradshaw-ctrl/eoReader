@@ -325,9 +325,9 @@ function toggleLpSection(name) {
   const section = document.getElementById('section-' + name);
   const caret = document.getElementById('caret-' + name);
   if (!section) return;
-  const hidden = section.style.display === 'none';
-  section.style.display = hidden ? '' : 'none';
-  if (caret) caret.classList.toggle('collapsed', !hidden);
+  const isHidden = getComputedStyle(section).display === 'none';
+  section.style.display = isHidden ? '' : 'none';
+  if (caret) caret.classList.toggle('collapsed', !isHidden);
 }
 
 // ---- custom feeds ----
@@ -399,13 +399,29 @@ function updateGraphCount() {
   if (el) el.textContent = Object.keys(graph.entities).length;
 }
 
-function toggleGraph() {
-  currentView = currentView === 'feed' ? 'index' : 'feed';
-  document.getElementById('view-feed').style.display = currentView === 'feed' ? '' : 'none';
-  document.getElementById('view-index').style.display = currentView === 'index' ? '' : 'none';
+function showView(view) {
+  currentView = view;
+  document.getElementById('view-feed').style.display = view === 'feed' ? '' : 'none';
+  document.getElementById('view-index').style.display = view === 'index' ? 'flex' : 'none';
+  const disc = document.getElementById('view-discover');
+  if (disc) disc.style.display = view === 'discover' ? 'flex' : 'none';
   const btn = document.getElementById('graph-toggle');
-  if (btn) btn.classList.toggle('active', currentView === 'index');
-  if (currentView === 'index') renderGraphPanel();
+  if (btn) btn.classList.toggle('active', view === 'index');
+  if (view === 'index') renderGraphPanel();
+  if (view === 'discover' && typeof renderDiscover === 'function') renderDiscover();
+}
+
+function toggleGraph() {
+  showView(currentView === 'index' ? 'feed' : 'index');
+}
+
+let lastNonDiscoverView = 'feed';
+function openDiscover() {
+  if (currentView !== 'discover') lastNonDiscoverView = currentView;
+  showView('discover');
+}
+function closeDiscover() {
+  showView(lastNonDiscoverView === 'discover' ? 'feed' : lastNonDiscoverView);
 }
 
 function graphTab(tab) {
