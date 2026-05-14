@@ -393,6 +393,17 @@
       <div class="graph-main" id="graph-main-content" style="flex:1;padding:16px;overflow-y:auto;"></div>
     </div>
   </div>
+  <div id="view-discover" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
+    <div class="index-toolbar">
+      <button class="graph-tab active" id="disc-tab-medium" onclick="discoverTab('medium')"><i class="ph ph-squares-four"></i> by medium</button>
+      <button class="graph-tab" id="disc-tab-publisher" onclick="discoverTab('publisher')"><i class="ph ph-buildings"></i> by publisher</button>
+      <button class="graph-tab" id="disc-tab-all" onclick="discoverTab('all')"><i class="ph ph-list"></i> all</button>
+      <div style="flex:1;"></div>
+      <input type="text" id="discover-search" placeholder="search sources..." oninput="renderDiscover()" style="width:160px;background:var(--bg);border:1px solid var(--border);color:var(--text-bright);font-family:inherit;font-size:11px;padding:3px 8px;border-radius:3px;" />
+      <button class="act-btn" onclick="closeDiscover()"><i class="ph ph-x"></i> close</button>
+    </div>
+    <div id="discover-body" style="flex:1;overflow-y:auto;padding:16px;"></div>
+  </div>
 </div>
 
 </div>

@@ -779,7 +779,8 @@ function deleteConnection(i) {
 function renderSourcesList() {
   const el = document.getElementById('lp-sources');
   if (!el) return;
-  let html = '<div class="lp-item' + (activeFilters.size === 0 ? ' active' : '') + '" onclick="filterBySource(null)">' +
+  let html = '<button class="act-btn" style="width:100%;margin-bottom:6px;padding:4px 8px;font-size:10px;" onclick="openDiscover()"><i class="ph ph-compass"></i> browse all sources</button>';
+  html += '<div class="lp-item' + (activeFilters.size === 0 ? ' active' : '') + '" onclick="filterBySource(null)">' +
     '<i class="ph ph-list" style="color:var(--text-dim);flex-shrink:0;margin-top:2px;"></i>' +
     '<span class="lp-title">all feeds</span></div>';
   html += SOURCES.map(s =>
@@ -789,6 +790,71 @@ function renderSourcesList() {
     '</div>'
   ).join('');
   el.innerHTML = html;
+}
+
+let discoverGroupBy = 'medium';
+function discoverTab(group) {
+  discoverGroupBy = group;
+  ['medium', 'publisher', 'all'].forEach(g => {
+    const btn = document.getElementById('disc-tab-' + g);
+    if (btn) btn.classList.toggle('active', g === group);
+  });
+  renderDiscover();
+}
+
+function renderDiscover() {
+  const body = document.getElementById('discover-body');
+  if (!body) return;
+  const q = (document.getElementById('discover-search')?.value || '').toLowerCase().trim();
+  const match = (s) => !q || [s.name, s.medium, s.publisher].some(v => (v || '').toLowerCase().includes(q));
+  const filtered = SOURCES.filter(match);
+
+  if (!filtered.length) {
+    body.innerHTML = '<div style="color:var(--text-dim);font-size:11px;">no sources match "' + escapeAttr(q) + '"</div>';
+    return;
+  }
+
+  const chipStyle = 'background:var(--surface);color:var(--text-dim);padding:1px 6px;border-radius:2px;font-size:9px;';
+  const card = (s) => {
+    const mediumChip = s.medium ? '<span style="' + chipStyle + '">' + escapeAttr(s.medium) + '</span>' : '';
+    const publisherChip = s.publisher ? '<span style="' + chipStyle + '">' + escapeAttr(s.publisher) + '</span>' : '';
+    return '<div style="border:1px solid var(--border);border-radius:3px;padding:10px 12px;background:var(--bg);display:flex;flex-direction:column;gap:6px;">' +
+      '<div style="font-weight:700;color:var(--text-bright);font-size:13px;">' + escapeAttr(s.name) + '</div>' +
+      '<div style="display:flex;gap:4px;flex-wrap:wrap;">' + mediumChip + publisherChip + '</div>' +
+      (s.home ? '<a href="' + escapeAttr(s.home) + '" target="_blank" rel="noopener" style="font-size:10px;color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeAttr(s.home) + '</a>' : '') +
+      '<div style="display:flex;gap:6px;margin-top:4px;">' +
+        '<button class="act-btn" style="padding:3px 8px;font-size:10px;" onclick="filterBySource(\'' + s.key + '\');showView(\'feed\');"><i class="ph ph-funnel"></i> filter feed</button>' +
+        (s.home ? '<a class="act-btn" style="padding:3px 8px;font-size:10px;text-decoration:none;" href="' + escapeAttr(s.home) + '" target="_blank" rel="noopener"><i class="ph ph-arrow-square-out"></i> open</a>' : '') +
+      '</div>' +
+    '</div>';
+  };
+
+  const gridOpen = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;">';
+  const gridClose = '</div>';
+  const countLine = '<div style="color:var(--text-dim);font-size:10px;margin-bottom:12px;">' + filtered.length + ' source' + (filtered.length === 1 ? '' : 's') + '</div>';
+
+  if (discoverGroupBy === 'all') {
+    const sorted = filtered.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    body.innerHTML = countLine + gridOpen + sorted.map(card).join('') + gridClose;
+    return;
+  }
+
+  const key = discoverGroupBy;
+  const groups = new Map();
+  filtered.forEach(s => {
+    const g = s[key] || 'uncategorized';
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(s);
+  });
+  const groupKeys = Array.from(groups.keys()).sort((a, b) => a.localeCompare(b));
+
+  body.innerHTML = countLine + groupKeys.map(g => {
+    const items = groups.get(g).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    return '<div style="margin-bottom:20px;">' +
+      '<div class="lp-label" style="font-size:11px;margin-bottom:8px;">' + escapeAttr(g) + ' <span style="color:var(--text-dim);">(' + items.length + ')</span></div>' +
+      gridOpen + items.map(card).join('') + gridClose +
+    '</div>';
+  }).join('');
 }
 
 function filterBySource(key) {
@@ -905,7 +971,7 @@ function viewSourceInMain(srcIdx) {
   s.lastInteracted = Date.now();
   saveGraph();
 
-  if (currentView !== 'feed') toggleGraph();
+  if (currentView !== 'feed') showView('feed');
 
   const el = document.getElementById('view-feed');
   const itemIdx = allItems.findIndex(it => it._sourceId === s.id || (s.url && it.link === s.url));
