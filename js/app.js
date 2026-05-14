@@ -19,6 +19,7 @@ async function init() {
   // fetch RSS feeds in parallel
   const results = await Promise.all(SOURCES.map(fetchFeed));
   allItems = results.flat();
+  hydrateProcessedFlags();
   renderItems();
   renderLibrary();
 

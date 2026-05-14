@@ -29,6 +29,13 @@ async function startWalk(idx) {
   if (currentView !== 'index') toggleGraph();
   graphTab('walk');
 
+  const srcIdxPre = sources.findIndex(s =>
+    (item._sourceId && s.id === item._sourceId) ||
+    (item.link && s.url === item.link)
+  );
+  walk._priorSnapshot = (srcIdxPre >= 0 && sources[srcIdxPre].processed)
+    ? snapshotSourceEo(srcIdxPre) : null;
+
   walk.active = true;
   walk.paused = false;
   walk.idx = idx;
@@ -64,6 +71,7 @@ async function runWalk() {
     }
     markItemProcessed(walk.idx);
     storeWalkToMatrix();
+    finalizeWalkSource();
     if (activeGraphTab === 'walk') renderWalkStep();
     const walkTab = document.getElementById('tab-walk');
     if (walkTab) walkTab.innerHTML = '<i class="ph ph-cpu"></i> process';
@@ -226,33 +234,76 @@ function storeWalkToMatrix() {
   }
 }
 
+// Stable snapshot of a source's EO extraction state — used as the "before"
+// side of a reprocess diff.
+function snapshotSourceEo(srcIdx) {
+  const s = sources[srcIdx];
+  if (!s) return null;
+  const ents = Object.entries(graph.entities)
+    .filter(([, e]) => (e.sources || []).some(src => src.url === s.url || src.title === s.title))
+    .map(([id, e]) => ({ id, kind: e.kind, subtype: e.subtype || null, canonical: e.canonical }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const sites = [...(s.sitesFound || [])].sort();
+  return { ts: Date.now(), ents, sites };
+}
+
+function finalizeWalkSource() {
+  const item = walk.idx != null ? allItems[walk.idx] : null;
+  if (!item) return;
+
+  let srcIdx = sources.findIndex(s =>
+    (item._sourceId && s.id === item._sourceId) ||
+    (item.link && s.url === item.link)
+  );
+  const sitesFound = walk.log.filter(l => l.op === 'SIG').map(l => l.text);
+
+  if (srcIdx < 0 && item.link) {
+    sources.unshift({
+      id: 'src-' + Date.now(),
+      title: item.title,
+      url: item.link,
+      sourceName: item.sourceName,
+      body: (item.body || '').slice(0, 10000),
+      date: item.date ? item.date.toISOString() : new Date().toISOString(),
+      ingestedAt: new Date().toISOString(),
+      sitesFound,
+      processed: true,
+    });
+    srcIdx = 0;
+    item._sourceId = sources[0].id;
+  } else if (srcIdx >= 0) {
+    sources[srcIdx].processed = true;
+    sources[srcIdx].sitesFound = sitesFound;
+  }
+
+  if (walk._priorSnapshot && srcIdx >= 0) {
+    const next = snapshotSourceEo(srcIdx);
+    const before = new Set(walk._priorSnapshot.ents.map(e => e.id));
+    const after = new Set(next.ents.map(e => e.id));
+    const added = next.ents.filter(e => !before.has(e.id));
+    const removed = walk._priorSnapshot.ents.filter(e => !after.has(e.id));
+    const sitesB = new Set(walk._priorSnapshot.sites);
+    const sitesA = new Set(next.sites);
+    const sitesAdded = [...sitesA].filter(x => !sitesB.has(x));
+    const sitesRemoved = [...sitesB].filter(x => !sitesA.has(x));
+    const isNul = !added.length && !removed.length && !sitesAdded.length && !sitesRemoved.length;
+    sources[srcIdx].reprocessHistory = sources[srcIdx].reprocessHistory || [];
+    sources[srcIdx].reprocessHistory.push({
+      at: Date.now(),
+      prevAt: walk._priorSnapshot.ts,
+      op: isNul ? 'NUL' : 'DIFF',
+      added, removed, sitesAdded, sitesRemoved,
+    });
+  }
+  walk._priorSnapshot = null;
+  saveGraph();
+}
+
 function endWalk() {
   walk.active = false;
   walk.paused = false;
   storeWalkToMatrix();
-
-  const item = walk.idx != null ? allItems[walk.idx] : null;
-  if (item) {
-    const srcIdx = sources.findIndex(s => s.id === item._sourceId || (item.link && s.url === item.link));
-    if (srcIdx >= 0) {
-      sources[srcIdx].processed = true;
-      sources[srcIdx].sitesFound = walk.log.filter(l => l.op === 'SIG').map(l => l.text);
-    }
-    if (srcIdx < 0 && item.link) {
-      sources.unshift({
-        id: 'src-' + Date.now(),
-        title: item.title,
-        url: item.link,
-        sourceName: item.sourceName,
-        body: (item.body || '').slice(0, 10000),
-        date: item.date ? item.date.toISOString() : new Date().toISOString(),
-        ingestedAt: new Date().toISOString(),
-        sitesFound: walk.log.filter(l => l.op === 'SIG').map(l => l.text),
-        processed: true,
-      });
-    }
-    saveGraph();
-  }
+  finalizeWalkSource();
   renderWalkStep();
   if (walk._resolveDone) { walk._resolveDone(); walk._resolveDone = null; }
 }

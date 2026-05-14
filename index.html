@@ -133,11 +133,55 @@
   .eo-section:last-child { margin-bottom: 0; }
   .eo-label { font-size: 10px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
   .eo-entity {
-    display: inline-block; background: var(--surface); border: 1px solid var(--border);
-    padding: 1px 6px; border-radius: 2px; margin: 2px 3px 2px 0;
+    display: inline-flex; align-items: baseline; gap: 6px;
+    background: var(--surface); border: 1px solid var(--border);
+    padding: 2px 8px; border-radius: 10px;
     color: var(--text-bright); font-size: 11px;
+    cursor: pointer; transition: border-color 0.12s, color 0.12s;
   }
-  .eo-kind { color: var(--text-dim); font-size: 9px; margin-left: 4px; }
+  .eo-entity:hover { color: var(--accent); border-color: var(--accent); }
+  .eo-kind { color: var(--text-dim); font-size: 9px; }
+
+  /* grouped sites-found block */
+  .eo-group { margin: 0 0 10px 0; }
+  .eo-group-header {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text-dim); cursor: pointer;
+    padding: 4px 0; border-bottom: 1px solid var(--border);
+    list-style: none; user-select: none;
+  }
+  .eo-group-header::-webkit-details-marker { display: none; }
+  .eo-group-header::before {
+    content: '▾'; font-size: 9px; color: var(--text-dim);
+    transition: transform 0.15s; display: inline-block;
+  }
+  .eo-group:not([open]) > .eo-group-header::before { transform: rotate(-90deg); }
+  .eo-group-name { color: var(--text); }
+  .eo-group-count {
+    margin-left: auto; color: var(--text-dim);
+    border: 1px solid var(--border); padding: 0 6px; border-radius: 8px;
+    font-size: 10px;
+  }
+  .eo-group-body { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 0 4px; }
+
+  /* reprocess history */
+  .rp-hist { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+  .rp-hist-row { font-size: 11px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 3px; background: var(--surface); }
+  .rp-hist-row summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 10px; }
+  .rp-hist-row summary::-webkit-details-marker { display: none; }
+  .rp-hist-row.rp-hist-nul { color: var(--text-dim); }
+  .rp-hist-row.rp-hist-diff { color: var(--text); }
+  .rp-hist-op { font-size: 9px; padding: 1px 6px; border-radius: 2px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .rp-hist-nul .rp-hist-op { color: var(--text-dim); border: 1px solid var(--border); }
+  .rp-hist-diff .rp-hist-op { color: var(--accent); border: 1px solid var(--accent); }
+  .rp-hist-ts { color: var(--text-dim); font-size: 10px; }
+  .rp-hist-desc { color: var(--text); }
+  .rp-hist-body { padding: 6px 0 2px; display: flex; flex-direction: column; gap: 6px; }
+  .rp-hist-section { display: flex; flex-direction: column; gap: 4px; }
+  .rp-hist-label { font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  .rp-hist-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .eo-entity.rp-removed { opacity: 0.6; text-decoration: line-through; }
   .eo-entity[data-kind="Void"] { border-color: #666; }
   .eo-entity[data-kind="Entity"] { border-color: #5588aa; }
   .eo-entity[data-kind="Kind"] { border-color: #aa8855; }
