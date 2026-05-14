@@ -473,6 +473,21 @@ function addSource(title, url, sourceName, body, date) {
   return id;
 }
 
+// Pair freshly-fetched RSS items with their saved sources so runtime flags
+// like _processed survive page reload.
+function hydrateProcessedFlags() {
+  if (!Array.isArray(allItems) || !Array.isArray(sources)) return;
+  allItems.forEach(it => {
+    const src = sources.find(s =>
+      (it._sourceId && s.id === it._sourceId) ||
+      (s.url && it.link && s.url === it.link)
+    );
+    if (!src) return;
+    if (!it._sourceId) it._sourceId = src.id;
+    if (src.processed) it._processed = true;
+  });
+}
+
 // ---- utilities ----
 function escapeAttr(s) {
   return String(s == null ? '' : s)

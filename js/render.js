@@ -1045,6 +1045,85 @@ function scrollToItem(idx) {
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+const EO_KIND_ORDER = ['Entity','Kind','Field','Link','Network','Atmosphere','Lens','Paradigm','Void','Other'];
+
+function renderEntityGroups(entries) {
+  const groups = {};
+  entries.forEach(([id, e]) => {
+    const key = e.kind || 'Other';
+    (groups[key] = groups[key] || []).push([id, e]);
+  });
+  const ordered = Object.keys(groups).sort((a, b) => {
+    const ai = EO_KIND_ORDER.indexOf(a), bi = EO_KIND_ORDER.indexOf(b);
+    return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+  });
+  let out = '';
+  ordered.forEach((kind, gi) => {
+    const items = groups[kind].sort((a, b) =>
+      (a[1].subtype || '').localeCompare(b[1].subtype || '') ||
+      (a[1].canonical || '').localeCompare(b[1].canonical || ''));
+    const openAttr = gi < 3 ? ' open' : '';
+    out += '<details class="eo-group" data-kind="' + escapeAttr(kind) + '"' + openAttr + '>';
+    out += '<summary class="eo-group-header"><span class="eo-group-name">' + escapeAttr(kind.toLowerCase()) + '</span><span class="eo-group-count">' + items.length + '</span></summary>';
+    out += '<div class="eo-group-body">';
+    items.forEach(([id, e]) => {
+      const sub = e.subtype || e.kind || '';
+      out += '<span class="eo-entity" data-kind="' + escapeAttr(kind) + '" title="' + escapeAttr(sub) + '" onclick="selectEntity(\'' + id + '\');toggleGraph();">' +
+        escapeAttr(e.canonical) +
+        '<span class="eo-kind">' + escapeAttr(sub) + '</span></span>';
+    });
+    out += '</div></details>';
+  });
+  return out;
+}
+
+function renderReprocessHistory(s) {
+  const hist = s.reprocessHistory || [];
+  if (!hist.length) return '';
+  let out = '<div style="margin-bottom:12px;"><div class="lp-label"><i class="ph ph-clock-counter-clockwise"></i> reprocess history (' + hist.length + ')</div>';
+  out += '<div class="rp-hist">';
+  hist.slice().reverse().forEach((h, ri) => {
+    const ts = new Date(h.at).toLocaleString();
+    const cls = h.op === 'NUL' ? 'rp-hist-nul' : 'rp-hist-diff';
+    if (h.op === 'NUL') {
+      out += '<div class="rp-hist-row ' + cls + '"><span class="rp-hist-op">NUL</span><span class="rp-hist-ts">' + escapeAttr(ts) + '</span><span class="rp-hist-desc">no change</span></div>';
+    } else {
+      const a = (h.added || []).length;
+      const r = (h.removed || []).length;
+      const sa = (h.sitesAdded || []).length;
+      const sr = (h.sitesRemoved || []).length;
+      const sumParts = [];
+      if (a) sumParts.push('+' + a + ' entity');
+      if (r) sumParts.push('−' + r + ' entity');
+      if (sa) sumParts.push('+' + sa + ' site');
+      if (sr) sumParts.push('−' + sr + ' site');
+      const detailId = 'rphd-' + ri + '-' + h.at;
+      out += '<details class="rp-hist-row ' + cls + '" id="' + detailId + '">';
+      out += '<summary><span class="rp-hist-op">DIFF</span><span class="rp-hist-ts">' + escapeAttr(ts) + '</span><span class="rp-hist-desc">' + escapeAttr(sumParts.join(', ')) + '</span></summary>';
+      out += '<div class="rp-hist-body">';
+      if (a) {
+        out += '<div class="rp-hist-section"><div class="rp-hist-label">added</div><div class="rp-hist-chips">';
+        h.added.forEach(e => { out += '<span class="eo-entity" data-kind="' + escapeAttr(e.kind || 'Other') + '">' + escapeAttr(e.canonical) + '<span class="eo-kind">' + escapeAttr(e.subtype || e.kind || '') + '</span></span>'; });
+        out += '</div></div>';
+      }
+      if (r) {
+        out += '<div class="rp-hist-section"><div class="rp-hist-label">removed</div><div class="rp-hist-chips">';
+        h.removed.forEach(e => { out += '<span class="eo-entity rp-removed" data-kind="' + escapeAttr(e.kind || 'Other') + '">' + escapeAttr(e.canonical) + '<span class="eo-kind">' + escapeAttr(e.subtype || e.kind || '') + '</span></span>'; });
+        out += '</div></div>';
+      }
+      if (sa || sr) {
+        out += '<div class="rp-hist-section"><div class="rp-hist-label">sites</div><div class="rp-hist-chips">';
+        (h.sitesAdded || []).forEach(t => { out += '<span class="eo-entity">+ ' + escapeAttr(t) + '</span>'; });
+        (h.sitesRemoved || []).forEach(t => { out += '<span class="eo-entity rp-removed">− ' + escapeAttr(t) + '</span>'; });
+        out += '</div></div>';
+      }
+      out += '</div></details>';
+    }
+  });
+  out += '</div></div>';
+  return out;
+}
+
 function viewSourceInMain(srcIdx) {
   const s = sources[srcIdx];
   if (!s) return;
@@ -1067,8 +1146,11 @@ function viewSourceInMain(srcIdx) {
   html += '<button class="act-btn" onclick="pinSource(' + srcIdx + ')"><i class="ph ph-push-pin' + (s.pinned ? '-fill' : '') + '"></i> ' + (s.pinned ? 'unpin' : 'pin') + '</button>';
   html += '<button class="act-btn" onclick="' + (s.hidden ? 'unhideSource' : 'hideSource') + '(' + srcIdx + ')"><i class="ph ph-eye' + (s.hidden ? '' : '-slash') + '"></i> ' + (s.hidden ? 'unhide' : 'hide') + '</button>';
   if (itemIdx >= 0) {
-    html += '<button class="act-btn" onclick="startWalk(' + itemIdx + ')"><i class="ph ph-cpu"></i> process</button>';
-    if (allItems[itemIdx]._processed) {
+    const isProcessed = !!s.processed;
+    const label = isProcessed ? 'reprocess' : 'process';
+    const icon = isProcessed ? 'ph-arrows-clockwise' : 'ph-cpu';
+    html += '<button class="act-btn" onclick="startWalk(' + itemIdx + ')"><i class="ph ' + icon + '"></i> ' + label + '</button>';
+    if (isProcessed) {
       html += '<button class="act-btn" onclick="generateDigest(' + itemIdx + ', this)"><i class="ph ph-lightning"></i> generate</button>';
     }
   }
@@ -1080,12 +1162,10 @@ function viewSourceInMain(srcIdx) {
       .filter(([id, e]) => (e.sources || []).some(src => src.url === s.url || src.title === s.title));
     if (linkedSites.length) {
       html += '<div style="margin-bottom:12px;"><div class="lp-label"><i class="ph ph-map-pin"></i> sites found (' + linkedSites.length + ')</div>';
-      html += '<div style="display:flex;flex-wrap:wrap;gap:4px;">';
-      linkedSites.forEach(([id, e]) => {
-        html += '<span class="eo-entity" data-kind="' + e.kind + '" onclick="selectEntity(\'' + id + '\');toggleGraph();" style="cursor:pointer;">' + escapeAttr(e.canonical) + '<span class="eo-kind">' + (e.subtype || e.kind) + '</span></span>';
-      });
-      html += '</div></div>';
+      html += renderEntityGroups(linkedSites);
+      html += '</div>';
     }
+    html += renderReprocessHistory(s);
   } else {
     html += '<div style="color:var(--text-dim);font-size:11px;margin-bottom:12px;"><i class="ph ph-info"></i> not yet processed — click process to index this content</div>';
   }
