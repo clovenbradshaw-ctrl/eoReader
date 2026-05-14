@@ -1,5 +1,8 @@
 // eo.js — .eo JSONL append-only event format.
 // Each line is one event: { ev, ts, prov, hash, payload, span?, source? }.
+// Optional event fields the payload may carry (round-trip preserves them
+// because stripStandardFields keeps payload open and eoLineToEvent
+// spreads it back): voice, voiceRelation, sourceId, bySite, verdictHash.
 // Five canonical event kinds map onto the engine's operators:
 //   observation -> SIG / DEF (something seen in the text)
 //   anchor      -> CON       (a relationship anchored to text)

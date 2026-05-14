@@ -127,7 +127,7 @@ function buildDreamContext(fromE, toE) {
   lines.push('  hypothesis: ' + (fromE.hypothesis || ''));
   lines.push('  spans:');
   (fromE.spans || []).slice(0, 5).forEach(sp => {
-    lines.push('    - "' + (sp.text || '').slice(0, 280) + '" (' + (sp.sourceTitle || '') + ')');
+    lines.push('    - ' + formatSpanForPrompt(sp, { max: 280 }));
   });
 
   lines.push('');
@@ -137,7 +137,7 @@ function buildDreamContext(fromE, toE) {
   lines.push('  hypothesis: ' + (toE.hypothesis || ''));
   lines.push('  spans:');
   (toE.spans || []).slice(0, 5).forEach(sp => {
-    lines.push('    - "' + (sp.text || '').slice(0, 280) + '" (' + (sp.sourceTitle || '') + ')');
+    lines.push('    - ' + formatSpanForPrompt(sp, { max: 280 }));
   });
 
   // existing connections each end has, so the gatekeeper can detect restatements

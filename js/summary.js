@@ -409,7 +409,7 @@ function buildSummaryContext(focused) {
       spans = allSpans.slice(0, SPAN_DEFAULT_PER_ENTITY);
     }
     spans.forEach((sp) => {
-      lines.push('  span: "' + (sp.text || '').slice(0, 220) + '" — ' + (sp.sourceTitle || ''));
+      lines.push('  span: ' + formatSpanForPrompt(sp));
       composition.spans++;
     });
 
@@ -430,11 +430,7 @@ function buildSummaryContext(focused) {
     lines.push('');
     lines.push('CONNECTIONS (' + cons.length + '):');
     cons.forEach((c) => {
-      const fn = (graph.entities[c.from] && graph.entities[c.from].canonical) || c.from;
-      const tn = (graph.entities[c.to] && graph.entities[c.to].canonical) || c.to;
-      let line = '  `' + c.from + '` (' + fn + ') --[' + c.relation + ', ' + (c.confidence || '?') + ']--> `' + c.to + '` (' + tn + ')';
-      if (c.evidence) line += ' — "' + c.evidence.slice(0, 180) + '"';
-      lines.push(line);
+      lines.push('  ' + formatConnectionForPrompt(c));
       composition.connections++;
     });
   }
@@ -460,6 +456,28 @@ function buildSummaryContext(focused) {
     sources.slice(0, 12).forEach((s) => lines.push('  - ' + (s.title || '(untitled)') + (s.url ? ' — ' + s.url : '')));
   }
 
+  // Voices block — group voices by voiceRelation so the digest LLM can
+  // tell journalist reporting apart from interested-party assertion.
+  const byRel = { attested_by: [], asserted_by: [], documented_in: [], characterized_by: [] };
+  for (const id of focused) {
+    const e = graph.entities[id];
+    if (!e) continue;
+    voicesOnRecord(e).forEach(v => {
+      const rel = v.voiceRelation || 'attested_by';
+      if (!byRel[rel]) byRel[rel] = [];
+      if (!byRel[rel].some(x => x.voice === v.voice)) byRel[rel].push(v);
+    });
+  }
+  const anyVoice = Object.values(byRel).some(arr => arr.length);
+  if (anyVoice) {
+    lines.push('');
+    lines.push('VOICES (grouped by relation — attribution must travel into the digest):');
+    Object.entries(byRel).forEach(([rel, arr]) => {
+      if (!arr.length) return;
+      lines.push('  ' + rel + ': ' + arr.map(v => v.canonical).join(', '));
+    });
+  }
+
   return { context: lines.join('\n'), composition, sources, focused: [...focused] };
 }
 
@@ -483,6 +501,8 @@ function buildSummaryFramingHeader(built) {
     '',
     'Headline topic: ' + headlineGuess + ' (rewrite for clarity if useful — still ### H3).',
     'Source line (use as the italic Markdown source line; if empty, use "Source: index, multiple feeds"): *' + (sourcesLine || 'Source: index, multiple feeds') + '*',
+    '',
+    'Voice convention in the context below: span and connection lines end with "according to <voice> (<relation>) in <publication>". Relations are attested_by (journalist reporting), asserted_by (quoted speaker), documented_in (cited record), characterized_by (interpretive frame). Carry the attribution through to the bullets; never present an asserted_by claim as if it were attested.',
     '',
     '=== FOCUSED SUBGRAPH ===',
     built.context,

@@ -217,6 +217,8 @@ async function librarianGenerateSummary(scope, opts) {
     'Headline topic: ' + headlineGuess + ' (rewrite for clarity if useful — still ### H3).',
     'Source line (use as the italic Markdown source line; if empty, use "Source: index, multiple feeds"): *' + (sourcesLine || 'Source: index, multiple feeds') + '*',
     '',
+    'Voice convention in the context below: span and connection lines end with "according to <voice> (<relation>) in <publication>". Relations are attested_by (journalist reporting), asserted_by (quoted speaker), documented_in (cited record), characterized_by (interpretive frame). Carry attribution through to the bullets.',
+    '',
     '=== FOCUSED SUBGRAPH ===',
     built.context,
   ].join('\n');
