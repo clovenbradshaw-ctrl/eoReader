@@ -944,11 +944,21 @@ function viewSourceInMain(srcIdx) {
     html += '<div style="color:var(--text-dim);font-size:11px;margin-bottom:12px;"><i class="ph ph-info"></i> not yet processed — click process to index this content</div>';
   }
 
-  if (itemIdx >= 0 && allItems[itemIdx].generatedRaw) {
-    html += '<div style="margin-bottom:16px;padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:3px;">';
-    html += '<div class="lp-label"><i class="ph ph-lightning"></i> generated entry</div>';
-    html += mdToHtml(allItems[itemIdx].generatedRaw, { linkNodes: true });
+  // pull generated entry from the live feed item OR from the saved source record,
+  // whichever has it — so the digest persists across reloads of a source view.
+  const generatedRaw = (itemIdx >= 0 ? allItems[itemIdx].generatedRaw : null) || s.generatedRaw;
+  const generatedJson = (itemIdx >= 0 ? allItems[itemIdx]._articleJson : null) || s.generatedJson;
+  if (generatedRaw) {
+    html += '<div id="source-digest-' + srcIdx + '" style="margin-bottom:16px;padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:3px;">';
+    html += '<div class="lp-label" style="display:flex;justify-content:space-between;align-items:center;"><span><i class="ph ph-lightning"></i> generated entry</span>';
+    if (s.generatedAt) html += '<span style="font-size:9px;color:var(--text-dim);text-transform:none;letter-spacing:0;font-weight:normal;">' + escapeAttr(new Date(s.generatedAt).toLocaleString()) + '</span>';
     html += '</div>';
+    html += '<div id="source-digest-body-' + srcIdx + '" class="rendered-entry" style="color:var(--text-bright);font-family:-apple-system,sans-serif;font-size:13px;line-height:1.6;">' + mdToHtml(generatedRaw, { linkNodes: true }) + '</div>';
+    html += '<div style="display:flex;gap:6px;margin-top:8px;">';
+    html += '<button class="act-btn" data-label="copy entry" onclick="copySourceDigest(' + srcIdx + ', this)"><i class="ph ph-clipboard-text"></i> copy</button>';
+    if (itemIdx >= 0) html += '<button class="act-btn" data-label="regenerate" onclick="generateDigest(' + itemIdx + ', this)"><i class="ph ph-arrows-clockwise"></i> regenerate</button>';
+    if (generatedJson) html += '<button class="act-btn" data-label="copy json" onclick="copyText(JSON.stringify(sources[' + srcIdx + '].generatedJson || allItems[' + itemIdx + ']._articleJson, null, 2), this)"><i class="ph ph-brackets-curly"></i> copy json</button>';
+    html += '</div></div>';
   }
 
   html += '<div class="lp-label" style="margin-top:8px;"><i class="ph ph-article"></i> source content</div>';
@@ -960,6 +970,31 @@ function viewSourceInMain(srcIdx) {
 
   html += '</div>';
   el.innerHTML = html;
+}
+
+function copySourceDigest(srcIdx, btn) {
+  const sourceEl = document.getElementById('source-digest-body-' + srcIdx);
+  if (!sourceEl) return;
+  const tmp = document.createElement('div');
+  tmp.style.position = 'fixed';
+  tmp.style.left = '-9999px';
+  tmp.innerHTML = sourceEl.innerHTML;
+  document.body.appendChild(tmp);
+  const range = document.createRange();
+  range.selectNodeContents(tmp);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  try {
+    document.execCommand('copy');
+    btn.textContent = 'copied';
+    btn.classList.add('copied');
+  } catch (e) {
+    btn.textContent = 'copy failed';
+  }
+  sel.removeAllRanges();
+  document.body.removeChild(tmp);
+  setTimeout(() => { btn.textContent = btn.dataset.label; btn.classList.remove('copied'); }, 1500);
 }
 
 function deleteSource(idx) {
