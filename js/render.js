@@ -286,6 +286,8 @@ function renderGraphPanel() {
     renderDreamView();
   } else if (activeGraphTab === 'librarian') {
     renderLibrarianView();
+  } else if (activeGraphTab === 'summary') {
+    renderSummaryGeneratorView();
   }
 
   const walkTab = document.getElementById('tab-walk');

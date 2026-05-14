@@ -48,6 +48,21 @@ let dreamCandidates = [];
 // librarian chat transcript
 let librarianChat = [];
 
+// summary generator: explicit user picks at any granularity. UI-only state,
+// not persisted. See js/summary.js for the renderer + generator.
+let summaryPicks = {
+  entityIds: new Set(),
+  connectionIdxs: new Set(),
+  spanRefs: new Set(),
+  articleIds: new Set(),
+  framing: '',
+  includeSources: true,
+  includeNotes: true,
+  includeHypotheses: true,
+};
+let summaryOutput = null;
+let summaryPickerTab = 'entities';
+
 // ---- the event log (append-only, content-hashed, the fold substrate) ----
 // Each event is one of: SIG, DEF, CON, EVA, REC, SEG, FEEDBACK, RENAME, DELETE.
 // Every event carries provenance: 'source-attested' | 'system-inferred' | 'editor-authored'.
