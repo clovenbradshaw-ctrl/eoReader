@@ -135,6 +135,9 @@ function renderItems() {
 
     const processed = !!item._processed;
 
+    const processBtn = processed
+      ? `<button class="act-btn reprocess" data-label="reprocess" onclick="confirmReprocess(${idx})" title="Already indexed — click to re-walk and diff" style="border-color:var(--text-dim);color:var(--text-dim);"><i class="ph ph-arrows-clockwise"></i> reprocess</button>`
+      : `<button class="act-btn" data-label="process" onclick="startWalk(${idx})"><i class="ph ph-cpu"></i> process</button>`;
     div.innerHTML = `
       <div class="item-progress" id="progress-${idx}" style="height:2px;background:var(--border);margin-bottom:0;border-radius:1px;overflow:hidden;${processed ? 'display:none;' : ''}">
         <div id="progress-bar-${idx}" style="height:2px;background:var(--accent);width:0%;transition:width 0.3s;"></div>
@@ -143,7 +146,7 @@ function renderItems() {
       <div class="item-title"><a href="#" onclick="event.preventDefault();openFeedItem(${idx})">${escapeAttr(item.title) || '(untitled)'}</a></div>
       <div class="item-actions">
         <button class="act-btn" data-label="open" onclick="openFeedItem(${idx})"><i class="ph ph-article"></i> open</button>
-        <button class="act-btn" data-label="process" onclick="startWalk(${idx})"><i class="ph ph-cpu"></i> process</button>
+        ${processBtn}
         <button class="act-btn" data-label="generate" onclick="generateDigest(${idx}, this)"><i class="ph ph-lightning"></i> generate</button>
         <button class="act-btn" data-label="copy url" onclick="copyText(allItems[${idx}].link, this)"><i class="ph ph-link"></i> url</button>
         <button class="expand-btn" onclick="this.closest('.item').classList.toggle('expanded'); this.textContent = this.closest('.item').classList.contains('expanded') ? '▾ collapse' : '▸ preview'">▸ preview</button>
@@ -279,7 +282,8 @@ function renderGraphPanel() {
   } else if (activeGraphTab === 'connections') {
     renderConnectionsView();
   } else if (activeGraphTab === 'walk') {
-    renderWalkStep();
+    if (typeof renderProcessTab === 'function') renderProcessTab();
+    else renderWalkStep();
   } else if (activeGraphTab === 'log') {
     renderLogView();
   } else if (activeGraphTab === 'scrub') {
@@ -294,12 +298,8 @@ function renderGraphPanel() {
     renderEvaView();
   }
 
-  const walkTab = document.getElementById('tab-walk');
-  if (walkTab) {
-    walkTab.innerHTML = walk.active && activeGraphTab !== 'walk'
-      ? '<i class="ph ph-cpu"></i> process <span style="color:#d4a84d;">●</span>'
-      : '<i class="ph ph-cpu"></i> process';
-  }
+  // Queue owns the tab-walk badge — it reflects running + pending across kinds.
+  if (typeof updateProcessTabBadge === 'function') updateProcessTabBadge();
 }
 
 function toggleGroupByName(checked) {

@@ -336,30 +336,48 @@ async function generateSummaryFromPicks() {
     return;
   }
 
-  summaryOutput = { pending: true, ts: Date.now() };
-  renderSummaryGeneratorView();
-
   const built = buildSummaryContext(focused);
   const framingHeader = buildSummaryFramingHeader(built);
-
   const baseSystem = getPrompt();
   const framing = (summaryPicks.framing || '').trim();
   const systemPrompt = framing
     ? baseSystem + '\n\n---\nEDITORIAL OVERRIDE FOR THIS DIGEST\nThe instructions below come from the editor for this single summary only. They take priority over the defaults wherever they conflict.\n\n' + framing + '\n---'
     : baseSystem;
 
+  summaryOutput = { pending: true, ts: Date.now() };
+  renderSummaryGeneratorView();
+
+  // Enqueue as a queue job so it's cancellable + visible on the process tab.
+  enqueueJob('summary', {
+    key: 'summary-' + Date.now(),
+    title: 'summary · ' + (focused.size) + ' sites',
+    systemPrompt,
+    framingHeader,
+    composition: built.composition,
+  });
+}
+
+async function runSummaryJob(job, signal) {
+  const t = job.target;
   try {
-    const r = await callClaudeRaw(systemPrompt, framingHeader, 2000);
+    const r = await callClaudeRaw(t.systemPrompt, t.framingHeader, 2000, null, { signal });
     summaryOutput = {
       md: r.text,
       ts: Date.now(),
       usage: r.usage,
       ms: r.ms,
       model: r.model,
-      composition: built.composition,
+      composition: t.composition,
     };
   } catch (e) {
+    if (e && e.name === 'AbortError') {
+      summaryOutput = { error: 'cancelled', ts: Date.now() };
+      renderSummaryGeneratorView();
+      throw e;
+    }
     summaryOutput = { error: e.message, ts: Date.now() };
+    renderSummaryGeneratorView();
+    throw e;
   }
   renderSummaryGeneratorView();
 }

@@ -1,6 +1,7 @@
 // api.js — Anthropic API wrapper. callClaudeRaw returns {text, usage, ms, model};
 // callClaude preserves the legacy string-returning contract for existing callers.
-async function callClaudeRaw(systemPrompt, userContent, maxTokens, model) {
+// opts.signal forwards an AbortSignal so queue.js can cancel in-flight fetches.
+async function callClaudeRaw(systemPrompt, userContent, maxTokens, model, opts) {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error('no api key');
 
@@ -21,6 +22,7 @@ async function callClaudeRaw(systemPrompt, userContent, maxTokens, model) {
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent }],
     }),
+    signal: opts && opts.signal ? opts.signal : undefined,
   });
 
   if (!resp.ok) {
@@ -34,7 +36,7 @@ async function callClaudeRaw(systemPrompt, userContent, maxTokens, model) {
   return { text, usage: data.usage || null, model: chosenModel, ms };
 }
 
-async function callClaude(systemPrompt, userContent, maxTokens, model) {
-  const r = await callClaudeRaw(systemPrompt, userContent, maxTokens, model);
+async function callClaude(systemPrompt, userContent, maxTokens, model, opts) {
+  const r = await callClaudeRaw(systemPrompt, userContent, maxTokens, model, opts);
   return r.text;
 }

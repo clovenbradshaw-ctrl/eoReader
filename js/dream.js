@@ -76,6 +76,9 @@ function computeDreamCandidates() {
   return pairs.slice(0, DREAM_MAX_CANDIDATES);
 }
 
+// Enqueue one dream job per candidate pair. The scheduler runs them in
+// parallel up to QUEUE_MAX_CONCURRENCY. UI returns immediately; the
+// process tab + the dream tab update as each job lands.
 async function runDreamPass() {
   const apiKey = getApiKey();
   if (!apiKey) { await showAlert('Set your Anthropic API key first'); return; }
@@ -86,36 +89,51 @@ async function runDreamPass() {
     return;
   }
 
-  for (const cand of cands) {
-    const fromE = graph.entities[cand.from];
-    const toE = graph.entities[cand.to];
-    if (!fromE || !toE) continue;
+  cands.forEach(cand => {
+    enqueueJob('dream', {
+      fromId: cand.from,
+      toId: cand.to,
+      sim: cand.sim,
+      dist: cand.dist,
+    });
+  });
+}
 
-    const ctx = buildDreamContext(fromE, toE);
-    try {
-      const raw = await callClaude(DREAM_PROMPT, ctx, 700);
-      const clean = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-      const result = JSON.parse(clean);
+// Single dream job runner — invoked by the queue scheduler. One API call,
+// then push the verdict into dreamCandidates.
+async function runDreamJob(job, signal) {
+  const cand = job.target;
+  const fromE = graph.entities[cand.fromId];
+  const toE = graph.entities[cand.toId];
+  if (!fromE || !toE) throw new Error('candidate entity missing from graph');
 
-      const record = {
-        from: cand.from, to: cand.to,
-        sim: cand.sim, dist: cand.dist,
-        ...result,
-        status: result.verdict === 'novel' ? 'novel' : (result.verdict === 'restatement' ? 'rejected' : 'rejected'),
-        ts: Date.now(),
-      };
-      dreamCandidates.push(record);
-      saveDreamCandidates();
-      if (activeGraphTab === 'dream') renderDreamView();
-    } catch (e) {
-      console.warn('Dream candidate failed:', e);
-      dreamCandidates.push({
-        from: cand.from, to: cand.to,
-        sim: cand.sim, dist: cand.dist,
-        verdict: 'error', status: 'rejected', error: e.message,
-        ts: Date.now(),
-      });
-    }
+  const ctx = buildDreamContext(fromE, toE);
+  try {
+    const raw = await callClaude(DREAM_PROMPT, ctx, 700, null, { signal });
+    const clean = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    const result = JSON.parse(clean);
+    const record = {
+      from: cand.fromId, to: cand.toId,
+      sim: cand.sim, dist: cand.dist,
+      ...result,
+      status: result.verdict === 'novel' ? 'novel' : (result.verdict === 'restatement' ? 'rejected' : 'rejected'),
+      ts: Date.now(),
+    };
+    dreamCandidates.push(record);
+    saveDreamCandidates();
+    if (activeGraphTab === 'dream') renderDreamView();
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw e;
+    // Still record the failure so the user sees it in dream view
+    dreamCandidates.push({
+      from: cand.fromId, to: cand.toId,
+      sim: cand.sim, dist: cand.dist,
+      verdict: 'error', status: 'rejected', error: e.message,
+      ts: Date.now(),
+    });
+    saveDreamCandidates();
+    if (activeGraphTab === 'dream') renderDreamView();
+    throw e;
   }
 }
 
