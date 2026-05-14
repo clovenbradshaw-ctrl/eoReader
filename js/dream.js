@@ -78,11 +78,11 @@ function computeDreamCandidates() {
 
 async function runDreamPass() {
   const apiKey = getApiKey();
-  if (!apiKey) { alert('Set your Anthropic API key first'); return; }
+  if (!apiKey) { await showAlert('Set your Anthropic API key first'); return; }
 
   const cands = computeDreamCandidates();
   if (!cands.length) {
-    alert('No new candidates — either the graph is too small, too dense, or all pairs already evaluated.');
+    await showAlert('No new candidates — either the graph is too small, too dense, or all pairs already evaluated.');
     return;
   }
 

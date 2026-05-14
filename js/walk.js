@@ -16,13 +16,13 @@ async function startWalk(idx) {
 
   const apiKey = getApiKey();
   if (!apiKey) {
-    alert('Set your Anthropic API key in settings first');
+    await showAlert('Set your Anthropic API key in settings first');
     document.getElementById('prompt-editor').classList.add('open');
     return;
   }
 
   if (!item.body || item.body.length < 50) {
-    alert('Article body too short to process');
+    await showAlert('Article body too short to process');
     return;
   }
 
@@ -73,9 +73,23 @@ async function processAndAccept() {
   const sentence = walk.sentences[walk.current];
   const siteContext = buildSentenceContext(sentence);
 
-  const siteIndex = Object.keys(graph.entities).length
-    ? 'All indexed sites: ' + Object.keys(graph.entities).map(id => id + '=' + graph.entities[id].canonical).join(', ')
-    : '';
+  const totalEntities = Object.keys(graph.entities).length;
+  let siteIndex = '';
+  if (totalEntities) {
+    const candidates = rankCandidates(sentence, { limit: 30, threshold: 0.2 });
+    if (candidates.length >= 5) {
+      siteIndex = 'Likely-relevant indexed sites:\n' + candidates.map(({ id, e }) => {
+        const grp = e.nameGroup ? ' [group:' + e.nameGroup + ']' : '';
+        return id + '=' + e.canonical + grp;
+      }).join('\n');
+    } else {
+      siteIndex = 'All indexed sites: ' + Object.keys(graph.entities).map(id => {
+        const e = graph.entities[id];
+        const grp = e.nameGroup ? ' [group:' + e.nameGroup + ']' : '';
+        return id + '=' + e.canonical + grp;
+      }).join(', ');
+    }
+  }
 
   const userMsg = [
     'Article: ' + item.title + ' (' + item.sourceName + ')',
@@ -104,6 +118,8 @@ async function processAndAccept() {
         pushEvent({
           op: 'SIG', id: p.id,
           canonical: p.canonical || p.id,
+          displayName: p.displayName || p.canonical || p.id,
+          nameGroup: p.nameGroup || null,
           kind: p.site || p.kind || 'Entity',
           subtype: p.subtype || '',
           aliases: p.aliases || [],
@@ -118,6 +134,8 @@ async function processAndAccept() {
           hypothesis: p.hypothesis || '',
           subtype: p.subtype || null,
           aliases: p.aliases || null,
+          displayName: p.displayName || null,
+          nameGroup: p.nameGroup || null,
           span: spanMeta, source: sourceMeta,
           ts, provenance,
         });
@@ -156,6 +174,8 @@ async function processAndAccept() {
           op: 'SEG', id: p.id,
           into: p.into.map(ns => ({
             id: ns.id, canonical: ns.canonical, site: ns.site || ns.kind,
+            displayName: ns.displayName || ns.canonical || ns.id,
+            nameGroup: ns.nameGroup || null,
             subtype: ns.subtype || '', aliases: ns.aliases || [], hypothesis: ns.hypothesis || '',
           })),
           reason: p.reason || '',
@@ -315,6 +335,18 @@ async function generateDigest(idx, btn) {
     return;
   }
 
+  const framing = await showPrompt({
+    title: 'Frame this digest',
+    submitLabel: 'Generate',
+    fields: [
+      { name: 'preset', label: 'Preset', type: 'chips',
+        options: ['default', 'punchy', 'investigative', 'summary'], default: 'default' },
+      { name: 'notes', label: 'Extra framing', type: 'textarea',
+        placeholder: 'Optional — e.g., "focus on procurement", "keep under 200 words"' },
+    ],
+  });
+  if (framing === null) return;
+
   btn.textContent = 'generating...';
   btn.classList.remove('copied', 'errored');
   btn.classList.add('generating');
@@ -329,11 +361,19 @@ async function generateDigest(idx, btn) {
       return fn + ' →[' + c.relation + ']→ ' + tn + (c.evidence ? ' (' + c.evidence + ')' : '');
     }).join('\n');
 
+  const framingBlock = (framing.notes || framing.preset !== 'default')
+    ? 'Framing instructions:\n' + [
+        framing.preset && framing.preset !== 'default' ? 'Tone: ' + framing.preset : '',
+        framing.notes || '',
+      ].filter(Boolean).join('\n') + '\n'
+    : '';
+
   const userMsg = [
     'Headline: ' + item.title,
     'Source: ' + item.sourceName,
     'URL: ' + item.link,
     '',
+    framingBlock,
     articleSites ? 'Indexed sites referenced:\n' + articleSites + '\n' : '',
     articleCons ? 'Connections found in this article:\n' + articleCons + '\n' : '',
     'Full body:',

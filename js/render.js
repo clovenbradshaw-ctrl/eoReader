@@ -295,9 +295,27 @@ function renderGraphPanel() {
   }
 }
 
+function toggleGroupByName(checked) {
+  window.groupByNameGroup = !!checked;
+  try { localStorage.setItem('eo_groupByNameGroup', checked ? '1' : '0'); } catch (e) {}
+  renderEntityList();
+}
+
+function groupKeyOf(e, id) {
+  return e.nameGroup || id;
+}
+
+(function () {
+  try {
+    if (localStorage.getItem('eo_groupByNameGroup') === '1') window.groupByNameGroup = true;
+  } catch (e) {}
+})();
+
 function renderEntityList() {
   const el = document.getElementById('graph-entities-list');
   if (!el) return;
+  const checkbox = document.getElementById('group-by-name');
+  if (checkbox && checkbox.checked !== !!window.groupByNameGroup) checkbox.checked = !!window.groupByNameGroup;
   const searchVal = (document.getElementById('index-search')?.value || '').toLowerCase();
   const sourceFilter = document.getElementById('index-source-filter')?.value || '';
 
@@ -382,16 +400,67 @@ function renderEntityList() {
     html += '<div class="lp-label" style="margin-top:8px;cursor:pointer;font-size:9px;" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'\':\'none\'">';
     html += '<i class="ph ph-caret-down" style="font-size:8px;"></i> ' + terrain + ' <span style="color:var(--text-dim);">(' + group.length + ')</span></div>';
     html += '<div>';
-    group.forEach(id => {
-      const e = graph.entities[id];
-      const sel = id === selectedEntity ? ' selected' : '';
-      const conCount = graph.connections.filter(c => c.from === id || c.to === id).length;
-      html += '<div class="ge-item' + sel + '" onclick="selectEntity(\'' + id + '\')">' +
-        '<span class="ge-name">' + escapeAttr(e.canonical) + '</span>' +
-        (e.subtype ? '<span class="ge-kind">' + e.subtype + '</span>' : '') +
-        (conCount ? ' <span class="ge-kind"><i class="ph ph-flow-arrow"></i>' + conCount + '</span>' : '') +
-        '</div>';
-    });
+    if (window.groupByNameGroup) {
+      // bucket by nameGroup (or id when no group); render groups with >1 member as collapsible
+      const buckets = {};
+      const order = [];
+      group.forEach(id => {
+        const e = graph.entities[id];
+        const k = groupKeyOf(e, id);
+        if (!buckets[k]) { buckets[k] = []; order.push(k); }
+        buckets[k].push(id);
+      });
+      order.forEach(k => {
+        const members = buckets[k];
+        if (members.length === 1) {
+          const id = members[0];
+          const e = graph.entities[id];
+          const sel = id === selectedEntity ? ' selected' : '';
+          const conCount = graph.connections.filter(c => c.from === id || c.to === id).length;
+          const name = e.displayName && e.displayName !== e.canonical
+            ? escapeAttr(e.displayName) + ' <span style="color:var(--text-dim);font-size:9px;">(' + escapeAttr(e.canonical) + ')</span>'
+            : escapeAttr(e.canonical);
+          html += '<div class="ge-item' + sel + '" onclick="selectEntity(\'' + id + '\')">' +
+            '<span class="ge-name">' + name + '</span>' +
+            (e.subtype ? '<span class="ge-kind">' + e.subtype + '</span>' : '') +
+            (conCount ? ' <span class="ge-kind"><i class="ph ph-flow-arrow"></i>' + conCount + '</span>' : '') +
+            '</div>';
+        } else {
+          const headDisplay = members.map(id => graph.entities[id].displayName).find(Boolean)
+            || graph.entities[members[0]].canonical;
+          html += '<div class="ge-item" style="cursor:pointer;" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'\':\'none\'">' +
+            '<span class="ge-name"><i class="ph ph-caret-right" style="font-size:9px;"></i> ' + escapeAttr(headDisplay) + '</span>' +
+            ' <span class="ge-kind">(' + members.length + ')</span>' +
+            '</div>';
+          html += '<div style="display:none;padding-left:12px;border-left:1px solid var(--border);margin-left:4px;">';
+          members.forEach(id => {
+            const e = graph.entities[id];
+            const sel = id === selectedEntity ? ' selected' : '';
+            const conCount = graph.connections.filter(c => c.from === id || c.to === id).length;
+            html += '<div class="ge-item' + sel + '" onclick="event.stopPropagation();selectEntity(\'' + id + '\')">' +
+              '<span class="ge-name">' + escapeAttr(e.canonical) + '</span>' +
+              (e.subtype ? '<span class="ge-kind">' + e.subtype + '</span>' : '') +
+              (conCount ? ' <span class="ge-kind"><i class="ph ph-flow-arrow"></i>' + conCount + '</span>' : '') +
+              '</div>';
+          });
+          html += '</div>';
+        }
+      });
+    } else {
+      group.forEach(id => {
+        const e = graph.entities[id];
+        const sel = id === selectedEntity ? ' selected' : '';
+        const conCount = graph.connections.filter(c => c.from === id || c.to === id).length;
+        const name = e.displayName && e.displayName !== e.canonical
+          ? escapeAttr(e.canonical) + ' <span style="color:var(--text-dim);font-size:9px;">[' + escapeAttr(e.displayName) + ']</span>'
+          : escapeAttr(e.canonical);
+        html += '<div class="ge-item' + sel + '" onclick="selectEntity(\'' + id + '\')">' +
+          '<span class="ge-name">' + name + '</span>' +
+          (e.subtype ? '<span class="ge-kind">' + e.subtype + '</span>' : '') +
+          (conCount ? ' <span class="ge-kind"><i class="ph ph-flow-arrow"></i>' + conCount + '</span>' : '') +
+          '</div>';
+      });
+    }
     html += '</div>';
   });
 
@@ -613,10 +682,19 @@ function feedbackConnection(idx, confirm) {
   if (selectedEntity) renderEntityDetail(selectedEntity);
 }
 
-function promptConnectionFeedback(idx) {
-  const note = prompt('What\'s wrong with this connection? Your correction:');
+async function promptConnectionFeedback(idx) {
+  const res = await showPrompt({
+    title: 'Connection feedback',
+    submitLabel: 'Save',
+    fields: [
+      { name: 'note', label: 'What\'s wrong with this connection? Your correction', type: 'textarea',
+        placeholder: 'Describe the issue or suggest a fix' },
+    ],
+  });
+  if (!res) return;
+  const note = res.note || '';
   const c = graph.connections[idx];
-  if (note !== null && c) {
+  if (c) {
     c.feedback = note;
     c.confidence = 'low';
     c.provenance = 'editor-authored';
@@ -962,8 +1040,8 @@ function viewSourceInMain(srcIdx) {
   el.innerHTML = html;
 }
 
-function deleteSource(idx) {
-  if (!confirm('Delete this source?')) return;
+async function deleteSource(idx) {
+  if (!(await showConfirm('Delete this source?', { okLabel: 'Delete', title: 'Confirm delete' }))) return;
   sources.splice(idx, 1);
   saveGraph();
   renderLibrary();

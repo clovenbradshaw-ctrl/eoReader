@@ -204,11 +204,23 @@ function ingestFile(event) {
   reader.readAsText(file);
 }
 
-function ingestPaste() {
-  const text = prompt('Paste text to ingest:');
-  if (!text || text.length < 20) return;
-  const title = prompt('Title for this source:', text.slice(0, 60) + '...');
-  addSource(title || 'Pasted text', null, 'paste', text);
+async function ingestPaste() {
+  const res = await showPrompt({
+    title: 'Ingest pasted text',
+    submitLabel: 'Ingest',
+    fields: [
+      { name: 'text', label: 'Text', type: 'textarea', placeholder: 'Paste article body, transcript, etc.' },
+      { name: 'title', label: 'Title', type: 'text', placeholder: 'Source title' },
+    ],
+  });
+  if (!res) return;
+  const text = (res.text || '').trim();
+  if (text.length < 20) {
+    await showAlert('Text is too short to ingest (need at least 20 characters).');
+    return;
+  }
+  const title = (res.title || '').trim() || text.slice(0, 60) + '...';
+  addSource(title, null, 'paste', text);
   document.getElementById('ingest-status').textContent = '✓ pasted text ingested';
   setTimeout(() => { document.getElementById('ingest-status').textContent = ''; }, 3000);
 }

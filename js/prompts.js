@@ -86,8 +86,8 @@ const WALK_PROMPT = `You are an EO (Emergent Ontology) reader processing text cl
 You receive:
 - A single sentence from an article
 - The article's title and source for context
-- A compact index of all known site IDs (so you can reference existing sites without re-SIGing them)
-- For sites mentioned in this sentence: their current hypothesis and connections (targeted context, not the full index)
+- A compact index of likely-relevant site IDs (so you can reference existing sites without re-SIGing them). Candidates may include fuzzy matches; choose DEF only when the existing id is the right entity.
+- For sites mentioned in this sentence: their current hypothesis and connections (targeted context, not the full index). Some sites share a \`nameGroup\` — they're different entities with the same display name (e.g., "White House" as a building vs. as an administration). When you see a \`group:\` annotation listing multiple members, pick the right one to DEF, or SIG a new disambiguated id that also carries the shared \`nameGroup\`.
 
 Each site is classified by which of the nine EO terrains it occupies:
 
@@ -104,7 +104,7 @@ Paradigm — a governing structural framework (privatization of public functions
 For this sentence, return a JSON array of EO events:
 
 [
-  {"op": "SIG", "id": "slug-id", "canonical": "Display Name", "site": "Entity", "subtype": "organization", "aliases": ["NDP"], "hypothesis": "what this is and what role it plays"},
+  {"op": "SIG", "id": "slug-id", "canonical": "Display Name", "displayName": "Shared Label", "nameGroup": "shared-slug", "site": "Entity", "subtype": "organization", "aliases": ["NDP"], "hypothesis": "what this is and what role it plays"},
   {"op": "DEF", "id": "existing-slug-id", "hypothesis": "REVISED full hypothesis incorporating new evidence", "subtype": "updated if evidence changes what kind of thing this is"},
   {"op": "CON", "from": "slug-a", "to": "slug-b", "relation": "relation_type", "evidence": "textual evidence", "confidence": "high|medium|low"},
   {"op": "EVA", "id": "existing-slug-id", "verdict": "holds|tension|contradiction", "note": "how this evidence bears on the existing hypothesis"},
@@ -112,7 +112,7 @@ For this sentence, return a JSON array of EO events:
   {"op": "SEG", "id": "original-slug-id", "into": [{"id": "new-a", "canonical": "Name A", "site": "Entity", "subtype": "org", "hypothesis": "..."}], "reason": "why this is actually multiple distinct things"}
 ]
 
-SIG: genuinely new site not in register. Classify by terrain. The hypothesis answers: what is this, what does it do, what role does it play?
+SIG: genuinely new site not in register. Classify by terrain. The hypothesis answers: what is this, what does it do, what role does it play? When the name collides with an existing canonical (e.g., another "White House"), set \`id\` to a disambiguated slug (e.g., \`white-house-bldg\` vs \`white-house-admin\`), set \`canonical\` to a clarifying form, set \`displayName\` to the shared human label, and set \`nameGroup\` to a shared slug shared with the colliding entity. Omit \`displayName\`/\`nameGroup\` otherwise.
 DEF: a known site reappears and the sentence adds new evidence. Rewrite the FULL hypothesis. Update the subtype if warranted. The hypothesis should deepen, not just append.
 CON: a relationship evidenced in text. Include confidence.
 EVA: the sentence evaluates whether an existing hypothesis still holds. Use "tension" when the evidence strains the current reading; "contradiction" when it falsifies a piece.
@@ -185,28 +185,103 @@ function findRelevantSites(text) {
   return 'Known sites referenced in this text:\n' + lines.join('\n');
 }
 
-// Targeted per-sentence context: sites mentioned in this sentence + their 1-hop neighborhood.
-function buildSentenceContext(sentence) {
-  const lower = (sentence || '').toLowerCase();
-  const matched = new Set();
+// --- linking helpers ---
 
-  for (const [id, e] of Object.entries(graph.entities)) {
-    const names = [e.canonical, ...(e.aliases || [])];
-    if (names.some(n => n && n.length > 2 && lower.includes(n.toLowerCase()))) {
-      matched.add(id);
-      graph.connections.filter(c => c.from === id || c.to === id).forEach(c => {
-        matched.add(c.from === id ? c.to : c.from);
-      });
-    }
+const STOPWORDS = new Set([
+  'the','a','an','of','and','or','to','for','in','on','at','by','with','from','as','is','are','was','were','be',
+  'this','that','it','its','he','she','they','we','you','but','not','his','her','their','our','your',
+]);
+
+function tokens(s) {
+  return (s || '').toLowerCase().replace(/[^\w\s-]/g, ' ').split(/[\s-]+/)
+    .filter(t => t.length >= 3 && !STOPWORDS.has(t));
+}
+
+function jaccard(a, b) {
+  if (!a.length || !b.length) return 0;
+  const sa = new Set(a), sb = new Set(b);
+  let inter = 0;
+  sa.forEach(x => { if (sb.has(x)) inter++; });
+  const uni = sa.size + sb.size - inter;
+  return uni ? inter / uni : 0;
+}
+
+// Score an entity against a sentence. Returns a number in roughly [0, 1.1].
+function scoreEntity(sentence, lower, sentenceTokens, id, e) {
+  const nameBag = tokens([e.canonical, e.displayName, ...(e.aliases || [])].filter(Boolean).join(' '));
+  const nameScore = jaccard(sentenceTokens, nameBag);
+
+  let aliasHit = 0;
+  const names = [e.canonical, e.displayName, ...(e.aliases || [])].filter(Boolean);
+  for (const n of names) {
+    if (n && n.length > 2 && lower.includes(n.toLowerCase())) { aliasHit = 1; break; }
   }
 
-  if (!matched.size) return '';
+  const idScore = jaccard(sentenceTokens, id.split('-').filter(t => t.length >= 3 && !STOPWORDS.has(t)));
+
+  let groupHit = 0;
+  if (e.nameGroup && lower.includes(e.nameGroup.replace(/-/g, ' '))) groupHit = 1;
+
+  return 0.5 * nameScore + 0.3 * aliasHit + 0.2 * idScore + 0.1 * groupHit;
+}
+
+// Returns ranked [{id, e, score}] of candidate entities for the sentence.
+function rankCandidates(sentence, opts) {
+  opts = opts || {};
+  const limit = opts.limit != null ? opts.limit : 12;
+  const threshold = opts.threshold != null ? opts.threshold : 0.35;
+  const lower = (sentence || '').toLowerCase();
+  const sentTokens = tokens(sentence);
+
+  const ranked = [];
+  for (const [id, e] of Object.entries(graph.entities)) {
+    const score = scoreEntity(sentence, lower, sentTokens, id, e);
+    const substringHit = [e.canonical, e.displayName, ...(e.aliases || [])]
+      .filter(Boolean).some(n => n.length > 2 && lower.includes(n.toLowerCase()));
+    if (score >= threshold || substringHit) {
+      ranked.push({ id, e, score: substringHit ? Math.max(score, threshold) : score });
+    }
+  }
+  ranked.sort((a, b) => b.score - a.score);
+  return ranked.slice(0, limit);
+}
+
+// Targeted per-sentence context: sites near this sentence + their 1-hop neighborhood.
+function buildSentenceContext(sentence, opts) {
+  const ranked = rankCandidates(sentence, opts);
+  if (!ranked.length) return '';
+
+  const matched = new Set(ranked.map(r => r.id));
+  // pull in 1-hop neighbors so the LLM sees connection context
+  ranked.forEach(r => {
+    graph.connections.filter(c => c.from === r.id || c.to === r.id).forEach(c => {
+      matched.add(c.from === r.id ? c.to : c.from);
+    });
+  });
+
+  // group annotations for any nameGroup with >1 member in the matched set OR in the full graph
+  const groupMembers = {};
+  for (const [id, e] of Object.entries(graph.entities)) {
+    if (!e.nameGroup) continue;
+    (groupMembers[e.nameGroup] = groupMembers[e.nameGroup] || []).push(id);
+  }
+  const groupNotes = [];
+  const seenGroups = new Set();
+  for (const id of matched) {
+    const e = graph.entities[id];
+    if (e && e.nameGroup && !seenGroups.has(e.nameGroup) && (groupMembers[e.nameGroup] || []).length > 1) {
+      seenGroups.add(e.nameGroup);
+      groupNotes.push('// group "' + e.nameGroup + '" has ' + groupMembers[e.nameGroup].length + ' entities: ' + groupMembers[e.nameGroup].join(', '));
+    }
+  }
 
   const lines = [];
   for (const id of matched) {
     const e = graph.entities[id];
     if (!e) continue;
-    let line = id + ' (' + e.kind + '): ' + e.canonical;
+    let line = id + ' (' + e.kind + (e.subtype ? '/' + e.subtype : '') + '): ' + e.canonical;
+    if (e.displayName && e.displayName !== e.canonical) line += ' [display: ' + e.displayName + ']';
+    if (e.nameGroup) line += ' [group: ' + e.nameGroup + ']';
     if (e.aliases && e.aliases.length) line += ' [aliases: ' + e.aliases.join(', ') + ']';
     if (e.hypothesis) line += '\n  Hypothesis: ' + e.hypothesis;
     const cons = graph.connections.filter(c => (c.from === id || c.to === id) && (matched.has(c.from) || matched.has(c.to)));
@@ -220,5 +295,5 @@ function buildSentenceContext(sentence) {
     lines.push(line);
   }
 
-  return lines.join('\n\n');
+  return (groupNotes.length ? groupNotes.join('\n') + '\n\n' : '') + lines.join('\n\n');
 }
