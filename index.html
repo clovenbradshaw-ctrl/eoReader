@@ -387,6 +387,10 @@
       <select id="index-source-filter" onchange="renderEntityList()" style="background:var(--bg);border:1px solid var(--border);color:var(--text-dim);font-family:inherit;font-size:11px;padding:3px 6px;border-radius:3px;">
         <option value="">all sources</option>
       </select>
+      <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text-dim);cursor:pointer;" title="Group entities that share a name (e.g., 'White House' as building vs. administration)">
+        <input type="checkbox" id="group-by-name" onchange="toggleGroupByName(this.checked)" style="margin:0;" />
+        group by name
+      </label>
     </div>
     <div style="display:flex;flex:1;overflow:hidden;">
       <div class="graph-entities" id="graph-entities-list" style="border-right:1px solid var(--border);"></div>
@@ -397,7 +401,10 @@
 
 </div>
 
-<!-- module load order matters: prompts → state → api → matrix → feeds → walk → render → views → dream → librarian → eo → app -->
+<div id="modal-root" hidden></div>
+
+<!-- module load order matters: modal → prompts → state → api → matrix → feeds → walk → render → views → dream → librarian → eo → app -->
+<script src="js/modal.js"></script>
 <script src="js/prompts.js"></script>
 <script src="js/state.js"></script>
 <script src="js/api.js"></script>

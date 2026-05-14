@@ -363,11 +363,11 @@ async function matrixCreateNewRoom() {
         { type: MX_ROOM_TYPE, state_key: '', content: { version: 1, created: new Date().toISOString(), format: 'plaintext-research' } },
       ],
     });
-    if (createResp.errcode) { alert('Room creation failed: ' + (createResp.error || createResp.errcode)); return; }
+    if (createResp.errcode) { await showAlert('Room creation failed: ' + (createResp.error || createResp.errcode)); return; }
     nameInput.value = '';
     await matrixSwitchRoom(createResp.room_id);
   } catch (e) {
-    alert('Room creation failed: ' + e.message);
+    await showAlert('Room creation failed: ' + e.message);
   }
 }
 

@@ -8,7 +8,7 @@ async function librarianAsk(question) {
   question = (question || '').trim();
   if (!question) return;
   const apiKey = getApiKey();
-  if (!apiKey) { alert('Set your Anthropic API key first'); return; }
+  if (!apiKey) { await showAlert('Set your Anthropic API key first'); return; }
 
   if (currentView !== 'index') toggleGraph();
   if (activeGraphTab !== 'librarian') graphTab('librarian');

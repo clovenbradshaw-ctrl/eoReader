@@ -94,6 +94,8 @@ function foldEvents(events, ts) {
       if (!entities[e.id]) {
         entities[e.id] = {
           canonical: e.canonical || e.id,
+          displayName: e.displayName || e.canonical || e.id,
+          nameGroup: e.nameGroup || null,
           kind: e.kind || 'Entity',
           subtype: e.subtype || '',
           aliases: e.aliases || [],
@@ -109,6 +111,8 @@ function foldEvents(events, ts) {
       const ent = entities[e.id];
       if (e.hypothesis) ent.hypothesis = e.hypothesis;
       if (e.subtype) ent.subtype = e.subtype;
+      if (e.displayName) ent.displayName = e.displayName;
+      if (e.nameGroup) ent.nameGroup = e.nameGroup;
       ent.defHistory = ent.defHistory || [];
       ent.defHistory.push({ hypothesis: e.hypothesis || '', span: e.span, ts: e.ts, provenance: e.provenance });
       if (e.span) (ent.spans = ent.spans || []).push(e.span);
@@ -157,6 +161,8 @@ function foldEvents(events, ts) {
         if (!ns.id || entities[ns.id]) return;
         entities[ns.id] = {
           canonical: ns.canonical || ns.id,
+          displayName: ns.displayName || ns.canonical || ns.id,
+          nameGroup: ns.nameGroup || null,
           kind: ns.site || ns.kind || original.kind,
           subtype: ns.subtype || '',
           aliases: ns.aliases || [],

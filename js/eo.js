@@ -84,14 +84,14 @@ async function importEoJsonl(file) {
   saveGraph();
   renderGraphPanel();
   renderLibrary();
-  alert('Imported ' + added + ' new events. ' + Object.keys(graph.entities).length + ' sites total.');
+  showAlert('Imported ' + added + ' new events. ' + Object.keys(graph.entities).length + ' sites total.');
 }
 
 // import legacy plaintext-index-v1/v2 JSON exports as well
 async function importIndexJson(file) {
   const text = await file.text();
   let obj;
-  try { obj = JSON.parse(text); } catch (e) { alert('Not a valid JSON file'); return; }
+  try { obj = JSON.parse(text); } catch (e) { await showAlert('Not a valid JSON file'); return; }
   if (obj.format && obj.format.startsWith('plaintext-index')) {
     // seed entities + connections; reconstruct log from them
     obj.sites.forEach(s => {
@@ -128,10 +128,10 @@ async function importIndexJson(file) {
     saveGraph();
     renderGraphPanel();
     renderLibrary();
-    alert('Imported index: ' + Object.keys(graph.entities).length + ' sites, ' + graph.connections.length + ' connections.');
+    showAlert('Imported index: ' + Object.keys(graph.entities).length + ' sites, ' + graph.connections.length + ' connections.');
     return;
   }
-  alert('Unrecognized JSON format');
+  showAlert('Unrecognized JSON format');
 }
 
 function importIndexFile(event) {
