@@ -102,10 +102,12 @@ function inlineFormat(text, opts) {
       });
       if (hit) {
         const [id] = hit;
-        return '<a href="#" onclick="event.preventDefault();selectEntity(\'' + id + '\');if(currentView!==\'index\')toggleGraph();" style="background:#2a2a3a;padding:1px 4px;border-radius:2px;color:#88C070;font-size:0.95em;text-decoration:none;cursor:pointer;font-family:monospace;">' + escapeAttr(inner) + '</a>';
+        // `inner` was matched out of `s` which was already escapeAttr'd at line 90.
+        // Re-escaping here double-escapes `&` → `&amp;amp;` and renders literal `&amp;` on screen.
+        return '<a href="#" onclick="event.preventDefault();selectEntity(\'' + id + '\');if(currentView!==\'index\')toggleGraph();" style="background:#2a2a3a;padding:1px 4px;border-radius:2px;color:#88C070;font-size:0.95em;text-decoration:none;cursor:pointer;font-family:monospace;">' + inner + '</a>';
       }
     }
-    return '<code style="background:#2a2a3a;padding:1px 4px;border-radius:2px;color:#88C070;font-size:0.95em;">' + escapeAttr(inner) + '</code>';
+    return '<code style="background:#2a2a3a;padding:1px 4px;border-radius:2px;color:#88C070;font-size:0.95em;">' + inner + '</code>';
   });
   s = s.replace(/`([^`]+)`/g, '<code style="background:#2a2a3a;padding:1px 4px;border-radius:2px;color:#88C070;font-size:0.95em;">$1</code>');
   s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" style="color:#88C070;">$1</a>');

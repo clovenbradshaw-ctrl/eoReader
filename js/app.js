@@ -22,6 +22,7 @@ async function init() {
   hydrateProcessedFlags();
   renderItems();
   renderLibrary();
+  if (typeof renderSummarizeLpList === 'function') renderSummarizeLpList();
 
   document.getElementById('search').addEventListener('input', applyFilters);
 }

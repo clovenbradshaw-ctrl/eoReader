@@ -929,4 +929,5 @@ function markItemProcessed(idx) {
     }
   }
   renderLibrary();
+  if (typeof renderSummarizeLpList === 'function') renderSummarizeLpList();
 }

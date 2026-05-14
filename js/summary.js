@@ -56,15 +56,19 @@ function summaryPickerTabKindSingular() {
 function renderSummaryGeneratorView() {
   const main = document.getElementById('graph-main-content');
   const sidebar = document.getElementById('graph-entities-list');
-  if (!main || !sidebar) return;
-  const liveFilter = document.getElementById('summary-filter');
-  if (liveFilter) summaryFilter = liveFilter.value;
+  if (main && sidebar) {
+    const liveFilter = document.getElementById('summary-filter');
+    if (liveFilter) summaryFilter = liveFilter.value;
 
-  sidebar.innerHTML = renderSummarySidebarHtml();
-  const fInput = document.getElementById('summary-filter');
-  if (fInput) fInput.value = summaryFilter;
+    sidebar.innerHTML = renderSummarySidebarHtml();
+    const fInput = document.getElementById('summary-filter');
+    if (fInput) fInput.value = summaryFilter;
 
-  main.innerHTML = renderSummaryMainHtml();
+    main.innerHTML = renderSummaryMainHtml();
+  }
+  // Mirror state to the top-line surfaces (left-panel doc list + standalone view).
+  if (typeof renderSummarizeLpList === 'function') renderSummarizeLpList();
+  if (typeof renderSummarizeMainIfActive === 'function') renderSummarizeMainIfActive();
 }
 
 function renderSummarySidebarHtml() {
@@ -531,4 +535,269 @@ function copySummaryMarkdown() {
     try { document.execCommand('copy'); done(); } catch (_) {}
     document.body.removeChild(ta);
   }
+}
+
+// =====================================================================
+// Top-line "summarize" surface: document-centric drill-down picker in
+// the left panel + standalone view-summarize for framing + output.
+// Reuses summaryPicks, buildSummaryContext, generateSummaryFromPicks.
+// =====================================================================
+
+// Spans whose source matches this article (by url, falling back to title).
+function summarySpansFromArticle(item) {
+  const out = [];
+  if (!item) return out;
+  const wantUrl = item.link || '';
+  const wantTitle = item.title || '';
+  Object.entries(graph.entities || {}).forEach(([id, e]) => {
+    (e.spans || []).forEach((sp, i) => {
+      const u = sp.sourceUrl || '';
+      const t = sp.sourceTitle || '';
+      if ((wantUrl && u === wantUrl) || (!u && wantTitle && t === wantTitle)) {
+        out.push({ entityId: id, spanIdx: i, span: sp, entity: e });
+      }
+    });
+  });
+  return out;
+}
+
+// Connection indices whose evidence came from this article.
+function summaryConnectionsFromArticle(item) {
+  const out = [];
+  if (!item) return out;
+  const wantUrl = item.link || '';
+  const wantTitle = item.title || '';
+  (graph.connections || []).forEach((c, i) => {
+    const u = c.sourceUrl || '';
+    const t = c.sourceTitle || '';
+    if ((wantUrl && u === wantUrl) || (!u && wantTitle && t === wantTitle)) {
+      out.push({ idx: i, con: c });
+    }
+  });
+  return out;
+}
+
+// Three-state checkbox: 'on' = article picked, 'half' = some sub-picks,
+// 'off' = nothing. Drives the doc-row checkbox and the toggle action.
+function summarizeDocState(item) {
+  const articleId = summaryArticleKey(item);
+  if (summaryPicks.articleIds.has(articleId)) return 'on';
+  const ents = summaryEntitiesFromArticle(item);
+  for (const id of ents) if (summaryPicks.entityIds.has(id)) return 'half';
+  const spans = summarySpansFromArticle(item);
+  for (const s of spans) if (summaryPicks.spanRefs.has(summarySpanKey(s.entityId, s.spanIdx))) return 'half';
+  const cons = summaryConnectionsFromArticle(item);
+  for (const c of cons) if (summaryPicks.connectionIdxs.has(String(c.idx))) return 'half';
+  return 'off';
+}
+
+// Articles eligible for the lp picker: anything walked, plus anything the
+// user has ingested. The walked check is heuristic — _walkLog is the
+// canonical marker of "this doc contributed to the graph".
+function summarizeLpDocs() {
+  return (allItems || []).filter((it) => ((it && it._walkLog) || []).length > 0);
+}
+
+function renderSummarizeLpList() {
+  const el = document.getElementById('summarize-lp-list');
+  if (!el) return;
+  const docs = summarizeLpDocs();
+  if (!docs.length) {
+    el.innerHTML = '<div style="color:var(--text-dim);padding:6px;font-size:10px;">no walked docs yet. ingest something and run the walk.</div>';
+    updateSummarizeCompPill();
+    return;
+  }
+  let html = '';
+  docs.forEach((item) => { html += renderSummarizeLpDocRow(item); });
+  el.innerHTML = html;
+  updateSummarizeCompPill();
+}
+
+function renderSummarizeLpDocRow(item) {
+  const articleId = summaryArticleKey(item);
+  const safeId = escapeAttr(articleId);
+  const state = summarizeDocState(item);
+  const expanded = summaryPicks.lpExpanded.has(articleId);
+  const ents = summaryEntitiesFromArticle(item);
+  const spans = summarySpansFromArticle(item);
+  const cons = summaryConnectionsFromArticle(item);
+  const opCount = (item._walkLog || []).length;
+
+  const box = state === 'on'
+    ? '<i class="ph-fill ph-check-square" style="color:var(--accent);"></i>'
+    : state === 'half'
+      ? '<i class="ph-fill ph-minus-square" style="color:var(--accent);opacity:0.6;"></i>'
+      : '<i class="ph ph-square" style="color:var(--text-dim);"></i>';
+  const caret = expanded ? 'ph-caret-down' : 'ph-caret-right';
+
+  let html = '<div style="border-bottom:1px solid var(--border);padding:3px 0;">';
+  html += '<div style="display:flex;align-items:flex-start;gap:4px;font-size:11px;">';
+  html += '<span style="cursor:pointer;padding-top:2px;" onclick="toggleSummarizeLpExpand(\'' + safeId + '\')"><i class="ph ' + caret + '" style="font-size:10px;color:var(--text-dim);"></i></span>';
+  html += '<span style="cursor:pointer;padding-top:1px;" onclick="toggleSummarizeLpDoc(\'' + safeId + '\')">' + box + '</span>';
+  html += '<div style="flex:1;min-width:0;cursor:pointer;" onclick="toggleSummarizeLpExpand(\'' + safeId + '\')">';
+  html += '<div style="color:var(--text-bright);word-break:break-word;">' + escapeAttr((item.title || '(untitled)').slice(0, 80)) + '</div>';
+  html += '<div style="color:var(--text-dim);font-size:9px;">' + escapeAttr(item.sourceName || '') + ' · ' + ents.size + ' sites · ' + spans.length + ' spans · ' + cons.length + ' cons · ' + opCount + ' ops</div>';
+  html += '</div></div>';
+
+  if (expanded) {
+    html += '<div style="padding:4px 0 4px 20px;">';
+    html += renderSummarizeLpDrilldown(item, ents, spans, cons);
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderSummarizeLpDrilldown(item, ents, spans, cons) {
+  let html = '';
+
+  // Entities sub-section
+  if (ents.size) {
+    html += '<div style="font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;margin:4px 0 2px;">sites (' + ents.size + ')</div>';
+    [...ents].forEach((id) => {
+      const e = graph.entities[id];
+      if (!e) return;
+      const checked = summaryPicks.entityIds.has(id);
+      const box = checked
+        ? '<i class="ph-fill ph-check-square" style="color:var(--accent);"></i>'
+        : '<i class="ph ph-square" style="color:var(--text-dim);"></i>';
+      html += '<div style="display:flex;align-items:flex-start;gap:5px;padding:2px 0;font-size:10px;cursor:pointer;" onclick="toggleSummaryPick(\'entity\', \'' + escapeAttr(id) + '\');renderSummarizeLpList();renderSummarizeMainIfActive();">';
+      html += '<span>' + box + '</span>';
+      html += '<div style="flex:1;min-width:0;"><span style="color:var(--text-bright);">' + escapeAttr(e.canonical || id) + '</span> <span style="color:var(--text-dim);">— ' + escapeAttr(e.kind || '') + '</span></div>';
+      html += '</div>';
+    });
+  }
+
+  // Spans sub-section
+  if (spans.length) {
+    html += '<div style="font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;margin:6px 0 2px;">spans (' + spans.length + ')</div>';
+    spans.forEach(({ entityId, spanIdx, span, entity }) => {
+      const key = summarySpanKey(entityId, spanIdx);
+      const checked = summaryPicks.spanRefs.has(key);
+      const box = checked
+        ? '<i class="ph-fill ph-check-square" style="color:var(--accent);"></i>'
+        : '<i class="ph ph-square" style="color:var(--text-dim);"></i>';
+      html += '<div style="display:flex;align-items:flex-start;gap:5px;padding:2px 0;font-size:10px;cursor:pointer;" onclick="toggleSummaryPick(\'span\', \'' + escapeAttr(key) + '\');renderSummarizeLpList();renderSummarizeMainIfActive();">';
+      html += '<span>' + box + '</span>';
+      html += '<div style="flex:1;min-width:0;color:var(--text);word-break:break-word;"><span style="color:var(--text-dim);">' + escapeAttr((entity.canonical || entityId).slice(0, 30)) + ':</span> "' + escapeAttr((span.text || '').slice(0, 110)) + '"</div>';
+      html += '</div>';
+    });
+  }
+
+  // Connections sub-section
+  if (cons.length) {
+    html += '<div style="font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;margin:6px 0 2px;">connections (' + cons.length + ')</div>';
+    cons.forEach(({ idx, con }) => {
+      const key = String(idx);
+      const checked = summaryPicks.connectionIdxs.has(key);
+      const box = checked
+        ? '<i class="ph-fill ph-check-square" style="color:var(--accent);"></i>'
+        : '<i class="ph ph-square" style="color:var(--text-dim);"></i>';
+      const fn = (graph.entities[con.from] && graph.entities[con.from].canonical) || con.from;
+      const tn = (graph.entities[con.to] && graph.entities[con.to].canonical) || con.to;
+      html += '<div style="display:flex;align-items:flex-start;gap:5px;padding:2px 0;font-size:10px;cursor:pointer;" onclick="toggleSummaryPick(\'connection\', \'' + escapeAttr(key) + '\');renderSummarizeLpList();renderSummarizeMainIfActive();">';
+      html += '<span>' + box + '</span>';
+      html += '<div style="flex:1;min-width:0;color:var(--text);"><span style="color:var(--text-bright);">' + escapeAttr(fn) + '</span> <span style="color:var(--accent);">' + escapeAttr(con.relation || '?') + '</span> <span style="color:var(--text-bright);">' + escapeAttr(tn) + '</span></div>';
+      html += '</div>';
+    });
+  }
+
+  if (!ents.size && !spans.length && !cons.length) {
+    html += '<div style="color:var(--text-dim);font-size:10px;padding:4px 0;">no sites / spans / connections recorded for this doc.</div>';
+  }
+  return html;
+}
+
+function toggleSummarizeLpDoc(articleId) {
+  const item = (allItems || []).find((it) => summaryArticleKey(it) === articleId);
+  if (!item) return;
+  const state = summarizeDocState(item);
+  if (state === 'on') {
+    summaryPicks.articleIds.delete(articleId);
+  } else if (state === 'half') {
+    // clear sub-picks contributed by this doc, then promote to whole-doc pick.
+    summaryEntitiesFromArticle(item).forEach((id) => summaryPicks.entityIds.delete(id));
+    summarySpansFromArticle(item).forEach((s) => summaryPicks.spanRefs.delete(summarySpanKey(s.entityId, s.spanIdx)));
+    summaryConnectionsFromArticle(item).forEach((c) => summaryPicks.connectionIdxs.delete(String(c.idx)));
+    summaryPicks.articleIds.add(articleId);
+  } else {
+    summaryPicks.articleIds.add(articleId);
+  }
+  renderSummarizeLpList();
+  renderSummarizeMainIfActive();
+}
+
+function toggleSummarizeLpExpand(articleId) {
+  if (summaryPicks.lpExpanded.has(articleId)) summaryPicks.lpExpanded.delete(articleId);
+  else summaryPicks.lpExpanded.add(articleId);
+  renderSummarizeLpList();
+}
+
+function updateSummarizeCompPill() {
+  const pill = document.getElementById('summarize-comp-pill');
+  if (!pill) return;
+  const a = summaryPicks.articleIds.size;
+  const e = summaryPicks.entityIds.size;
+  const c = summaryPicks.connectionIdxs.size;
+  const s = summaryPicks.spanRefs.size;
+  if (!a && !e && !c && !s) { pill.textContent = ''; return; }
+  pill.textContent = a + 'd · ' + e + 's · ' + c + 'c · ' + s + 'sp';
+}
+
+// ---- view-summarize (top-level view) ----
+function switchToSummarizeView() {
+  // expand the lp section if collapsed
+  const sect = document.getElementById('section-summarize');
+  if (sect && getComputedStyle(sect).display === 'none') {
+    sect.style.display = '';
+    const caret = document.getElementById('caret-summarize');
+    if (caret) caret.classList.remove('collapsed');
+  }
+  renderSummarizeLpList();
+  showView('summarize');
+}
+
+function renderSummarizeMainIfActive() {
+  if (currentView === 'summarize') renderSummarizeMainView();
+}
+
+function renderSummarizeMainView() {
+  const root = document.getElementById('view-summarize');
+  if (!root) return;
+  const a = summaryPicks.articleIds.size;
+  const e = summaryPicks.entityIds.size;
+  const c = summaryPicks.connectionIdxs.size;
+  const s = summaryPicks.spanRefs.size;
+  const total = a + e + c + s;
+
+  const togChip = (key, label) => {
+    const on = summaryPicks[key] !== false;
+    const style = on ? 'background:var(--accent);color:#1a1a1a;border-color:var(--accent);' : '';
+    return '<button class="act-btn" style="font-size:10px;padding:3px 6px;' + style + '" onclick="summaryPicks.' + key + '=!(summaryPicks.' + key + '!==false);renderSummarizeMainView()">' + label + ': ' + (on ? 'on' : 'off') + '</button>';
+  };
+
+  let html = '<div style="padding:16px;display:flex;flex-direction:column;height:100%;box-sizing:border-box;overflow:hidden;">';
+  html += '<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:10px;flex-wrap:wrap;">';
+  html += '<div style="font-size:13px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;"><i class="ph ph-file-text"></i> summarize</div>';
+  html += '<div style="font-size:11px;color:var(--text-dim);">' + a + ' docs · ' + e + ' sites · ' + c + ' cons · ' + s + ' spans picked</div>';
+  html += '</div>';
+
+  html += '<div style="border:1px solid var(--border);border-radius:3px;padding:10px;margin-bottom:12px;background:var(--surface);">';
+  html += '<div class="lp-label" style="margin-top:0;">framing (optional)</div>';
+  html += '<textarea id="summarize-main-framing" placeholder="optional extra instructions. picks already drive the focused subgraph — only add here if you want to override style or scope." rows="2" oninput="summaryPicks.framing=this.value" style="width:100%;font-family:inherit;font-size:11px;padding:6px;background:var(--bg);border:1px solid var(--border);color:var(--text-bright);border-radius:3px;box-sizing:border-box;">' + escapeAttr(summaryPicks.framing || '') + '</textarea>';
+  html += '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center;">';
+  html += togChip('includeSources', 'sources');
+  html += togChip('includeNotes', 'editor notes');
+  html += togChip('includeHypotheses', 'hypotheses');
+  html += '<div style="flex:1;"></div>';
+  const genDisabled = total === 0 ? 'opacity:0.5;cursor:not-allowed;' : '';
+  html += '<button class="act-btn" style="font-size:11px;padding:4px 14px;background:var(--accent);color:#1a1a1a;border-color:var(--accent);font-weight:600;' + genDisabled + '" onclick="generateSummaryFromPicks().then(renderSummarizeMainView)"' + (total === 0 ? ' disabled' : '') + '><i class="ph ph-play"></i> generate</button>';
+  html += '</div></div>';
+
+  html += '<div id="summary-output-panel" style="flex:1;overflow-y:auto;border:1px solid var(--border);border-radius:3px;padding:14px;background:var(--bg);position:relative;">';
+  html += renderSummaryOutputHtml();
+  html += '</div>';
+
+  html += '</div>';
+  root.innerHTML = html;
 }
