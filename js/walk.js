@@ -361,11 +361,11 @@ async function generateDigest(idx, btn) {
       return fn + ' →[' + c.relation + ']→ ' + tn + (c.evidence ? ' (' + c.evidence + ')' : '');
     }).join('\n');
 
-  const framingBlock = (framing.notes || framing.preset !== 'default')
-    ? 'Framing instructions:\n' + [
+  const framingSystemBlock = (framing.notes || framing.preset !== 'default')
+    ? '---\nPer-request framing (overrides the defaults above where they conflict):\n' + [
         framing.preset && framing.preset !== 'default' ? 'Tone: ' + framing.preset : '',
-        framing.notes || '',
-      ].filter(Boolean).join('\n') + '\n'
+        framing.notes ? 'Additional instructions from the editor:\n' + framing.notes : '',
+      ].filter(Boolean).join('\n') + '\n---'
     : '';
 
   const userMsg = [
@@ -373,7 +373,6 @@ async function generateDigest(idx, btn) {
     'Source: ' + item.sourceName,
     'URL: ' + item.link,
     '',
-    framingBlock,
     articleSites ? 'Indexed sites referenced:\n' + articleSites + '\n' : '',
     articleCons ? 'Connections found in this article:\n' + articleCons + '\n' : '',
     'Full body:',
@@ -381,7 +380,11 @@ async function generateDigest(idx, btn) {
   ].filter(Boolean).join('\n');
 
   try {
-    const rawOutput = await callClaude(getPrompt(), userMsg, 2000);
+    const baseSystem = getPrompt();
+    const systemPrompt = framingSystemBlock
+      ? baseSystem + '\n\n' + framingSystemBlock
+      : baseSystem;
+    const rawOutput = await callClaude(systemPrompt, userMsg, 2000);
     item.generatedRaw = rawOutput;
 
     const substackEl = document.getElementById('out-substack-' + idx);
