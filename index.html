@@ -215,9 +215,46 @@
   .ge-item {
     padding: 6px 8px; border: 1px solid var(--border); border-radius: 3px;
     margin-bottom: 4px; cursor: pointer; font-size: 11px;
+    border-left-width: 3px;
   }
   .ge-item:hover { border-color: #555; }
   .ge-item.selected { border-color: var(--accent); background: #1e2a1e; }
+  .ge-item[data-kind="Entity"] { border-left-color: #5588aa; }
+  .ge-item[data-kind="Kind"] { border-left-color: #aa8855; }
+  .ge-item[data-kind="Field"] { border-left-color: #55aa88; }
+  .ge-item[data-kind="Link"] { border-left-color: #7788cc; }
+  .ge-item[data-kind="Network"] { border-left-color: #cc7788; }
+  .ge-item[data-kind="Atmosphere"] { border-left-color: #8877aa; }
+  .ge-item[data-kind="Lens"] { border-left-color: #aa55aa; }
+  .ge-item[data-kind="Paradigm"] { border-left-color: #cc9944; }
+  .ge-item[data-kind="Void"] { border-left-color: #666; }
+
+  /* subtype filter chips above the entity list */
+  .subtype-chip-row {
+    display: flex; flex-wrap: wrap; gap: 4px;
+    padding: 4px 0 8px; margin-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .subtype-chip {
+    display: inline-flex; align-items: baseline; gap: 4px;
+    padding: 2px 8px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--surface);
+    color: var(--text-dim); font-size: 10px;
+    cursor: pointer; user-select: none;
+    transition: border-color 0.12s, color 0.12s, background 0.12s;
+  }
+  .subtype-chip:hover { color: var(--text-bright); border-color: #555; }
+  .subtype-chip.active {
+    color: var(--text-bright); border-color: var(--accent); background: #1e2a1e;
+  }
+  .subtype-chip-count { color: var(--text-dim); font-size: 9px; }
+  .subtype-chip.active .subtype-chip-count { color: var(--accent); }
+  .subtype-chip-clear { color: #c06060; border-color: #c06060; }
+
+  /* sites-found collapsed caret rotates when open */
+  .sites-found-collapsed .sites-found-caret { transition: transform 0.15s; }
+  .sites-found-collapsed[open] .sites-found-caret { transform: rotate(90deg); }
+  .sites-found-collapsed > summary::-webkit-details-marker { display: none; }
   .ge-name { color: var(--text-bright); font-weight: 600; }
   .ge-kind { color: var(--text-dim); font-size: 9px; margin-left: 4px; }
   .ge-def { color: var(--text-dim); font-size: 10px; margin-top: 2px; font-style: italic; }
@@ -315,7 +352,7 @@
   <div class="controls">
     <input type="text" id="search" placeholder="search..." style="width:180px;" />
     <div style="flex:1;"></div>
-    <button class="prompt-toggle" onclick="toggleGraph()" id="graph-toggle"><i class="ph ph-graph"></i> <span id="graph-toggle-label">index</span> <span id="graph-count">0</span></button>
+    <button class="prompt-toggle" onclick="toggleGraph()" id="graph-toggle"><i class="ph ph-graph"></i> <span id="graph-toggle-label">all entities</span> <span id="graph-count">0</span></button>
     <span id="matrix-status" class="matrix-indicator" onclick="togglePrompt()"></span>
     <button class="prompt-toggle" onclick="togglePrompt()"><i class="ph ph-gear"></i></button>
     <div class="status" id="status"></div>

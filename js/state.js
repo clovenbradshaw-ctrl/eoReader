@@ -436,7 +436,7 @@ function showView(view) {
   const btn = document.getElementById('graph-toggle');
   if (btn) btn.classList.toggle('active', view === 'index');
   const lbl = document.getElementById('graph-toggle-label');
-  if (lbl) lbl.textContent = view === 'index' ? lastNonIndexView : 'index';
+  if (lbl) lbl.textContent = view === 'index' ? 'back' : 'all entities';
   if (view === 'index') renderGraphPanel();
   if (view === 'discover' && typeof renderDiscover === 'function') renderDiscover();
   if (view === 'summarize' && typeof renderSummarizeMainView === 'function') renderSummarizeMainView();
