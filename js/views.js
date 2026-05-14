@@ -236,7 +236,8 @@ function renderLibrarianView() {
   sidebar.innerHTML = '<div style="padding:8px;">' +
     '<div class="lp-label" style="margin-top:0;"><i class="ph ph-chat-circle-dots"></i> librarian</div>' +
     '<p style="font-size:10px;color:var(--text-dim);line-height:1.5;">ask questions grounded in the indexed sites and their spans. answers cite site ids and quote source spans.</p>' +
-    '<button class="act-btn" style="width:100%;font-size:10px;margin-top:8px;" onclick="librarianChat=[];renderLibrarianView()"><i class="ph ph-trash"></i> clear conversation</button>' +
+    '<button class="act-btn" style="width:100%;font-size:10px;margin-top:8px;" onclick="librarianGenerateSummary()"><i class="ph ph-file-text"></i> generate summary</button>' +
+    '<button class="act-btn" style="width:100%;font-size:10px;margin-top:4px;" onclick="librarianChat=[];renderLibrarianView()"><i class="ph ph-trash"></i> clear conversation</button>' +
   '</div>';
 
   let html = '<div style="padding:16px;display:flex;flex-direction:column;height:calc(100vh - 180px);">';

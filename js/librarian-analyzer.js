@@ -117,6 +117,15 @@ const CONNECTION_PATTERNS = [
   /\bpath\s+from\b/i,
 ];
 
+const SUMMARY_PATTERNS = [
+  /\bsummari[sz]e\b/i,
+  /\bsummary\b/i,
+  /\bdigest\b/i,
+  /\bwrite[\s-]?up\b/i,
+  /\brecap\b/i,
+  /\bbrief(?:ing)?\s+(?:on|of|about)\b/i,
+];
+
 const STOPWORDS = new Set([
   'a','an','the','of','to','in','on','for','and','or','but','is','are','was','were',
   'be','been','being','do','does','did','have','has','had','i','we','you','they','it',
@@ -136,7 +145,30 @@ function routeLibrarianQuestion(question) {
   let connectionScore = 0;
   for (const p of CONNECTION_PATTERNS) if (p.test(q)) connectionScore++;
 
+  let summaryScore = 0;
+  for (const p of SUMMARY_PATTERNS) if (p.test(q)) summaryScore++;
+
   // mechanical entity match — word-boundary, length-gated, stopword-filtered
+  const matched = matchEntitiesInText(q);
+
+  let route;
+  if (summaryScore > 0) route = 'summary';
+  else if (metaScore > 0 && matched.size === 0) route = 'meta';
+  else if (connectionScore > 0 && matched.size >= 1) route = 'connection';
+  else if (matched.size >= 1) route = 'entity';
+  else if (metaScore > 0) route = 'meta';
+  else route = 'broad';
+
+  return {
+    route,
+    matchedEntities: [...matched],
+    signals: { metaScore, connectionScore, summaryScore, namedHits: matched.size, tokens: lower.split(/\s+/).filter(Boolean).length },
+  };
+}
+
+// Word-boundary, length-gated, stopword-filtered entity matcher.
+// Shared between routeLibrarianQuestion and the summary scope-resolver.
+function matchEntitiesInText(text) {
   const matched = new Set();
   const ents = graph.entities || {};
   for (const [id, e] of Object.entries(ents)) {
@@ -146,22 +178,10 @@ function routeLibrarianQuestion(question) {
       if (nl.length < 3) continue;
       if (STOPWORDS.has(nl)) continue;
       const re = new RegExp('\\b' + nl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
-      if (re.test(q)) { matched.add(id); break; }
+      if (re.test(text)) { matched.add(id); break; }
     }
   }
-
-  let route;
-  if (metaScore > 0 && matched.size === 0) route = 'meta';
-  else if (connectionScore > 0 && matched.size >= 1) route = 'connection';
-  else if (matched.size >= 1) route = 'entity';
-  else if (metaScore > 0) route = 'meta';
-  else route = 'broad';
-
-  return {
-    route,
-    matchedEntities: [...matched],
-    signals: { metaScore, connectionScore, namedHits: matched.size, tokens: lower.split(/\s+/).filter(Boolean).length },
-  };
+  return matched;
 }
 
 // ---------- mechanical context builder ----------
@@ -235,6 +255,204 @@ function buildLibrarianContextMechanical(question, routeInfo) {
   }
 
   return { context: lines.join('\n'), composition, focused: [...focused] };
+}
+
+// ---------- digest context builder (graph-traversal summary) ----------
+//
+// Budgets are deliberately tight. The seeds get the full evidence trail
+// (spans + DEF/EVA/REC). Neighbors stay one-line by default and only
+// contribute their hypothesis. Total spans across the prompt are capped
+// globally so the input scales with seed count, not focused-set size.
+
+const LIBRARIAN_DIGEST_MAX_SEED_ENTITIES = 12;
+const LIBRARIAN_DIGEST_MAX_NEIGHBORS = 12;        // cap on 1-hop neighbors added
+const LIBRARIAN_DIGEST_SPANS_PER_SEED = 3;
+const LIBRARIAN_DIGEST_TOTAL_SPAN_BUDGET = 18;    // hard global cap
+const LIBRARIAN_DIGEST_MAX_CONNECTIONS = 40;
+
+// Resolve a scope spec to a set of focused entity ids, plus 1-hop neighbors.
+//   { kind: 'entity', ids: [...] }
+//   { kind: 'terrain', terrain: 'Field' }
+//   { kind: 'all' }
+function resolveDigestScope(scope, cat) {
+  const seeds = new Set();
+  const degree = (cat && cat._degree) || {};
+  if (!scope) scope = { kind: 'all' };
+
+  if (scope.kind === 'entity' && Array.isArray(scope.ids)) {
+    scope.ids.slice(0, LIBRARIAN_DIGEST_MAX_SEED_ENTITIES).forEach(id => { if (graph.entities[id]) seeds.add(id); });
+  } else if (scope.kind === 'terrain' && scope.terrain) {
+    const wanted = String(scope.terrain).toLowerCase();
+    Object.entries(graph.entities || {})
+      .filter(([, e]) => (e.kind || '').toLowerCase() === wanted)
+      .sort((a, b) => (degree[b[0]] || 0) - (degree[a[0]] || 0))
+      .slice(0, LIBRARIAN_DIGEST_MAX_SEED_ENTITIES)
+      .forEach(([id]) => seeds.add(id));
+  } else if (scope.kind === 'topic' && scope.text) {
+    matchEntitiesInText(scope.text).forEach(id => seeds.add(id));
+    if (!seeds.size) {
+      const toks = (scope.text || '').toLowerCase()
+        .replace(/[^\w\s-]/g, ' ').split(/[\s-]+/)
+        .filter(t => t.length >= 3 && !STOPWORDS.has(t));
+      if (toks.length) {
+        const scored = [];
+        for (const [id, e] of Object.entries(graph.entities || {})) {
+          const hay = [e.canonical, e.subtype, e.hypothesis, e.userNotes, ...(e.aliases || [])]
+            .filter(Boolean).join(' ').toLowerCase();
+          let hits = 0;
+          for (const t of toks) if (hay.includes(t)) hits++;
+          if (hits) scored.push({ id, score: hits, deg: degree[id] || 0 });
+        }
+        scored.sort((a, b) => b.score - a.score || b.deg - a.deg);
+        scored.slice(0, LIBRARIAN_DIGEST_MAX_SEED_ENTITIES).forEach(s => seeds.add(s.id));
+      }
+    }
+  } else {
+    (cat && cat.topByDegree || [])
+      .slice(0, LIBRARIAN_DIGEST_MAX_SEED_ENTITIES)
+      .forEach(t => seeds.add(t.id));
+  }
+
+  // 1-hop neighbors, ranked by (a) edge confidence to a seed, then (b) degree;
+  // capped globally so neighbor expansion doesn't dominate the prompt.
+  const neighborScore = new Map();
+  const conf = { high: 3, medium: 2, low: 1 };
+  (graph.connections || []).forEach(c => {
+    let other = null;
+    if (seeds.has(c.from) && !seeds.has(c.to)) other = c.to;
+    else if (seeds.has(c.to) && !seeds.has(c.from)) other = c.from;
+    if (!other || !graph.entities[other]) return;
+    const s = (conf[c.confidence] || 1) + (degree[other] || 0) * 0.1;
+    neighborScore.set(other, Math.max(neighborScore.get(other) || 0, s));
+  });
+  const neighbors = new Set([...neighborScore.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, LIBRARIAN_DIGEST_MAX_NEIGHBORS)
+    .map(([id]) => id));
+
+  const focused = new Set([...seeds, ...neighbors]);
+  return { focused, seeds, neighbors };
+}
+
+function buildLibrarianDigestContext(scope, opts) {
+  opts = opts || {};
+  const includeSources = opts.includeSources !== false;
+  const includeNotes = opts.includeNotes !== false;
+  const includeConnections = opts.includeConnections !== false;
+  const includeSpans = opts.includeSpans !== false;
+  const cat = buildLibrarianCatalog();
+  const { focused, seeds, neighbors } = resolveDigestScope(scope, cat);
+  const composition = { route: 'summary', scope: scope ? scope.kind : 'all',
+    seeds: seeds.size, neighbors: (neighbors ? neighbors.size : 0),
+    entities: 0, connections: 0, spans: 0, sources: 0, notes: 0,
+    catalogBytes: 0, conversationTurns: 0,
+    includeSources, includeNotes, includeConnections, includeSpans };
+
+  if (!focused.size) {
+    return { context: '', composition, focused: [], sources: [] };
+  }
+
+  const lines = [];
+  lines.push('FOCUSED SUBGRAPH (graph traversal — no single article).');
+  lines.push('Scope: ' + (scope ? scope.kind + (scope.terrain ? ' / ' + scope.terrain : '') : 'all') +
+    '. Seeds: ' + [...seeds].map(id => '`' + id + '`').join(', ') + '.');
+
+  // ---- seeds: full evidence trail ----
+  let spansLeft = LIBRARIAN_DIGEST_TOTAL_SPAN_BUDGET;
+  lines.push('');
+  lines.push('SEED SITES:');
+  for (const id of seeds) {
+    const e = graph.entities[id];
+    if (!e) continue;
+    composition.entities++;
+    let line = 'Site `' + id + '` — ' + e.canonical + ' (' + e.kind + (e.subtype ? ', ' + e.subtype : '') + ')';
+    if (e.aliases && e.aliases.length) line += ' [aliases: ' + e.aliases.slice(0, 4).join(', ') + ']';
+    lines.push(line);
+    if (e.hypothesis) lines.push('  hypothesis: ' + e.hypothesis);
+
+    if (includeSpans) {
+      const perSeed = Math.min(LIBRARIAN_DIGEST_SPANS_PER_SEED, spansLeft);
+      const spans = (e.spans || []).slice(0, perSeed);
+      spans.forEach(sp => {
+        if (spansLeft <= 0) return;
+        lines.push('  span: "' + (sp.text || '').slice(0, 220) + '" — ' + (sp.sourceTitle || ''));
+        composition.spans++;
+        spansLeft--;
+      });
+
+      // most recent processing trail tied to the seed (1 of each, latest)
+      const lastDef = (e.defHistory || []).slice(-1)[0];
+      if (lastDef && (lastDef.hypothesis || lastDef.def)) {
+        lines.push('  DEF: ' + (lastDef.hypothesis || lastDef.def).slice(0, 200));
+      }
+      const lastEva = (e.evaHistory || []).slice(-1)[0];
+      if (lastEva) {
+        lines.push('  EVA: ' + lastEva.verdict + (lastEva.note ? ' — ' + lastEva.note.slice(0, 140) : ''));
+      }
+      const lastRec = (e.renames || []).slice(-1)[0];
+      if (lastRec) lines.push('  REC: ' + lastRec.from + ' → ' + lastRec.to + (lastRec.reason ? ' — ' + lastRec.reason : ''));
+    }
+
+    if (includeNotes && e.userNotes && e.userNotes.trim()) {
+      lines.push('  editor note: ' + e.userNotes.trim().slice(0, 240));
+      composition.notes++;
+    }
+  }
+
+  // ---- neighbors: one line each (canonical + hypothesis snippet) ----
+  if (neighbors && neighbors.size) {
+    lines.push('');
+    lines.push('1-HOP NEIGHBORS (brief):');
+    for (const id of neighbors) {
+      const e = graph.entities[id];
+      if (!e) continue;
+      composition.entities++;
+      const hy = e.hypothesis ? ' — ' + e.hypothesis.slice(0, 140) : '';
+      lines.push('  `' + id + '` (' + e.canonical + ', ' + e.kind + ')' + hy);
+    }
+  }
+
+  // ---- connections: only those incident on a seed; rank by confidence ----
+  const conf = { high: 3, medium: 2, low: 1 };
+  const incidentCons = (graph.connections || [])
+    .filter(c => (seeds.has(c.from) || seeds.has(c.to)) && focused.has(c.from) && focused.has(c.to))
+    .sort((a, b) => (conf[b.confidence] || 1) - (conf[a.confidence] || 1));
+
+  if (includeConnections && incidentCons.length) {
+    lines.push('');
+    lines.push('CONNECTIONS (' + Math.min(incidentCons.length, LIBRARIAN_DIGEST_MAX_CONNECTIONS) + ' of ' + incidentCons.length + ', seed-incident, confidence-ranked):');
+    incidentCons.slice(0, LIBRARIAN_DIGEST_MAX_CONNECTIONS).forEach(c => {
+      const fn = graph.entities[c.from]?.canonical || c.from;
+      const tn = graph.entities[c.to]?.canonical || c.to;
+      let line = '  `' + c.from + '` (' + fn + ') --[' + c.relation + ', ' + (c.confidence || '?') + ']--> `' + c.to + '` (' + tn + ')';
+      if (c.evidence) line += ' — "' + c.evidence.slice(0, 180) + '"';
+      lines.push(line);
+      composition.connections++;
+    });
+  }
+
+  // ---- aggregated sources (seeds-first, then incident-connection sources) ----
+  const srcMap = new Map();
+  const addSrc = (title, url) => {
+    if (!title && !url) return;
+    const key = (url || '') + '|' + (title || '');
+    if (!srcMap.has(key)) srcMap.set(key, { title: title || '', url: url || '' });
+  };
+  for (const id of seeds) {
+    const e = graph.entities[id];
+    if (!e) continue;
+    (e.spans || []).forEach(sp => addSrc(sp.sourceTitle, sp.sourceUrl));
+  }
+  incidentCons.forEach(c => addSrc(c.sourceTitle, c.sourceUrl));
+  const sources = [...srcMap.values()];
+  composition.sources = sources.length;
+  if (includeSources && sources.length) {
+    lines.push('');
+    lines.push('SOURCES (' + sources.length + ' distinct):');
+    sources.slice(0, 8).forEach(s => lines.push('  - ' + (s.title || '(untitled)') + (s.url ? ' — ' + s.url : '')));
+  }
+
+  return { context: lines.join('\n'), composition, focused: [...focused], sources };
 }
 
 // ---------- token estimator (pre-call only) ----------
