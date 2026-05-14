@@ -1,7 +1,11 @@
-// api.js — Anthropic API wrapper.
-async function callClaude(systemPrompt, userContent, maxTokens, model) {
+// api.js — Anthropic API wrapper. callClaudeRaw returns {text, usage, ms, model};
+// callClaude preserves the legacy string-returning contract for existing callers.
+async function callClaudeRaw(systemPrompt, userContent, maxTokens, model) {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error('no api key');
+
+  const chosenModel = model || 'claude-sonnet-4-20250514';
+  const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
   const resp = await fetch(API_URL, {
     method: 'POST',
@@ -12,7 +16,7 @@ async function callClaude(systemPrompt, userContent, maxTokens, model) {
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
-      model: model || 'claude-sonnet-4-20250514',
+      model: chosenModel,
       max_tokens: maxTokens || 1000,
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent }],
@@ -25,5 +29,12 @@ async function callClaude(systemPrompt, userContent, maxTokens, model) {
   }
 
   const data = await resp.json();
-  return (data.content?.map(b => b.text || '').join('') || '').trim();
+  const text = (data.content?.map(b => b.text || '').join('') || '').trim();
+  const ms = Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0);
+  return { text, usage: data.usage || null, model: chosenModel, ms };
+}
+
+async function callClaude(systemPrompt, userContent, maxTokens, model) {
+  const r = await callClaudeRaw(systemPrompt, userContent, maxTokens, model);
+  return r.text;
 }

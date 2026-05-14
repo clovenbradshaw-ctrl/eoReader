@@ -1,6 +1,8 @@
-// librarian.js — chat grounded in the index. Builds index context for each
-// turn (sites, hypothesis, connections, top spans) and lets Claude answer
-// using site IDs as anchors.
+// librarian.js — chat grounded in the index. Routes each question mechanically
+// (meta → catalog only, entity/connection → focused subgraph, broad → top-degree
+// fallback with catalog), captures real token usage from the API, and hands each
+// step to the analyzer for DEF/EVA/REC suggestions. The LLM is only invoked to
+// produce prose; all traversal is local.
 
 async function librarianAsk(question) {
   question = (question || '').trim();
@@ -8,56 +10,19 @@ async function librarianAsk(question) {
   const apiKey = getApiKey();
   if (!apiKey) { alert('Set your Anthropic API key first'); return; }
 
-  // ensure librarian view is active
   if (currentView !== 'index') toggleGraph();
   if (activeGraphTab !== 'librarian') graphTab('librarian');
 
   librarianChat.push({ role: 'user', content: question, ts: Date.now() });
   renderLibrarianView();
 
-  // build grounded context: focus on entities matching the question + their 1-hop
-  const lower = question.toLowerCase();
-  const focused = new Set();
-  for (const [id, e] of Object.entries(graph.entities)) {
-    const names = [e.canonical, id, ...(e.aliases || [])];
-    if (names.some(n => n && n.length > 2 && lower.includes(n.toLowerCase()))) {
-      focused.add(id);
-      graph.connections.filter(c => c.from === id || c.to === id).forEach(c => {
-        focused.add(c.from); focused.add(c.to);
-      });
-    }
-  }
+  // 1. mechanical routing
+  const routeInfo = routeLibrarianQuestion(question);
 
-  // if nothing matched, fall back to top-connected entities + most recent
-  if (!focused.size) {
-    const ids = Object.keys(graph.entities);
-    const conCount = id => graph.connections.filter(c => c.from === id || c.to === id).length;
-    ids.sort((a, b) => conCount(b) - conCount(a));
-    ids.slice(0, 30).forEach(id => focused.add(id));
-  }
+  // 2. mechanical context build
+  const built = buildLibrarianContextMechanical(question, routeInfo);
 
-  const lines = ['INDEX CONTEXT (only refer to sites and spans listed here):', ''];
-  for (const id of focused) {
-    const e = graph.entities[id];
-    if (!e) continue;
-    lines.push('Site `' + id + '` — ' + e.canonical + ' (' + e.kind + (e.subtype ? ', ' + e.subtype : '') + ')');
-    if (e.hypothesis) lines.push('  hypothesis: ' + e.hypothesis);
-    if (e.aliases && e.aliases.length) lines.push('  aliases: ' + e.aliases.join(', '));
-    const evs = e.evaHistory || [];
-    if (evs.length) lines.push('  evaluations: ' + evs.map(v => v.verdict + (v.note ? ' (' + v.note + ')' : '')).join('; '));
-    const spans = (e.spans || []).slice(0, 3);
-    spans.forEach(sp => lines.push('  span: "' + (sp.text || '').slice(0, 200) + '" — ' + (sp.sourceTitle || '')));
-  }
-  lines.push('');
-  lines.push('CONNECTIONS:');
-  const focusedCons = graph.connections.filter(c => focused.has(c.from) && focused.has(c.to));
-  focusedCons.slice(0, 60).forEach(c => {
-    const fn = graph.entities[c.from]?.canonical || c.from;
-    const tn = graph.entities[c.to]?.canonical || c.to;
-    lines.push('  `' + c.from + '` (' + fn + ') --[' + c.relation + ', ' + (c.confidence || '?') + ']--> `' + c.to + '` (' + tn + ')' + (c.evidence ? ' — ' + c.evidence : ''));
-  });
-
-  // include recent conversation
+  // 3. conversation (small, capped)
   const turns = [];
   const recent = librarianChat.slice(-8);
   for (const t of recent.slice(0, -1)) {
@@ -65,23 +30,52 @@ async function librarianAsk(question) {
   }
   turns.push('USER: ' + question);
 
-  const userMsg = lines.join('\n') + '\n\n=== CONVERSATION ===\n' + turns.join('\n\n');
+  const userMsg = built.context + '\n\n=== CONVERSATION ===\n' + turns.join('\n\n');
+  built.composition.conversationTurns = recent.length;
+  built.composition.estimatedInputTokens = estimateTokens(LIBRARIAN_PROMPT) + estimateTokens(userMsg);
 
-  // placeholder assistant message
-  librarianChat.push({ role: 'assistant', content: '…', ts: Date.now(), pending: true });
+  // placeholder assistant message — telemetry attaches once the call returns
+  const assistantMsg = { role: 'assistant', content: '…', ts: Date.now(), pending: true };
+  librarianChat.push(assistantMsg);
   renderLibrarianView();
+
+  const step = {
+    ts: assistantMsg.ts,
+    question,
+    routeInfo,
+    composition: built.composition,
+    focused: built.focused,
+    contextPreview: built.context,
+    usage: null,
+    ms: null,
+    model: null,
+    suggestions: [],
+  };
 
   try {
-    const answer = await callClaude(LIBRARIAN_PROMPT, userMsg, 1200);
-    const last = librarianChat[librarianChat.length - 1];
-    last.content = answer;
-    last.pending = false;
+    const r = await callClaudeRaw(LIBRARIAN_PROMPT, userMsg, 1200);
+    assistantMsg.content = r.text;
+    assistantMsg.pending = false;
+    step.usage = r.usage;
+    step.ms = r.ms;
+    step.model = r.model;
   } catch (e) {
-    const last = librarianChat[librarianChat.length - 1];
-    last.content = '✗ error: ' + e.message;
-    last.pending = false;
+    assistantMsg.content = '✗ error: ' + e.message;
+    assistantMsg.pending = false;
+    step.error = e.message;
   }
+
+  // 4. mechanical analysis (DEF/EVA/REC) — always runs, never costs tokens
+  step.suggestions = analyzeLibrarianStep(step);
+  librarianTelemetryLog.push(step);
+  librarianSuggestions.push({ ts: Date.now(), turnTs: step.ts, fromLLM: false, items: step.suggestions });
+  assistantMsg.telemetry = step;
+
   renderLibrarianView();
+
+  // 5. threshold LLM EVA pass — fires only when local rules flag tension or
+  // input tokens exceed the LLM-analyzer threshold. Updates the panel async.
+  maybeRunLLMEva(step);
 }
 
 function askLibrarianAbout(id) {

@@ -248,7 +248,11 @@ function renderLibrarianView() {
       if (m.role === 'user') {
         html += '<div style="margin-bottom:12px;text-align:right;"><div style="display:inline-block;max-width:80%;background:var(--surface);padding:8px 12px;border-radius:8px;font-size:12px;text-align:left;">' + escapeAttr(m.content) + '</div></div>';
       } else {
-        html += '<div style="margin-bottom:12px;"><div style="max-width:90%;font-size:12px;line-height:1.6;color:var(--text);">' + mdToHtml(m.content, { linkNodes: true }) + '</div></div>';
+        html += '<div style="margin-bottom:12px;"><div style="max-width:90%;font-size:12px;line-height:1.6;color:var(--text);">' + mdToHtml(m.content, { linkNodes: true }) + '</div>';
+        if (m.telemetry && typeof librarianTelemetryPanelHtml === 'function') {
+          html += librarianTelemetryPanelHtml(m.telemetry);
+        }
+        html += '</div>';
       }
     });
   }
