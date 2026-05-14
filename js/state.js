@@ -400,6 +400,7 @@ function updateGraphCount() {
 }
 
 function showView(view) {
+  if (view === 'index' && currentView !== 'index') lastNonIndexView = currentView;
   currentView = view;
   document.getElementById('view-feed').style.display = view === 'feed' ? '' : 'none';
   document.getElementById('view-index').style.display = view === 'index' ? 'flex' : 'none';
@@ -407,14 +408,21 @@ function showView(view) {
   if (disc) disc.style.display = view === 'discover' ? 'flex' : 'none';
   const btn = document.getElementById('graph-toggle');
   if (btn) btn.classList.toggle('active', view === 'index');
+  const lbl = document.getElementById('graph-toggle-label');
+  if (lbl) lbl.textContent = view === 'index' ? lastNonIndexView : 'index';
   if (view === 'index') renderGraphPanel();
   if (view === 'discover' && typeof renderDiscover === 'function') renderDiscover();
 }
 
 function toggleGraph() {
-  showView(currentView === 'index' ? 'feed' : 'index');
+  if (currentView === 'index') {
+    showView(lastNonIndexView === 'index' ? 'feed' : lastNonIndexView);
+  } else {
+    showView('index');
+  }
 }
 
+let lastNonIndexView = 'feed';
 let lastNonDiscoverView = 'feed';
 function openDiscover() {
   if (currentView !== 'discover') lastNonDiscoverView = currentView;
