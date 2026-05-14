@@ -1242,14 +1242,19 @@ function viewSourceInMain(srcIdx) {
   const el = document.getElementById('view-feed');
   const itemIdx = allItems.findIndex(it => it._sourceId === s.id || (s.url && it.link === s.url));
 
-  let html = '<div style="padding:16px;">';
-  html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">';
+  const linkedSites = s.processed
+    ? Object.entries(graph.entities).filter(([id, e]) =>
+        (e.sources || []).some(src => src.url === s.url || src.title === s.title))
+    : [];
+
+  let html = '<div class="record-page">';
+  html += '<div class="record-header">';
   html += '<div>';
-  html += '<div style="font-size:16px;font-weight:700;color:var(--text-bright);font-family:-apple-system,sans-serif;">' + escapeAttr(s.title || '') + '</div>';
-  html += '<div style="font-size:11px;color:var(--text-dim);margin-top:4px;">' + escapeAttr(s.sourceName || '') + ' · ' + new Date(s.ingestedAt || s.date).toLocaleDateString() + '</div>';
-  if (s.url) html += '<div style="font-size:11px;margin-top:2px;"><a href="' + escapeAttr(s.url) + '" target="_blank" style="color:var(--accent);">' + escapeAttr(s.url) + '</a></div>';
+  html += '<div class="record-title">' + escapeAttr(s.title || '') + '</div>';
+  html += '<div class="record-meta">' + escapeAttr(s.sourceName || '') + ' · ' + new Date(s.ingestedAt || s.date).toLocaleDateString() + '</div>';
+  if (s.url) html += '<div class="record-url"><a href="' + escapeAttr(s.url) + '" target="_blank">' + escapeAttr(s.url) + '</a></div>';
   html += '</div>';
-  html += '<div style="display:flex;gap:6px;">';
+  html += '<div class="record-actions">';
   html += '<button class="act-btn" onclick="pinSource(' + srcIdx + ')"><i class="ph ph-push-pin' + (s.pinned ? '-fill' : '') + '"></i> ' + (s.pinned ? 'unpin' : 'pin') + '</button>';
   html += '<button class="act-btn" onclick="' + (s.hidden ? 'unhideSource' : 'hideSource') + '(' + srcIdx + ')"><i class="ph ph-eye' + (s.hidden ? '' : '-slash') + '"></i> ' + (s.hidden ? 'unhide' : 'hide') + '</button>';
   if (itemIdx >= 0) {
@@ -1261,41 +1266,25 @@ function viewSourceInMain(srcIdx) {
       html += '<button class="act-btn" onclick="generateDigest(' + itemIdx + ', this)"><i class="ph ph-lightning"></i> generate</button>';
     }
   }
+  if (linkedSites.length) {
+    html += '<button class="act-btn record-aside-toggle" onclick="toggleRecordAside()" title="toggle entities panel"><i class="ph ph-side-bar-simple"></i> <span id="record-aside-count">' + linkedSites.length + '</span></button>';
+  }
   html += '<button class="act-btn" onclick="renderItems()"><i class="ph ph-arrow-left"></i> back</button>';
   html += '</div></div>';
 
+  html += '<div class="record-layout' + (linkedSites.length ? '' : ' no-aside') + '">';
+  html += '<div class="record-main">';
+
   if (itemIdx >= 0 && allItems[itemIdx].generatedRaw) {
-    html += '<div style="margin-bottom:16px;padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:3px;">';
-    html += '<div class="lp-label"><i class="ph ph-lightning"></i> generated entry</div>';
+    html += '<div class="record-generated"><div class="lp-label"><i class="ph ph-lightning"></i> generated entry</div>';
     html += mdToHtml(allItems[itemIdx].generatedRaw, { linkNodes: true });
     html += '</div>';
   }
 
   html += '<div class="lp-label" style="margin-top:8px;"><i class="ph ph-article"></i> source content</div>';
-  html += '<div style="font-family:-apple-system,sans-serif;font-size:13px;line-height:1.8;color:var(--text);background:var(--surface);padding:16px;border-radius:3px;max-height:60vh;overflow-y:auto;white-space:pre-wrap;">' + escapeAttr(s.body || '(no content)') + '</div>';
+  html += '<div class="record-body">' + escapeAttr(s.body || '(no content)') + '</div>';
 
   if (s.processed) {
-    const linkedSites = Object.entries(graph.entities)
-      .filter(([id, e]) => (e.sources || []).some(src => src.url === s.url || src.title === s.title));
-    if (linkedSites.length) {
-      const subCounts = {};
-      linkedSites.forEach(([, e]) => {
-        const st = (e.subtype || e.kind || 'other').toLowerCase();
-        subCounts[st] = (subCounts[st] || 0) + 1;
-      });
-      const summary = Object.keys(subCounts)
-        .sort((a, b) => subCounts[b] - subCounts[a] || a.localeCompare(b))
-        .slice(0, 8)
-        .map(k => subCounts[k] + ' ' + k)
-        .join(' · ');
-      html += '<details class="sites-found-collapsed" style="margin-top:16px;margin-bottom:12px;">';
-      html += '<summary style="cursor:pointer;list-style:none;display:flex;align-items:baseline;flex-wrap:wrap;gap:8px;">';
-      html += '<span class="lp-label" style="display:inline-flex;align-items:center;gap:6px;margin:0;"><i class="ph ph-caret-right sites-found-caret"></i><i class="ph ph-map-pin"></i> sites found (' + linkedSites.length + ')</span>';
-      html += '<span style="color:var(--text-dim);font-size:11px;">' + escapeAttr(summary) + '</span>';
-      html += '</summary>';
-      html += '<div style="margin-top:8px;">' + renderEntityGroups(linkedSites) + '</div>';
-      html += '</details>';
-    }
     html += renderReprocessHistory(s);
   } else {
     html += '<div style="color:var(--text-dim);font-size:11px;margin-top:12px;margin-bottom:12px;"><i class="ph ph-info"></i> not yet processed — click process to index this content</div>';
@@ -1305,8 +1294,32 @@ function viewSourceInMain(srcIdx) {
   html += '<button class="act-btn" style="color:#c06060;border-color:#c06060;" onclick="deleteSource(' + srcIdx + ')"><i class="ph ph-trash"></i> delete source</button>';
   html += '</div>';
 
-  html += '</div>';
+  html += '</div>'; // /record-main
+
+  if (linkedSites.length) {
+    html += '<aside class="record-aside" id="record-aside">';
+    html += '<div class="record-aside-head"><span class="lp-label" style="margin:0;"><i class="ph ph-map-pin"></i> sites found (' + linkedSites.length + ')</span>';
+    html += '<button class="act-btn record-aside-close" onclick="toggleRecordAside()" title="hide entities panel"><i class="ph ph-x"></i></button></div>';
+    html += '<div class="record-aside-body">' + renderEntityGroups(linkedSites) + '</div>';
+    html += '</aside>';
+  }
+
+  html += '</div>'; // /record-layout
+  html += '</div>'; // /record-page
   el.innerHTML = html;
+
+  // restore collapse preference
+  if (linkedSites.length) {
+    const collapsed = (typeof localStorage !== 'undefined' && localStorage.getItem('eo_recordAsideCollapsed') === '1');
+    document.querySelector('.record-layout')?.classList.toggle('aside-collapsed', collapsed);
+  }
+}
+
+function toggleRecordAside() {
+  const layout = document.querySelector('.record-layout');
+  if (!layout) return;
+  const collapsed = layout.classList.toggle('aside-collapsed');
+  try { localStorage.setItem('eo_recordAsideCollapsed', collapsed ? '1' : '0'); } catch (e) {}
 }
 
 async function deleteSource(idx) {

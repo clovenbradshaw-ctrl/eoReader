@@ -427,12 +427,20 @@ function updateGraphCount() {
 function showView(view) {
   if (view === 'index' && currentView !== 'index') lastNonIndexView = currentView;
   currentView = view;
-  document.getElementById('view-feed').style.display = view === 'feed' ? '' : 'none';
-  document.getElementById('view-index').style.display = view === 'index' ? 'flex' : 'none';
-  const disc = document.getElementById('view-discover');
-  if (disc) disc.style.display = view === 'discover' ? 'flex' : 'none';
-  const sum = document.getElementById('view-summarize');
-  if (sum) sum.style.display = view === 'summarize' ? 'flex' : 'none';
+  const idx = document.getElementById('view-index');
+  if (view === 'index') {
+    // overlay the index on top of whatever was here — don't hide the underlying view
+    idx.style.display = 'flex';
+    idx.classList.add('overlay');
+  } else {
+    idx.style.display = 'none';
+    idx.classList.remove('overlay');
+    document.getElementById('view-feed').style.display = view === 'feed' ? '' : 'none';
+    const disc = document.getElementById('view-discover');
+    if (disc) disc.style.display = view === 'discover' ? 'flex' : 'none';
+    const sum = document.getElementById('view-summarize');
+    if (sum) sum.style.display = view === 'summarize' ? 'flex' : 'none';
+  }
   const btn = document.getElementById('graph-toggle');
   if (btn) btn.classList.toggle('active', view === 'index');
   const lbl = document.getElementById('graph-toggle-label');

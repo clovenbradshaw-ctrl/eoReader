@@ -251,10 +251,65 @@
   .subtype-chip.active .subtype-chip-count { color: var(--accent); }
   .subtype-chip-clear { color: #c06060; border-color: #c06060; }
 
-  /* sites-found collapsed caret rotates when open */
-  .sites-found-collapsed .sites-found-caret { transition: transform 0.15s; }
-  .sites-found-collapsed[open] .sites-found-caret { transform: rotate(90deg); }
-  .sites-found-collapsed > summary::-webkit-details-marker { display: none; }
+  /* record page layout: content on the left, entities aside on the right */
+  .record-page { padding: 16px; }
+  .record-header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    gap: 12px; margin-bottom: 12px; flex-wrap: wrap;
+  }
+  .record-title {
+    font-size: 16px; font-weight: 700; color: var(--text-bright);
+    font-family: -apple-system, sans-serif;
+  }
+  .record-meta { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+  .record-url { font-size: 11px; margin-top: 2px; }
+  .record-url a { color: var(--accent); }
+  .record-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  .record-layout { display: flex; gap: 16px; align-items: flex-start; }
+  .record-layout.no-aside .record-main { width: 100%; }
+  .record-main { flex: 1; min-width: 0; }
+  .record-generated {
+    margin-bottom: 16px; padding: 12px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 3px;
+  }
+  .record-body {
+    font-family: -apple-system, sans-serif; font-size: 13px; line-height: 1.8;
+    color: var(--text); background: var(--surface);
+    padding: 16px; border-radius: 3px;
+    max-height: 60vh; overflow-y: auto; white-space: pre-wrap;
+  }
+
+  .record-aside {
+    width: 320px; flex-shrink: 0;
+    border: 1px solid var(--border); border-radius: 3px;
+    background: var(--surface);
+    max-height: calc(100vh - 120px); display: flex; flex-direction: column;
+    position: sticky; top: 16px;
+  }
+  .record-aside-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px; border-bottom: 1px solid var(--border);
+  }
+  .record-aside-close {
+    padding: 2px 6px; font-size: 11px;
+  }
+  .record-aside-body { padding: 8px 10px; overflow-y: auto; flex: 1; }
+  .record-layout.aside-collapsed .record-aside { display: none; }
+
+  @media (max-width: 900px) {
+    .record-layout { flex-direction: column; }
+    .record-aside { width: 100%; position: static; max-height: 50vh; }
+  }
+
+  /* index view as overlay so the record behind stays in place */
+  #view-index.overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 50;
+    box-shadow: 0 -8px 24px rgba(0,0,0,0.4);
+    background: var(--bg);
+  }
   .ge-name { color: var(--text-bright); font-weight: 600; }
   .ge-kind { color: var(--text-dim); font-size: 9px; margin-left: 4px; }
   .ge-def { color: var(--text-dim); font-size: 10px; margin-top: 2px; font-style: italic; }
@@ -331,7 +386,7 @@
   #left-panel .lp-item .lp-badge { font-size: 8px; padding: 0 4px; border-radius: 2px; white-space: nowrap; }
   #left-panel input[type="text"] { width: 100%; margin-bottom: 6px; }
   #left-panel .lp-actions { display: flex; gap: 4px; flex-wrap: wrap; }
-  #main-content { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+  #main-content { flex: 1; overflow-y: auto; display: flex; flex-direction: column; position: relative; }
   #view-feed { flex: 1; padding: 0 24px 40px; overflow-y: auto; }
   #view-index { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   .library-scroll { flex: 1; overflow-y: auto; }
