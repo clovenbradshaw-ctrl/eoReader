@@ -464,10 +464,6 @@ async function generateDigest(idx, btn) {
     const rawOutput = await callClaude(systemPrompt, userMsg, 2000);
     item.generatedRaw = rawOutput;
 
-    const substackEl = document.getElementById('out-substack-' + idx);
-    substackEl.innerHTML = mdToHtml(rawOutput, { linkNodes: true });
-
-    const linkedEl = document.getElementById('out-linked-' + idx);
     const sentences = splitSentences(item.body);
     const sentenceMap = {};
     (item._walkLog || []).forEach(l => {
@@ -475,27 +471,6 @@ async function generateDigest(idx, btn) {
       sentenceMap[l.sentence].push(l);
     });
 
-    // mechanically-linked digest: replace {node} markers with anchor links
-    let linkedHtml = '<div style="font-size:12px;">';
-    linkedHtml += '<div style="margin-bottom:12px;">' + mdToHtml(rawOutput, { linkNodes: true, inlineSpans: sentenceMap, sentences }) + '</div>';
-    linkedHtml += '<hr style="border:none;border-top:1px solid var(--border);margin:12px 0;">';
-    linkedHtml += '<div style="font-size:10px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;"><i class="ph ph-quotes"></i> source sentences with evidence</div>';
-    sentences.forEach((s, si) => {
-      const events = sentenceMap[si];
-      if (!events || !events.length) return;
-      const tags = events.map(e => {
-        const color = e.op === 'SIG' ? '#88C070' : e.op === 'DEF' ? '#d4a84d' : e.op === 'CON' ? '#5588aa' : e.op === 'EVA' ? '#c06060' : e.op === 'REC' ? '#9a55cc' : '#888';
-        return '<span style="font-size:9px;background:' + color + '22;color:' + color + ';padding:0 4px;border-radius:2px;margin-left:4px;">' + e.op + ' ' + escapeAttr(e.text || e.from || '') + '</span>';
-      }).join('');
-      linkedHtml += '<div id="s' + si + '" style="padding:4px 0;border-bottom:1px solid var(--border);">';
-      linkedHtml += '<span style="color:var(--text-dim);font-size:9px;margin-right:6px;">s' + si + '</span>';
-      linkedHtml += '<span style="color:var(--text);">' + escapeAttr(s) + '</span>' + tags;
-      linkedHtml += '</div>';
-    });
-    linkedHtml += '</div>';
-    linkedEl.innerHTML = linkedHtml;
-
-    const jsonEl = document.getElementById('out-json-' + idx);
     const articleJson = {
       title: item.title,
       source: item.sourceName,
@@ -531,12 +506,46 @@ async function generateDigest(idx, btn) {
           span: c.span ? { sentenceIdx: c.span.sentenceIdx, text: c.span.text } : null,
         })),
     };
-    jsonEl.innerHTML = '<pre style="background:var(--bg);border:1px solid var(--border);padding:8px;border-radius:3px;font-size:10px;max-height:400px;overflow:auto;white-space:pre-wrap;">' + escapeAttr(JSON.stringify(articleJson, null, 2)) + '</pre>';
     item._articleJson = articleJson;
 
+    const substackEl = document.getElementById('out-substack-' + idx);
+    if (substackEl) substackEl.innerHTML = mdToHtml(rawOutput, { linkNodes: true });
+
+    const linkedEl = document.getElementById('out-linked-' + idx);
+    if (linkedEl) {
+      let linkedHtml = '<div style="font-size:12px;">';
+      linkedHtml += '<div style="margin-bottom:12px;">' + mdToHtml(rawOutput, { linkNodes: true, inlineSpans: sentenceMap, sentences }) + '</div>';
+      linkedHtml += '<hr style="border:none;border-top:1px solid var(--border);margin:12px 0;">';
+      linkedHtml += '<div style="font-size:10px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;"><i class="ph ph-quotes"></i> source sentences with evidence</div>';
+      sentences.forEach((s, si) => {
+        const events = sentenceMap[si];
+        if (!events || !events.length) return;
+        const tags = events.map(e => {
+          const color = e.op === 'SIG' ? '#88C070' : e.op === 'DEF' ? '#d4a84d' : e.op === 'CON' ? '#5588aa' : e.op === 'EVA' ? '#c06060' : e.op === 'REC' ? '#9a55cc' : '#888';
+          return '<span style="font-size:9px;background:' + color + '22;color:' + color + ';padding:0 4px;border-radius:2px;margin-left:4px;">' + e.op + ' ' + escapeAttr(e.text || e.from || '') + '</span>';
+        }).join('');
+        linkedHtml += '<div id="s' + si + '" style="padding:4px 0;border-bottom:1px solid var(--border);">';
+        linkedHtml += '<span style="color:var(--text-dim);font-size:9px;margin-right:6px;">s' + si + '</span>';
+        linkedHtml += '<span style="color:var(--text);">' + escapeAttr(s) + '</span>' + tags;
+        linkedHtml += '</div>';
+      });
+      linkedHtml += '</div>';
+      linkedEl.innerHTML = linkedHtml;
+    }
+
+    const jsonEl = document.getElementById('out-json-' + idx);
+    if (jsonEl) jsonEl.innerHTML = '<pre style="background:var(--bg);border:1px solid var(--border);padding:8px;border-radius:3px;font-size:10px;max-height:400px;overflow:auto;white-space:pre-wrap;">' + escapeAttr(JSON.stringify(articleJson, null, 2)) + '</pre>';
+
     const outputEl = document.getElementById('output-' + idx);
-    outputEl.classList.add('visible');
-    showOutputTab(idx, 'substack');
+    if (outputEl) {
+      outputEl.classList.add('visible');
+      showOutputTab(idx, 'substack');
+    } else {
+      // Output containers aren't mounted (we're in the library/source view).
+      // Refresh that view so the freshly-generated digest appears in its slot.
+      const srcIdx = sources.findIndex(s => s.id === item._sourceId || (item.link && s.url === item.link));
+      if (srcIdx >= 0 && typeof viewSourceInMain === 'function') viewSourceInMain(srcIdx);
+    }
 
     btn.textContent = '✓ done';
     btn.classList.remove('generating');

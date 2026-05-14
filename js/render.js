@@ -56,7 +56,8 @@ function mdToHtml(md, opts) {
       if (inList) { html += inList === 'ol' ? '</ol>' : '</ul>'; inList = false; }
       const level = headingMatch[1].length;
       const sizes = { 1: '18px', 2: '15px', 3: '13px', 4: '12px' };
-      html += '<div style="font-size:' + sizes[level] + ';font-weight:700;color:var(--text-bright);margin:12px 0 6px;font-family:-apple-system,\'Segoe UI\',Helvetica,sans-serif;">' + inlineFormat(headingMatch[2], opts) + '</div>';
+      const tag = 'h' + level;
+      html += '<' + tag + ' style="font-size:' + sizes[level] + ';font-weight:700;color:var(--text-bright);margin:12px 0 6px;font-family:-apple-system,\'Segoe UI\',Helvetica,sans-serif;">' + inlineFormat(headingMatch[2], opts) + '</' + tag + '>';
       continue;
     }
 
@@ -658,8 +659,9 @@ function renderEntityDetail(id) {
   html += '<label><i class="ph ph-chat-dots"></i> your notes</label>';
   html += '<textarea rows="2" placeholder="corrections, context, or notes about this site..." onchange="updateEntity(\'' + id + '\', \'userNotes\', this.value)">' + escapeAttr(e.userNotes || '') + '</textarea>';
 
-  html += '<div style="margin-top:12px;display:flex;gap:8px;">';
+  html += '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">';
   html += '<button class="act-btn" onclick="exportSite(\'' + id + '\')"><i class="ph ph-export"></i> export dossier</button>';
+  html += '<button class="act-btn" onclick="librarianSummarizeEntity(\'' + id + '\')"><i class="ph ph-file-text"></i> generate summary</button>';
   html += '<button class="act-btn" onclick="askLibrarianAbout(\'' + id + '\')"><i class="ph ph-chat-circle"></i> ask librarian</button>';
   html += '<button class="act-btn" style="color:#c06060;border-color:#c06060;" onclick="deleteEntity(\'' + id + '\')"><i class="ph ph-trash"></i> delete</button>';
   html += '</div>';
