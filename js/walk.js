@@ -361,14 +361,21 @@ async function generateDigest(idx, btn) {
       return fn + ' →[' + c.relation + ']→ ' + tn + (c.evidence ? ' (' + c.evidence + ')' : '');
     }).join('\n');
 
-  const framingSystemBlock = (framing.notes || framing.preset !== 'default')
-    ? '---\nPer-request framing (overrides the defaults above where they conflict):\n' + [
-        framing.preset && framing.preset !== 'default' ? 'Tone: ' + framing.preset : '',
-        framing.notes ? 'Additional instructions from the editor:\n' + framing.notes : '',
-      ].filter(Boolean).join('\n') + '\n---'
+  const framingHasContent = !!(framing.notes || framing.preset !== 'default');
+  const framingLines = [
+    framing.preset && framing.preset !== 'default' ? 'Tone preset: ' + framing.preset : '',
+    framing.notes ? 'Editor instructions:\n' + framing.notes : '',
+  ].filter(Boolean).join('\n');
+
+  const framingSystemBlock = framingHasContent
+    ? '---\nEDITORIAL OVERRIDE FOR THIS DIGEST\n'
+      + 'The instructions below come from the editor for this single article only. They take priority over the defaults above wherever they conflict — including topical emphasis, what to foreground, length, voice, and which sections to expand or omit. Reshape the digest to honor them. These are your primary instructions, not optional context.\n\n'
+      + framingLines
+      + '\n---'
     : '';
 
   const userMsg = [
+    framingHasContent ? 'EDITOR DIRECTIVE FOR THIS DIGEST (follow over the defaults):\n' + framingLines + '\n' : '',
     'Headline: ' + item.title,
     'Source: ' + item.sourceName,
     'URL: ' + item.link,
