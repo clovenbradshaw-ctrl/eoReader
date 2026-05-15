@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Entity Reader</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0b0b0d; --surface: #131316; --surface-2: #1a1a1e;
+  --border: #222226; --border-hover: #333338;
+  --text: #cdcbc8; --text-dim: #7a7876; --text-faint: #4a4846;
+  --accent: #c9a55a; --tag-bg: #ffffff08; --tag-border: #ffffff14; --tag-hover: #ffffff1a;
+  --person: #c9a55a; --org: #9a9a9a; --gov: #c06060; --media: #6a9a7a;
+  --mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  --sans: 'DM Sans', -apple-system, system-ui, sans-serif;
+}
+html { background: var(--bg); color: var(--text); }
+body { font-family: var(--sans); font-size: 16px; line-height: 1.7; -webkit-font-smoothing: antialiased; }
+
+.site-header { position: sticky; top: 0; z-index: 100; background: var(--bg); border-bottom: 1px solid var(--border); padding: 14px 0; }
+.header-inner { max-width: 760px; margin: 0 auto; padding: 0 24px; display: flex; justify-content: space-between; align-items: center; }
+.site-title { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--accent); letter-spacing: -0.3px; text-decoration: none; }
+.site-stats { font-family: var(--mono); font-size: 11px; color: var(--text-faint); letter-spacing: 0.2px; }
+.view-tabs { display: flex; gap: 2px; }
+.view-tab { font-family: var(--mono); font-size: 11px; letter-spacing: 0.5px; text-transform: uppercase; padding: 5px 14px; border: 1px solid transparent; border-radius: 4px; background: none; color: var(--text-faint); cursor: pointer; transition: all 0.15s; }
+.view-tab:hover { color: var(--text-dim); }
+.view-tab.active { background: var(--surface); border-color: var(--border); color: var(--text); }
+
+.reader-view { max-width: 760px; margin: 0 auto; padding: 52px 24px 140px; }
+.article-meta { font-family: var(--mono); font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 18px; }
+.article-title { font-size: clamp(24px, 4vw, 34px); font-weight: 700; line-height: 1.22; color: #e8e6e3; margin-bottom: 10px; letter-spacing: -0.3px; }
+.article-subtitle { font-size: 17px; font-style: italic; color: var(--text-dim); line-height: 1.5; margin-bottom: 48px; }
+.section-label { font-family: var(--mono); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 2px; color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 10px; margin: 52px 0 24px 0; }
+.article-p { font-size: 16.5px; line-height: 1.78; color: var(--text); margin-bottom: 18px; }
+.article-quote { border-left: 3px solid var(--accent); margin: 28px 0; padding: 10px 0 10px 20px; font-size: 18px; font-style: italic; color: #e8e6e3; line-height: 1.6; }
+
+.entity-tag { font-family: var(--mono); font-size: 0.82em; font-weight: 500; padding: 2px 7px; border-radius: 3px; border: 1px solid var(--tag-border); background: var(--tag-bg); cursor: pointer; transition: all 0.15s ease; white-space: nowrap; }
+.entity-tag:hover, .entity-tag.active { background: var(--tag-hover); border-color: var(--border-hover); }
+.entity-tag[data-type="person"] { color: var(--person); }
+.entity-tag[data-type="org"] { color: var(--org); }
+.entity-tag[data-type="gov"] { color: var(--gov); }
+.entity-tag[data-type="media"] { color: var(--media); }
+
+.legend-toggle { font-family: var(--mono); font-size: 11px; color: var(--text-dim); background: none; border: 1px solid var(--border); padding: 5px 12px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.legend-items { display: none; gap: 18px; flex-wrap: wrap; padding: 10px 0 0 0; margin-bottom: 16px; }
+.legend-items.open { display: flex; }
+.legend-item, .graph-legend-item { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+.legend-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+
+.panel-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 998; cursor: pointer; }
+.panel-backdrop.open { display: block; }
+.entity-panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(480px, 92vw); background: var(--surface); border-left: 1px solid var(--border); z-index: 999; overflow-y: auto; transform: translateX(100%); transition: transform 0.22s ease-out; box-shadow: -16px 0 48px rgba(0,0,0,0.4); }
+.entity-panel.open { transform: translateX(0); }
+
+.panel-header { padding: 24px 28px 20px; border-bottom: 1px solid var(--border); }
+.panel-top-row { display: flex; justify-content: space-between; align-items: flex-start; }
+.panel-type-badge { font-family: var(--mono); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; padding: 3px 8px; border-radius: 3px; margin-bottom: 8px; display: inline-block; }
+.panel-type-badge[data-type="person"] { color: var(--person); background: #c9a55a12; border: 1px solid #c9a55a28; }
+.panel-type-badge[data-type="org"] { color: var(--org); background: #9a9a9a10; border: 1px solid #9a9a9a28; }
+.panel-type-badge[data-type="gov"] { color: var(--gov); background: #c0606010; border: 1px solid #c0606028; }
+.panel-type-badge[data-type="media"] { color: var(--media); background: #6a9a7a10; border: 1px solid #6a9a7a28; }
+.panel-entity-name { font-size: 22px; font-weight: 700; color: #e8e6e3; line-height: 1.3; }
+.panel-close { background: none; border: 1px solid var(--border); color: var(--text-dim); width: 30px; height: 30px; border-radius: 5px; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.panel-description { color: var(--text-dim); font-size: 14px; line-height: 1.65; margin-top: 14px; }
+.panel-section-title { font-family: var(--mono); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-faint); padding: 20px 28px 12px; }
+.profile-link { display: inline-block; margin-top: 14px; font-family: var(--mono); font-size: 11px; color: var(--accent); text-decoration: none; border: 1px solid #c9a55a28; padding: 4px 10px; border-radius: 4px; }
+.profile-link:hover { background: #c9a55a10; }
+
+.connection-card { margin: 0 28px 8px; padding: 14px 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; transition: border-color 0.15s; }
+.connection-card:hover { border-color: var(--border-hover); }
+.connection-entity { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.connection-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.connection-name { font-size: 14px; font-weight: 600; color: #e8e6e3; }
+.connection-rel { font-family: var(--mono); font-size: 12px; color: var(--text-dim); margin-left: 15px; margin-top: 4px; }
+.connection-evidence { font-size: 12px; color: var(--text-faint); font-style: italic; margin-left: 15px; margin-top: 3px; line-height: 1.5; }
+.article-link { display: block; margin: 0 28px 8px; padding: 12px 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; text-decoration: none; }
+.article-link:hover { border-color: var(--border-hover); }
+.article-link-title { font-size: 13px; font-weight: 600; color: #e8e6e3; line-height: 1.4; }
+.article-link-meta { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-top: 4px; }
+
+.graph-view { display: none; height: calc(100vh - 53px); position: relative; }
+.graph-view.active { display: block; }
+.reader-view.hidden, .profile-view.hidden { display: none; }
+.graph-legend { position: absolute; bottom: 20px; left: 20px; display: flex; gap: 12px; flex-wrap: wrap; }
+.graph-legend-item { background: #111113cc; padding: 4px 10px; border-radius: 4px; backdrop-filter: blur(8px); }
+#graph-canvas { width: 100%; height: 100%; cursor: pointer; }
+
+/* profile page */
+.profile-view { max-width: 680px; margin: 0 auto; padding: 56px 24px 140px; }
+.profile-badge { font-family: var(--mono); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; padding: 4px 10px; border-radius: 3px; display: inline-block; margin-bottom: 14px; }
+.profile-badge[data-type="person"] { color: var(--person); background: #c9a55a12; border: 1px solid #c9a55a28; }
+.profile-badge[data-type="org"] { color: var(--org); background: #9a9a9a10; border: 1px solid #9a9a9a28; }
+.profile-badge[data-type="gov"] { color: var(--gov); background: #c0606010; border: 1px solid #c0606028; }
+.profile-badge[data-type="media"] { color: var(--media); background: #6a9a7a10; border: 1px solid #6a9a7a28; }
+.profile-name { font-size: clamp(26px, 5vw, 38px); font-weight: 700; color: #e8e6e3; line-height: 1.2; margin-bottom: 14px; }
+.profile-desc { font-size: 16px; color: var(--text-dim); line-height: 1.7; margin-bottom: 36px; }
+.profile-h { font-family: var(--mono); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 2px; color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 10px; margin: 40px 0 18px; }
+.profile-conn { display: block; padding: 14px 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; text-decoration: none; }
+.profile-conn:hover { border-color: var(--border-hover); }
+#profile-graph { width: 100%; height: 320px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); margin-bottom: 8px; cursor: pointer; }
+.empty-state { max-width: 600px; margin: 120px auto; text-align: center; color: var(--text-dim); padding: 0 24px; }
+.empty-state h2 { font-family: var(--mono); color: var(--accent); font-size: 16px; margin-bottom: 12px; }
+.loading { color: var(--text-faint); font-family: var(--mono); font-size: 12px; text-align: center; padding: 120px 24px; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <div>
+      <a class="site-title" href="?">Entity Reader</a>
+      <span style="color: var(--text-faint); margin: 0 8px;">·</span>
+      <span class="site-stats" id="stats"></span>
+    </div>
+    <div class="view-tabs" id="view-tabs" style="display:none">
+      <button class="view-tab active" data-view="reader" onclick="switchView('reader')">reader</button>
+      <button class="view-tab" data-view="graph" onclick="switchView('graph')">graph</button>
+    </div>
+  </div>
+</header>
+
+<div class="loading" id="loading">loading…</div>
+
+<div class="reader-view hidden" id="reader-view">
+  <div class="article-meta" id="article-meta"></div>
+  <h1 class="article-title" id="article-title"></h1>
+  <p class="article-subtitle" id="article-subtitle"></p>
+  <button class="legend-toggle" onclick="toggleLegend()"><span id="legend-arrow">▸</span> entity legend</button>
+  <div class="legend-items" id="legend-items"></div>
+  <div id="article-body"></div>
+</div>
+
+<div class="profile-view hidden" id="profile-view"></div>
+
+<div class="graph-view" id="graph-view">
+  <canvas id="graph-canvas"></canvas>
+  <div class="graph-legend" id="graph-legend"></div>
+</div>
+
+<div class="empty-state" id="empty-state" style="display:none">
+  <h2>Entity Reader</h2>
+  <p>Open a minisite with <code>?slug=&lt;article&gt;</code> for an article,
+  or <code>?entity=&lt;id&gt;</code> for an entity profile.</p>
+</div>
+
+<div class="panel-backdrop" id="panel-backdrop" onclick="closePanel()"></div>
+<div class="entity-panel" id="entity-panel"><div id="panel-content"></div></div>
+
+<script src="js/publish/eo-publish.js"></script>
+<script src="js/publish/opfs-store.js"></script>
+<script src="js/publish/fold.js"></script>
+<script src="js/publish/api.js"></script>
+<script>
+'use strict';
+var TYPE_COLORS = { person: '#c9a55a', org: '#9a9a9a', gov: '#c06060', media: '#6a9a7a' };
+var TYPE_LABELS = { person: 'Person', org: 'Organization', gov: 'Government', media: 'Media' };
+
+var ENTITIES = {};       // id -> { id, name, type, description, articles }
+var CONNECTIONS = [];    // { from, to, rel, evidence, article }
+var ARTICLE = null;      // folded article or null
+var activeEntity = null;
+var graphInitialized = false;
+
+function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+function param(k) { return new URLSearchParams(location.search).get(k); }
+function colorFor(t) { return TYPE_COLORS[t] || TYPE_COLORS.org; }
+
+// ── load + fold (OPFS cache-first, then background refresh) ────────────
+async function loadSites() {
+  var cached = await opfsStore.readText('cache/sites.jsonl');
+  if (cached != null) applySites(cached);
+  PublishAPI.readRaw(EO.SITE_FILE).then(function (fresh) {
+    if (fresh != null && fresh !== cached) {
+      opfsStore.writeText('cache/sites.jsonl', fresh);
+      applySites(fresh);
+      rerender();
+    }
+  }).catch(function () {});
+  if (cached == null) {
+    var fresh = await PublishAPI.readRaw(EO.SITE_FILE).catch(function () { return null; });
+    if (fresh != null) { opfsStore.writeText('cache/sites.jsonl', fresh); applySites(fresh); }
+  }
+}
+function applySites(text) {
+  var folded = Fold.foldSites(text);
+  ENTITIES = folded.entities;
+  CONNECTIONS = folded.connections;
+}
+
+async function loadArticle(slug) {
+  var file = EO.articleFile(slug);
+  var cacheKey = 'cache/article-' + slug + '.jsonl';
+  var cached = await opfsStore.readText(cacheKey);
+  if (cached != null) ARTICLE = Fold.foldArticle(cached);
+  PublishAPI.readRaw(file).then(function (fresh) {
+    if (fresh != null && fresh !== cached) {
+      opfsStore.writeText(cacheKey, fresh);
+      ARTICLE = Fold.foldArticle(fresh);
+      rerender();
+    }
+  }).catch(function () {});
+  if (cached == null) {
+    var fresh = await PublishAPI.readRaw(file).catch(function () { return null; });
+    if (fresh != null) { opfsStore.writeText(cacheKey, fresh); ARTICLE = Fold.foldArticle(fresh); }
+  }
+}
+
+// ── article reader ─────────────────────────────────────────────────────
+function renderEntityRefs(text) {
+  return String(text).replace(/\{\{([^}]+)\}\}/g, function (m, id) {
+    var e = ENTITIES[id];
+    if (!e) return esc(m.replace(/\{\{|\}\}/g, ''));
+    return '<span class="entity-tag' + (activeEntity === id ? ' active' : '') + '" data-type="' +
+      esc(e.type) + '" data-entity="' + esc(id) + '" onclick="openPanel(\'' + esc(id) + '\')">' +
+      esc(e.name) + '</span>';
+  });
+}
+function renderArticle() {
+  if (!ARTICLE) return;
+  var m = ARTICLE.meta || {};
+  document.getElementById('stats').textContent =
+    Object.keys(ENTITIES).length + ' entities · ' + CONNECTIONS.length + ' connections';
+  document.getElementById('article-meta').textContent =
+    [m.publication, m.date].filter(Boolean).join(' · ');
+  document.getElementById('article-title').textContent = ARTICLE.title;
+  document.getElementById('article-subtitle').textContent = m.subtitle || '';
+  document.getElementById('legend-items').innerHTML = Object.keys(TYPE_LABELS).map(function (k) {
+    return '<span class="legend-item"><span class="legend-dot" style="background:' +
+      TYPE_COLORS[k] + '"></span>' + TYPE_LABELS[k] + '</span>';
+  }).join('');
+  document.getElementById('graph-legend').innerHTML = Object.keys(TYPE_LABELS).map(function (k) {
+    return '<span class="graph-legend-item"><span class="legend-dot" style="background:' +
+      TYPE_COLORS[k] + '"></span>' + TYPE_LABELS[k] + '</span>';
+  }).join('');
+  document.getElementById('article-body').innerHTML = (ARTICLE.sections || []).map(function (s) {
+    if (s.type === 'meta') return '<p class="article-quote" style="font-size:15px">' + esc(s.text) + '</p>';
+    if (s.type === 'section') return '<h2 class="section-label">' + esc(s.label) + '</h2>';
+    if (s.type === 'quote') return '<blockquote class="article-quote">' + renderEntityRefs(s.text) + '</blockquote>';
+    return '<p class="article-p">' + renderEntityRefs(s.text) + '</p>';
+  }).join('');
+}
+function toggleLegend() {
+  var items = document.getElementById('legend-items');
+  items.classList.toggle('open');
+  document.getElementById('legend-arrow').textContent = items.classList.contains('open') ? '▾' : '▸';
+}
+
+// ── entity panel ───────────────────────────────────────────────────────
+function connectionsFor(id) {
+  return CONNECTIONS.filter(function (c) { return c.from === id || c.to === id; });
+}
+function openPanel(id) {
+  activeEntity = id;
+  var e = ENTITIES[id];
+  if (!e) return;
+  var conns = connectionsFor(id);
+  var grouped = {};
+  conns.forEach(function (c) {
+    var otherId = c.from === id ? c.to : c.from;
+    var other = ENTITIES[otherId];
+    if (!other) return;
+    var dir = c.from === id ? '→' : '←';
+    var label = c.from === id ? c.rel : c.rel + ' (by ' + (ENTITIES[c.from] ? ENTITIES[c.from].name : c.from) + ')';
+    if (!grouped[otherId]) grouped[otherId] = { entity: other, rels: [] };
+    grouped[otherId].rels.push({ dir: dir, label: label, evidence: c.evidence });
+  });
+  var html = '<div class="panel-header"><div class="panel-top-row"><div>' +
+    '<span class="panel-type-badge" data-type="' + esc(e.type) + '">' + (TYPE_LABELS[e.type] || e.type) + '</span>' +
+    '<div class="panel-entity-name">' + esc(e.name) + '</div></div>' +
+    '<button class="panel-close" onclick="closePanel()">×</button></div>' +
+    '<p class="panel-description">' + esc(e.description) + '</p>' +
+    '<a class="profile-link" href="?entity=' + encodeURIComponent(id) + '">view full profile →</a></div>';
+  var keys = Object.keys(grouped);
+  if (keys.length) {
+    html += '<div class="panel-section-title">Connections (' + keys.length + ')</div>';
+    keys.forEach(function (oid) {
+      var g = grouped[oid];
+      html += '<div class="connection-card" onclick="openPanel(\'' + esc(oid) + '\')">' +
+        '<div class="connection-entity"><span class="connection-dot" style="background:' +
+        colorFor(g.entity.type) + '"></span><span class="connection-name">' + esc(g.entity.name) + '</span></div>';
+      g.rels.forEach(function (r) {
+        html += '<div class="connection-rel">' + r.dir + ' ' + esc(r.label) + '</div>' +
+          (r.evidence ? '<div class="connection-evidence">' + esc(r.evidence) + '</div>' : '');
+      });
+      html += '</div>';
+    });
+  }
+  var arts = e.articles || [];
+  if (arts.length) {
+    html += '<div class="panel-section-title">Appears in (' + arts.length + ')</div>';
+    arts.forEach(function (a) {
+      html += '<a class="article-link" href="?slug=' + encodeURIComponent(a.slug) + '">' +
+        '<div class="article-link-title">' + esc(a.title || a.slug) + '</div>' +
+        (a.date ? '<div class="article-link-meta">' + esc(a.date) + '</div>' : '') + '</a>';
+    });
+  }
+  html += '<div style="height:32px"></div>';
+  document.getElementById('panel-content').innerHTML = html;
+  document.getElementById('panel-backdrop').classList.add('open');
+  document.getElementById('entity-panel').classList.add('open');
+  renderArticle();
+}
+function closePanel() {
+  activeEntity = null;
+  document.getElementById('panel-backdrop').classList.remove('open');
+  document.getElementById('entity-panel').classList.remove('open');
+  renderArticle();
+}
+
+// ── entity profile page ────────────────────────────────────────────────
+function renderProfile(id) {
+  var e = ENTITIES[id];
+  var el = document.getElementById('profile-view');
+  if (!e) {
+    el.innerHTML = '<div class="empty-state"><h2>Not found</h2><p>No entity with id <code>' +
+      esc(id) + '</code> in the sites log.</p></div>';
+    return;
+  }
+  document.getElementById('stats').textContent =
+    Object.keys(ENTITIES).length + ' entities · ' + CONNECTIONS.length + ' connections';
+  document.title = e.name + ' — Entity Reader';
+  var conns = connectionsFor(id);
+  var html = '<span class="profile-badge" data-type="' + esc(e.type) + '">' +
+    (TYPE_LABELS[e.type] || e.type) + '</span>' +
+    '<h1 class="profile-name">' + esc(e.name) + '</h1>' +
+    '<p class="profile-desc">' + esc(e.description) + '</p>';
+  html += '<div class="profile-h">Connections (' + conns.length + ')</div>';
+  html += '<canvas id="profile-graph"></canvas>';
+  conns.forEach(function (c) {
+    var otherId = c.from === id ? c.to : c.from;
+    var other = ENTITIES[otherId];
+    if (!other) return;
+    var dir = c.from === id ? '→' : '←';
+    html += '<a class="profile-conn" href="?entity=' + encodeURIComponent(otherId) + '">' +
+      '<div class="connection-entity"><span class="connection-dot" style="background:' +
+      colorFor(other.type) + '"></span><span class="connection-name">' + esc(other.name) + '</span></div>' +
+      '<div class="connection-rel">' + dir + ' ' + esc(c.rel) + '</div>' +
+      (c.evidence ? '<div class="connection-evidence">' + esc(c.evidence) + '</div>' : '') + '</a>';
+  });
+  var arts = e.articles || [];
+  if (arts.length) {
+    html += '<div class="profile-h">Appears in (' + arts.length + ')</div>';
+    arts.forEach(function (a) {
+      html += '<a class="article-link" style="margin:0 0 8px" href="?slug=' +
+        encodeURIComponent(a.slug) + '"><div class="article-link-title">' + esc(a.title || a.slug) +
+        '</div>' + (a.date ? '<div class="article-link-meta">' + esc(a.date) + '</div>' : '') + '</a>';
+    });
+  }
+  el.innerHTML = html;
+  drawProfileGraph(id);
+}
+function drawProfileGraph(id) {
+  var canvas = document.getElementById('profile-graph');
+  if (!canvas) return;
+  var W = canvas.offsetWidth, H = canvas.offsetHeight;
+  canvas.width = W * 2; canvas.height = H * 2;
+  var ctx = canvas.getContext('2d'); ctx.scale(2, 2);
+  var neighbors = [];
+  connectionsFor(id).forEach(function (c) {
+    var oid = c.from === id ? c.to : c.from;
+    if (ENTITIES[oid] && neighbors.indexOf(oid) < 0) neighbors.push(oid);
+  });
+  var cx = W / 2, cy = H / 2, r = Math.min(W, H) * 0.36;
+  var pos = {};
+  neighbors.forEach(function (oid, i) {
+    var ang = (i / Math.max(neighbors.length, 1)) * Math.PI * 2 - Math.PI / 2;
+    pos[oid] = { x: cx + Math.cos(ang) * r, y: cy + Math.sin(ang) * r };
+  });
+  ctx.clearRect(0, 0, W, H);
+  neighbors.forEach(function (oid) {
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(pos[oid].x, pos[oid].y);
+    ctx.strokeStyle = '#2a2a30'; ctx.lineWidth = 1; ctx.stroke();
+  });
+  function node(x, y, ent, big) {
+    ctx.beginPath(); ctx.arc(x, y, big ? 11 : 7, 0, Math.PI * 2);
+    ctx.fillStyle = colorFor(ent.type); ctx.fill();
+    ctx.font = (big ? '600 12px' : '400 10px') + ' "DM Sans", sans-serif';
+    ctx.fillStyle = big ? '#e8e6e3' : '#888'; ctx.textAlign = 'center';
+    var name = ent.name.length > 22 ? ent.name.slice(0, 20) + '…' : ent.name;
+    ctx.fillText(name, x, y + (big ? 26 : 20));
+  }
+  neighbors.forEach(function (oid) { node(pos[oid].x, pos[oid].y, ENTITIES[oid], false); });
+  node(cx, cy, ENTITIES[id], true);
+  canvas.onclick = function (ev) {
+    var rect = canvas.getBoundingClientRect();
+    var x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+    for (var i = 0; i < neighbors.length; i++) {
+      var p = pos[neighbors[i]];
+      if (Math.hypot(p.x - x, p.y - y) < 16) { location.search = '?entity=' + encodeURIComponent(neighbors[i]); return; }
+    }
+  };
+}
+
+// ── graph view (article mode) ──────────────────────────────────────────
+function switchView(view) {
+  Array.prototype.forEach.call(document.querySelectorAll('.view-tab'), function (t) {
+    t.classList.toggle('active', t.dataset.view === view);
+  });
+  document.getElementById('reader-view').classList.toggle('hidden', view !== 'reader');
+  document.getElementById('graph-view').classList.toggle('active', view === 'graph');
+  if (view === 'graph' && !graphInitialized) { graphInitialized = true; initGraph(); }
+}
+function initGraph() {
+  var canvas = document.getElementById('graph-canvas');
+  var ctx = canvas.getContext('2d');
+  var W = canvas.offsetWidth, H = canvas.offsetHeight;
+  canvas.width = W * 2; canvas.height = H * 2; ctx.scale(2, 2);
+  var degree = {};
+  CONNECTIONS.forEach(function (c) {
+    if (ENTITIES[c.from] && ENTITIES[c.to]) {
+      degree[c.from] = (degree[c.from] || 0) + 1;
+      degree[c.to] = (degree[c.to] || 0) + 1;
+    }
+  });
+  var ids = Object.keys(ENTITIES);
+  var nodes = ids.map(function (id, i) {
+    var ang = (i / ids.length) * Math.PI * 2;
+    var r = Math.min(W, H) * 0.34;
+    return { id: id, x: W / 2 + Math.cos(ang) * r + (Math.random() - 0.5) * 50,
+      y: H / 2 + Math.sin(ang) * r + (Math.random() - 0.5) * 50, vx: 0, vy: 0,
+      radius: Math.max(4, Math.min(14, (degree[id] || 1) * 2.5)) };
+  });
+  var nodeMap = {};
+  nodes.forEach(function (n) { nodeMap[n.id] = n; });
+  var conns = CONNECTIONS.filter(function (c) { return nodeMap[c.from] && nodeMap[c.to]; });
+  canvas.addEventListener('click', function (ev) {
+    var rect = canvas.getBoundingClientRect();
+    var x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+    for (var i = 0; i < nodes.length; i++) {
+      if (Math.hypot(nodes[i].x - x, nodes[i].y - y) < nodes[i].radius + 6) { openPanel(nodes[i].id); return; }
+    }
+  });
+  function tick() {
+    var i, j;
+    for (i = 0; i < nodes.length; i++) {
+      for (j = i + 1; j < nodes.length; j++) {
+        var dx = nodes[j].x - nodes[i].x, dy = nodes[j].y - nodes[i].y;
+        var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        var f = 900 / (dist * dist);
+        nodes[i].vx -= dx / dist * f; nodes[i].vy -= dy / dist * f;
+        nodes[j].vx += dx / dist * f; nodes[j].vy += dy / dist * f;
+      }
+    }
+    conns.forEach(function (c) {
+      var a = nodeMap[c.from], b = nodeMap[c.to];
+      var dx = b.x - a.x, dy = b.y - a.y, dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      var f = (dist - 85) * 0.005;
+      a.vx += dx / dist * f; a.vy += dy / dist * f;
+      b.vx -= dx / dist * f; b.vy -= dy / dist * f;
+    });
+    nodes.forEach(function (n) {
+      n.vx += (W / 2 - n.x) * 0.001; n.vy += (H / 2 - n.y) * 0.001;
+      n.vx *= 0.88; n.vy *= 0.88; n.x += n.vx; n.y += n.vy;
+      n.x = Math.max(24, Math.min(W - 24, n.x));
+      n.y = Math.max(24, Math.min(H - 24, n.y));
+    });
+    ctx.clearRect(0, 0, W, H);
+    conns.forEach(function (c) {
+      var a = nodeMap[c.from], b = nodeMap[c.to];
+      var hl = activeEntity === c.from || activeEntity === c.to;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+      ctx.strokeStyle = hl ? '#444' : '#1e1e22'; ctx.lineWidth = hl ? 1.5 : 0.6; ctx.stroke();
+    });
+    nodes.forEach(function (n) {
+      var e = ENTITIES[n.id], c = colorFor(e.type), hl = activeEntity === n.id;
+      ctx.beginPath(); ctx.arc(n.x, n.y, hl ? n.radius * 1.4 : n.radius, 0, Math.PI * 2);
+      ctx.fillStyle = hl ? c : c + '88'; ctx.fill();
+      if (hl || n.radius > 7) {
+        ctx.font = (hl ? '500 11px' : '400 9px') + ' "DM Sans", sans-serif';
+        ctx.fillStyle = hl ? '#e8e6e3' : '#666'; ctx.textAlign = 'center';
+        var label = e.name.length > 22 ? e.name.slice(0, 20) + '…' : e.name;
+        ctx.fillText(label, n.x, n.y + n.radius + 14);
+      }
+    });
+    requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+// ── routing ────────────────────────────────────────────────────────────
+var ROUTE = null;
+function rerender() {
+  if (ROUTE === 'article') renderArticle();
+  else if (ROUTE === 'profile') renderProfile(param('entity'));
+}
+async function boot() {
+  await loadSites();
+  var entityId = param('entity');
+  var slug = param('slug') || param('article');
+  if (entityId) {
+    ROUTE = 'profile';
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('profile-view').classList.remove('hidden');
+    renderProfile(entityId);
+  } else if (slug) {
+    ROUTE = 'article';
+    await loadArticle(slug);
+    document.getElementById('loading').style.display = 'none';
+    if (!ARTICLE) {
+      document.getElementById('empty-state').style.display = 'block';
+      document.getElementById('empty-state').innerHTML =
+        '<h2>Article not found</h2><p>No published article with slug <code>' + esc(slug) + '</code>.</p>';
+      return;
+    }
+    document.getElementById('view-tabs').style.display = 'flex';
+    document.getElementById('reader-view').classList.remove('hidden');
+    renderArticle();
+  } else {
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('empty-state').style.display = 'block';
+  }
+}
+boot();
+</script>
+</body>
+</html>
