@@ -580,6 +580,28 @@ function selectEntity(id) {
   renderGraphPanel();
 }
 
+// Citation links for a span: a deep link to the exact passage on the source
+// page (text fragment), plus a Google search of the quote as a fallback.
+// Spans without a cite object fall back to a plain whole-page link.
+function citationLinksHtml(sp) {
+  if (!sp) return '';
+  const cite = sp.cite;
+  let out = '';
+  if (cite && cite.fragmentUrl) {
+    const ver = cite.verified === true;
+    out += ' · <a href="' + escapeAttr(cite.fragmentUrl) + '" target="_blank" rel="noopener" style="color:var(--accent);" title="' +
+      (ver ? 'passage located on source page' : 'jump to the passage on the source page') + '">' +
+      '<i class="ph ph-' + (ver ? 'crosshair-simple' : 'arrow-square-out') + '"></i> jump to passage</a>';
+  } else if (sp.sourceUrl) {
+    out += ' · <a href="' + escapeAttr(sp.sourceUrl) + '" target="_blank" rel="noopener" style="color:var(--accent);">source</a>';
+  }
+  if (cite && cite.searchUrl) {
+    out += ' · <a href="' + escapeAttr(cite.searchUrl) + '" target="_blank" rel="noopener" style="color:var(--text-dim);" title="Google search for this quote">' +
+      '<i class="ph ph-magnifying-glass"></i> search</a>';
+  }
+  return out;
+}
+
 function renderEntityDetail(id, targetEl, navFn) {
   const e = graph.entities[id];
   if (!e) return;
@@ -678,7 +700,7 @@ function renderEntityDetail(id, targetEl, navFn) {
       html += ' <span style="font-size:9px;color:' + provColor + ';" title="provenance">' + provenanceLabel(prov) + '</span>';
       if (c.evidence) html += '<div style="font-size:10px;color:var(--text-dim);font-style:italic;">' + escapeAttr(c.evidence) + '</div>';
       if (c.span && c.span.text) html += '<div style="font-size:9px;color:var(--text);background:#1a1a2e;padding:2px 5px;border-radius:2px;border-left:2px solid #5588aa;margin-top:2px;font-style:italic;">"' + escapeAttr(c.span.text.slice(0, 150)) + '"</div>';
-      if (c.sourceTitle) html += '<div style="font-size:9px;color:var(--text-dim);"><i class="ph ph-newspaper"></i> ' + escapeAttr(c.sourceTitle) + '</div>';
+      if (c.sourceTitle) html += '<div style="font-size:9px;color:var(--text-dim);"><i class="ph ph-newspaper"></i> ' + escapeAttr(c.sourceTitle) + citationLinksHtml(c.span) + '</div>';
       if (fb) html += '<div style="font-size:9px;color:#c06060;"><i class="ph ph-chat-dots"></i> ' + escapeAttr(fb) + '</div>';
       html += '</div>';
       html += '<div style="display:flex;gap:2px;flex-shrink:0;">';
@@ -728,7 +750,7 @@ function renderEntityDetail(id, targetEl, navFn) {
         out += '</div>';
       }
       out += '<div style="color:var(--text);background:#1a1a2e;padding:3px 6px;border-radius:2px;border-left:2px solid ' + badgeColor + ';font-style:italic;">"' + escapeAttr(sp.text || '') + '"</div>';
-      out += '<div style="color:var(--text-dim);font-size:9px;">' + escapeAttr(sp.sourceTitle || '') + (sp.sourceUrl ? ' · <a href="' + escapeAttr(sp.sourceUrl) + '" target="_blank" style="color:var(--accent);">source</a>' : '') + '</div>';
+      out += '<div style="color:var(--text-dim);font-size:9px;">' + escapeAttr(sp.sourceTitle || '') + citationLinksHtml(sp) + '</div>';
       out += '</div>';
       return out;
     };
