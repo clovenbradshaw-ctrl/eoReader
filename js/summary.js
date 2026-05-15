@@ -360,7 +360,13 @@ async function generateSummaryFromPicks() {
 async function runSummaryJob(job, signal) {
   const t = job.target;
   try {
-    const r = await callClaudeRaw(t.systemPrompt, t.framingHeader, 2000, null, { signal });
+    const r = await callLLM({
+      system: t.systemPrompt,
+      user: t.framingHeader,
+      maxTokens: 2000,
+      role: 'summary',
+      signal,
+    });
     summaryOutput = {
       md: r.text,
       ts: Date.now(),

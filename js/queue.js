@@ -205,6 +205,23 @@ function jobCounts() {
   return c;
 }
 
+// Per-provider concurrency cap. Anthropic tolerates QUEUE_MAX_CONCURRENCY
+// parallel requests; WebLLM serializes per engine; Ollama serializes by
+// default. The current provider for a job's role caps how many of that
+// role may run in parallel.
+function _providerCapForRole(role) {
+  try {
+    if (!window.LLMProviders) return QUEUE_MAX_CONCURRENCY;
+    const { provider } = window.LLMProviders.routeFor(role);
+    if (!provider) return QUEUE_MAX_CONCURRENCY;
+    return typeof provider.concurrency === 'number'
+      ? provider.concurrency
+      : QUEUE_MAX_CONCURRENCY;
+  } catch {
+    return QUEUE_MAX_CONCURRENCY;
+  }
+}
+
 function tickScheduler() {
   if (queuePaused) return;
 
@@ -218,6 +235,12 @@ function tickScheduler() {
     const totalRunning = jobQueue.filter(j => j.status === 'running').length;
     if (totalRunning >= QUEUE_MAX_CONCURRENCY) break;
     if (job.kind === 'walk' && walkRunning >= QUEUE_WALK_MAX) continue;
+
+    // Provider-aware cap: count jobs of this kind already running and
+    // gate against the provider's concurrency budget.
+    const providerCap = _providerCapForRole(job.kind);
+    const kindRunning = running.filter(j => j.kind === job.kind).length;
+    if (kindRunning >= providerCap) continue;
 
     startJob(job);
     if (job.kind === 'walk') break; // only one walk per tick

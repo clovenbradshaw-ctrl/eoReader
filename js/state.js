@@ -346,6 +346,135 @@ function flash(id, msg) {
   el.classList.add('show');
   setTimeout(() => { el.classList.remove('show'); el.textContent = 'saved'; }, 1500);
 }
+// ---- models settings UI ----
+
+const MODELS_ROLES = ['walk', 'dream', 'librarian', 'digest', 'summary', 'eva', 'classify', 'chat'];
+const MODELS_PROVIDER_LABELS = {
+  anthropic: 'Anthropic (cloud)',
+  webllm: 'WebLLM (browser)',
+  ollama: 'Ollama (localhost)',
+  'window-ai': 'window.ai (Chrome)',
+};
+
+async function loadModelsSettings() {
+  if (typeof LLMProviders === 'undefined') return;
+  const policy = LLMProviders.getPolicy();
+
+  // Per-role policy grid
+  const grid = document.getElementById('role-policy-grid');
+  if (grid) {
+    grid.innerHTML = '';
+    for (const role of MODELS_ROLES) {
+      const label = document.createElement('div');
+      label.style.color = 'var(--text-dim)';
+      label.textContent = role;
+      const sel = document.createElement('select');
+      sel.id = 'role-policy-' + role;
+      sel.style.cssText = 'background:var(--bg);border:1px solid var(--border);color:var(--text-bright);font-family:inherit;font-size:11px;padding:2px 4px;border-radius:3px;';
+      for (const name of Object.keys(MODELS_PROVIDER_LABELS)) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = MODELS_PROVIDER_LABELS[name];
+        if (policy[role] === name) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      grid.appendChild(label);
+      grid.appendChild(sel);
+    }
+  }
+
+  // WebLLM model picker — populate from MODEL_BUDGETS if eoChat is around.
+  const sel = document.getElementById('webllm-model');
+  if (sel) {
+    sel.innerHTML = '';
+    const auto = document.createElement('option');
+    auto.value = 'auto';
+    auto.textContent = 'auto (pickModel)';
+    sel.appendChild(auto);
+    const budgets = (typeof window !== 'undefined' && window.eoChat?.MODEL_BUDGETS) || {};
+    for (const id of Object.keys(budgets)) {
+      const opt = document.createElement('option');
+      opt.value = id;
+      opt.textContent = id;
+      sel.appendChild(opt);
+    }
+    try {
+      const raw = localStorage.getItem('eo.models.modelByRole');
+      if (raw) {
+        const obj = JSON.parse(raw);
+        // We pin the same model across all roles for simplicity.
+        const pinned = obj?.chat || obj?.walk || 'auto';
+        sel.value = pinned;
+      }
+    } catch {}
+  }
+
+  // Ollama config
+  try {
+    const raw = localStorage.getItem('eo.providers.ollama');
+    const cfg = raw ? JSON.parse(raw) : { host: 'http://localhost:11434', model: 'llama3.2:3b' };
+    const h = document.getElementById('ollama-host');
+    const m = document.getElementById('ollama-model');
+    if (h) h.value = cfg.host || '';
+    if (m) m.value = cfg.model || '';
+  } catch {}
+
+  await probeProviders();
+}
+
+async function probeProviders() {
+  const statusEl = document.getElementById('provider-status');
+  if (!statusEl) return;
+  statusEl.innerHTML = '<span style="color:var(--text-dim);">probing…</span>';
+  let probed = {};
+  try { probed = await LLMProviders.probeAll(); } catch {}
+  statusEl.innerHTML = '';
+  for (const name of Object.keys(MODELS_PROVIDER_LABELS)) {
+    const ok = !!probed[name];
+    const pill = document.createElement('span');
+    pill.style.cssText = 'padding:2px 6px;border-radius:8px;border:1px solid ' +
+      (ok ? 'var(--accent)' : 'var(--border)') + ';color:' +
+      (ok ? 'var(--accent)' : 'var(--text-dim)') + ';';
+    pill.textContent = (ok ? '● ' : '○ ') + name;
+    pill.title = name + (ok ? ' available' : ' unavailable');
+    statusEl.appendChild(pill);
+  }
+}
+
+function saveModelsSettings() {
+  if (typeof LLMProviders === 'undefined') return;
+  const policy = {};
+  for (const role of MODELS_ROLES) {
+    const sel = document.getElementById('role-policy-' + role);
+    if (sel) policy[role] = sel.value;
+  }
+  LLMProviders.setPolicy(policy);
+
+  // WebLLM pin
+  const webllmSel = document.getElementById('webllm-model');
+  if (webllmSel) {
+    const val = webllmSel.value || 'auto';
+    const obj = {};
+    for (const role of MODELS_ROLES) obj[role] = val;
+    try { localStorage.setItem('eo.models.modelByRole', JSON.stringify(obj)); } catch {}
+  }
+
+  // Ollama config
+  const host = document.getElementById('ollama-host')?.value?.trim();
+  const model = document.getElementById('ollama-model')?.value?.trim();
+  if (host || model) {
+    try {
+      localStorage.setItem('eo.providers.ollama', JSON.stringify({
+        host: host || 'http://localhost:11434',
+        model: model || 'llama3.2:3b',
+      }));
+    } catch {}
+  }
+
+  flash('models-saved', 'saved');
+  probeProviders();
+}
+
 function toggleLpSection(name) {
   const section = document.getElementById('section-' + name);
   const caret = document.getElementById('caret-' + name);

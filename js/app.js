@@ -2,6 +2,7 @@
 
 async function init() {
   loadSettings();
+  if (typeof loadModelsSettings === 'function') loadModelsSettings();
   loadGraph();
   loadCustomFeeds();
   loadDreamCandidates();

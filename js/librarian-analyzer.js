@@ -493,14 +493,29 @@ function analyzeLibrarianStep(step) {
   const comp = step.composition || {};
 
   // DEF — describe what this step is doing, mechanically
+  const cacheRead = step.usage?.cache_read_input_tokens || 0;
+  const cacheWrite = step.usage?.cache_creation_input_tokens || 0;
   suggestions.push({
     op: 'DEF',
     note: 'librarian turn: route=' + route +
       ', named=' + (step.routeInfo?.signals?.namedHits || 0) +
       ', entities=' + comp.entities + ', connections=' + comp.connections + ', spans=' + comp.spans +
       ', input_tokens=' + cost + ', output_tokens=' + (step.usage?.output_tokens || 0) +
+      ', cache_read=' + cacheRead + ', cache_write=' + cacheWrite +
       ', ms=' + (step.ms || '?'),
   });
+
+  // REC — cache prefix should be hitting on follow-up turns. If turn >= 2
+  // and we paid for >2k tokens without any cache_read, the stable prefix
+  // is drifting between turns (something is mutating built.context).
+  if (cacheRead === 0 && cost > 2000 && (step.composition?.conversationTurns || 0) >= 2) {
+    suggestions.push({
+      op: 'REC',
+      target: 'librarian.js librarianAsk',
+      rec: 'cache_read=0 on follow-up turn — stable prefix is drifting between turns',
+      reason: 'prior-turn cached prefix should be reused; check that built.context is stable across turns',
+    });
+  }
 
   // EVA — judge cost vs verdict
   if (cost > LIBRARIAN_BUDGET_INPUT_TOKENS) {
@@ -560,7 +575,13 @@ async function maybeRunLLMEva(step) {
   };
 
   try {
-    const r = await callClaudeRaw(LIBRARIAN_EVA_PROMPT, JSON.stringify(payload, null, 2), 600);
+    const r = await callLLM({
+      system: LIBRARIAN_EVA_PROMPT,
+      user: JSON.stringify(payload, null, 2),
+      maxTokens: 600,
+      role: 'eva',
+      responseFormat: 'json',
+    });
     const m = r.text.match(/\[[\s\S]*\]/);
     if (!m) return;
     const arr = JSON.parse(m[0]);
