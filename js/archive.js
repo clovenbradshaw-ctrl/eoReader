@@ -36,7 +36,10 @@
     return focused;
   }
 
-  function buildExportData() {
+  // Source: an assistant turn from summaryChat (the new "chat with docs"
+  // model). Pass in the turn so we can archive any historical answer, not
+  // just the most recent one.
+  function buildExportData(turn) {
     const focused = collectFocusedEntityIds();
 
     const entityIds = [...focused].filter((id) => graph.entities[id]);
@@ -94,15 +97,15 @@
     connectionsOut.forEach((c) => addSrc(c.sourceTitle, c.sourceUrl));
     const sourcesOut = [...srcMap.values()];
 
-    const s = summaryOutput || {};
+    const t = turn || {};
     return {
       summary: {
-        md: s.md || '',
-        model: s.model || '',
-        ms: s.ms || 0,
-        usage: s.usage || {},
-        composition: s.composition || {},
-        ts: s.ts || Date.now(),
+        md: t.content || '',
+        model: t.model || '',
+        ms: t.ms || 0,
+        usage: t.usage || {},
+        composition: t.composition || {},
+        ts: t.ts || Date.now(),
         framing: (summaryPicks.framing || '').trim(),
       },
       entities: entitiesOut,
@@ -482,13 +485,32 @@ viewerScript(),
 
   // ---- upload flow ------------------------------------------------------
 
-  async function uploadSummaryToArchive() {
-    if (!summaryOutput || summaryOutput.pending || summaryOutput.error || !summaryOutput.md) {
-      await showAlert('Generate a summary first.');
+  // Find an assistant turn in summaryChat. If ts is supplied, look it up;
+  // otherwise return the most recent finished assistant turn.
+  function findArchivableTurn(ts) {
+    if (typeof summaryChat === 'undefined' || !Array.isArray(summaryChat)) return null;
+    if (ts != null) {
+      return summaryChat.find((m) => m.ts === ts && m.role === 'assistant') || null;
+    }
+    for (let i = summaryChat.length - 1; i >= 0; i--) {
+      const m = summaryChat[i];
+      if (m.role === 'assistant' && !m.pending && !m.error && m.content) return m;
+    }
+    return null;
+  }
+
+  async function uploadChatTurnToArchive(ts) {
+    return uploadSummaryToArchive(ts);
+  }
+
+  async function uploadSummaryToArchive(ts) {
+    const turn = findArchivableTurn(ts);
+    if (!turn) {
+      await showAlert('Generate or pick an assistant answer first.');
       return;
     }
 
-    const data = buildExportData();
+    const data = buildExportData(turn);
 
     const filled = await showPrompt({
       title: 'upload summary to archive.org',
@@ -677,5 +699,6 @@ viewerScript(),
   }
 
   window.uploadSummaryToArchive = uploadSummaryToArchive;
+  window.uploadChatTurnToArchive = uploadChatTurnToArchive;
   window.buildInteractiveSummaryHtml = buildInteractiveSummaryHtml;
 })();

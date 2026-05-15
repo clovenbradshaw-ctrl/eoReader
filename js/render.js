@@ -292,8 +292,6 @@ function renderGraphPanel() {
     renderDreamView();
   } else if (activeGraphTab === 'librarian') {
     renderLibrarianView();
-  } else if (activeGraphTab === 'summary') {
-    renderSummaryGeneratorView();
   } else if (activeGraphTab === 'eva') {
     renderEvaView();
   }
@@ -768,7 +766,7 @@ function renderEntityDetail(id) {
 
   html += '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">';
   html += '<button class="act-btn" onclick="exportSite(\'' + id + '\')"><i class="ph ph-export"></i> export dossier</button>';
-  html += '<button class="act-btn" onclick="librarianSummarizeEntity(\'' + id + '\')"><i class="ph ph-file-text"></i> generate summary</button>';
+  html += '<button class="act-btn" onclick="openSummaryWithEntity(\'' + id + '\')"><i class="ph ph-chats-circle"></i> chat with docs</button>';
   html += '<button class="act-btn" onclick="askLibrarianAbout(\'' + id + '\')"><i class="ph ph-chat-circle"></i> ask librarian</button>';
   html += '<button class="act-btn" style="color:#c06060;border-color:#c06060;" onclick="deleteEntity(\'' + id + '\')"><i class="ph ph-trash"></i> delete</button>';
   html += '</div>';

@@ -1,11 +1,9 @@
-// summary.js — Summary Generator tab. Editor picks inputs at arbitrary
-// granularity (individual sites, individual CON edges, individual evidence
-// spans, individual articles) and the focused subgraph is built directly
-// from those picks rather than via scope→seed→neighbor expansion. Runs
-// against the same DEFAULT_PROMPT used by the librarian summary path,
-// with an optional editorial framing override.
-
-let summaryFilter = '';
+// summary.js — NotebookLM-style "chat with docs". Sources pane on the left
+// (any ingested article qualifies; walked docs additionally expose drill-down
+// for sites, spans, connections inside that source). Chat in the middle is
+// a turn-based transcript that uses the active picks as its focused
+// subgraph. Right pane (toggleable) shows the source clicked in the list
+// with drill-down checkboxes.
 
 // ---- shared helpers ----
 function summarySpanKey(entityId, spanIdx) { return entityId + '::' + spanIdx; }
@@ -18,8 +16,8 @@ function summaryArticleKey(item) {
   return item.link || ('title:' + (item.title || '') + '|' + (item.date ? new Date(item.date).getTime() : ''));
 }
 
-// Mirrors the walk-log scan in walk.js:384–399: map an article to the
-// entity ids its walk touched. Used when an article is picked as input.
+// Mirrors the walk-log scan in walk.js: map an article to the entity ids
+// its walk touched.
 function summaryEntitiesFromArticle(item) {
   const ids = new Set();
   const walkLog = (item && item._walkLog) || [];
@@ -45,182 +43,11 @@ function summaryPicksSetFor(kind) {
   return new Set();
 }
 
-function summaryPickerTabKindSingular() {
-  if (summaryPickerTab === 'entities') return 'entity';
-  if (summaryPickerTab === 'connections') return 'connection';
-  if (summaryPickerTab === 'spans') return 'span';
-  if (summaryPickerTab === 'articles') return 'article';
-  return 'entity';
-}
-
-// ---- view ----
-function renderSummaryGeneratorView() {
-  const main = document.getElementById('graph-main-content');
-  const sidebar = document.getElementById('graph-entities-list');
-  if (main && sidebar) {
-    const liveFilter = document.getElementById('summary-filter');
-    if (liveFilter) summaryFilter = liveFilter.value;
-
-    sidebar.innerHTML = renderSummarySidebarHtml();
-    const fInput = document.getElementById('summary-filter');
-    if (fInput) fInput.value = summaryFilter;
-
-    main.innerHTML = renderSummaryMainHtml();
-  }
-  // Mirror state to the top-line surfaces (left-panel doc list + standalone view).
-  if (typeof renderSummarizeLpList === 'function') renderSummarizeLpList();
-  if (typeof renderSummarizeMainIfActive === 'function') renderSummarizeMainIfActive();
-}
-
-function renderSummarySidebarHtml() {
-  const tabs = ['entities', 'connections', 'spans', 'articles'];
-  const counts = {
-    entities: summaryPicks.entityIds.size,
-    connections: summaryPicks.connectionIdxs.size,
-    spans: summaryPicks.spanRefs.size,
-    articles: summaryPicks.articleIds.size,
-  };
-  let html = '<div style="padding:8px;display:flex;flex-direction:column;height:100%;">';
-  html += '<div class="lp-label" style="margin-top:0;"><i class="ph ph-file-text"></i> summary generator</div>';
-  html += '<p style="font-size:10px;color:var(--text-dim);line-height:1.5;margin-bottom:8px;">pick inputs at any granularity — individual sites, connections, evidence spans, or whole articles. the editor controls exactly what the prompt sees.</p>';
-
-  html += '<div style="display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap;">';
-  tabs.forEach((t) => {
-    const active = summaryPickerTab === t;
-    const style = active
-      ? 'background:var(--accent);color:#1a1a1a;border-color:var(--accent);'
-      : '';
-    html += '<button class="act-btn" style="font-size:10px;padding:3px 6px;' + style + '" onclick="setSummaryPickerTab(\'' + t + '\')">' + t + ' (' + counts[t] + ')</button>';
-  });
-  html += '</div>';
-
-  html += '<input type="text" id="summary-filter" placeholder="filter ' + summaryPickerTab + '..." oninput="summaryFilter=this.value;renderSummaryPickerList()" style="font-family:inherit;font-size:11px;padding:4px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text-bright);border-radius:3px;margin-bottom:6px;" />';
-
-  html += '<div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap;">';
-  html += '<button class="act-btn" style="font-size:9px;padding:2px 4px;" onclick="summaryPicksSelectVisible()">select visible</button>';
-  html += '<button class="act-btn" style="font-size:9px;padding:2px 4px;" onclick="summaryPicksInvertVisible()">invert</button>';
-  html += '<button class="act-btn" style="font-size:9px;padding:2px 4px;" onclick="clearSummaryPicks(\'' + summaryPickerTab + '\')">clear ' + summaryPickerTab + '</button>';
-  html += '<button class="act-btn" style="font-size:9px;padding:2px 4px;color:#c06060;border-color:#c06060;" onclick="clearSummaryPicks(\'all\')">clear all</button>';
-  html += '</div>';
-
-  html += '<div id="summary-picker-list" style="flex:1;overflow-y:auto;border-top:1px solid var(--border);padding-top:4px;font-size:11px;">';
-  html += renderSummaryPickerListInner();
-  html += '</div>';
-
-  html += '<div style="font-size:10px;color:var(--text-dim);margin-top:6px;border-top:1px solid var(--border);padding-top:6px;">picked: ' +
-    counts.entities + ' sites · ' + counts.connections + ' cons · ' + counts.spans + ' spans · ' + counts.articles + ' articles</div>';
-  html += '</div>';
-  return html;
-}
-
-function renderSummaryPickerList() {
-  const el = document.getElementById('summary-picker-list');
-  if (el) el.innerHTML = renderSummaryPickerListInner();
-}
-
-function renderSummaryPickerListInner() {
-  const q = (summaryFilter || '').toLowerCase();
-
-  if (summaryPickerTab === 'entities') {
-    const rows = Object.entries(graph.entities || {})
-      .filter(([id, e]) => {
-        if (!q) return true;
-        return id.toLowerCase().includes(q) ||
-          (e.canonical || '').toLowerCase().includes(q) ||
-          (e.kind || '').toLowerCase().includes(q) ||
-          (e.aliases || []).some((a) => (a || '').toLowerCase().includes(q));
-      })
-      .sort((a, b) => (a[1].canonical || '').localeCompare(b[1].canonical || ''));
-    if (!rows.length) return '<div style="color:var(--text-dim);padding:6px;">no entities match</div>';
-    return rows.map(([id, e]) => {
-      const label = escapeAttr(e.canonical || id) + ' <span style="color:var(--text-dim);">— ' + escapeAttr(e.kind || '') + '</span>';
-      return summaryPickRowHtml('entity', id, label);
-    }).join('');
-  }
-
-  if (summaryPickerTab === 'connections') {
-    const rows = (graph.connections || [])
-      .map((c, i) => ({ c, i }))
-      .filter(({ c }) => {
-        if (!q) return true;
-        const fn = graph.entities[c.from] && graph.entities[c.from].canonical || c.from;
-        const tn = graph.entities[c.to] && graph.entities[c.to].canonical || c.to;
-        return (fn + ' ' + tn + ' ' + (c.relation || '') + ' ' + (c.evidence || '')).toLowerCase().includes(q);
-      });
-    if (!rows.length) return '<div style="color:var(--text-dim);padding:6px;">no connections match</div>';
-    return rows.slice(0, 500).map(({ c, i }) => {
-      const fn = graph.entities[c.from] && graph.entities[c.from].canonical || c.from;
-      const tn = graph.entities[c.to] && graph.entities[c.to].canonical || c.to;
-      const label = escapeAttr(fn) + ' <span style="color:var(--accent);">' + escapeAttr(c.relation || '?') + '</span> ' + escapeAttr(tn);
-      return summaryPickRowHtml('connection', String(i), label);
-    }).join('');
-  }
-
-  if (summaryPickerTab === 'spans') {
-    const out = [];
-    Object.entries(graph.entities || {}).forEach(([id, e]) => {
-      const allSpans = e.spans || [];
-      if (!allSpans.length) return;
-      const matched = [];
-      allSpans.forEach((sp, realIdx) => {
-        if (q) {
-          const hay = (sp.text || '') + ' ' + (sp.sourceTitle || '') + ' ' + (e.canonical || '');
-          if (!hay.toLowerCase().includes(q)) return;
-        }
-        matched.push({ sp, realIdx });
-      });
-      if (!matched.length) return;
-      out.push('<div style="margin-top:6px;font-weight:600;color:var(--text-bright);">' + escapeAttr(e.canonical || id) + ' <span style="color:var(--text-dim);font-weight:normal;">(' + matched.length + ')</span></div>');
-      matched.forEach(({ sp, realIdx }) => {
-        const key = summarySpanKey(id, realIdx);
-        const label = '<span style="color:var(--text-dim);">' + escapeAttr((sp.sourceTitle || '?').slice(0, 40)) + ':</span> "' + escapeAttr((sp.text || '').slice(0, 140)) + '"';
-        out.push(summaryPickRowHtml('span', key, label));
-      });
-    });
-    if (!out.length) return '<div style="color:var(--text-dim);padding:6px;">no spans match</div>';
-    return out.join('');
-  }
-
-  if (summaryPickerTab === 'articles') {
-    const rows = (allItems || [])
-      .map((it, i) => ({ it, i }))
-      .filter(({ it }) => !q ||
-        (it.title || '').toLowerCase().includes(q) ||
-        (it.sourceName || '').toLowerCase().includes(q));
-    if (!rows.length) return '<div style="color:var(--text-dim);padding:6px;">no articles match</div>';
-    return rows.slice(0, 300).map(({ it }) => {
-      const articleId = summaryArticleKey(it);
-      const walkedOps = (it._walkLog || []).length;
-      const label = escapeAttr((it.title || '(untitled)').slice(0, 70)) +
-        ' <span style="color:var(--text-dim);">— ' + escapeAttr(it.sourceName || '') +
-        (walkedOps ? ', walked ' + walkedOps + ' ops' : ', not walked') + '</span>';
-      return summaryPickRowHtml('article', articleId, label);
-    }).join('');
-  }
-
-  return '';
-}
-
-function summaryPickRowHtml(kind, key, labelHtml) {
-  const set = summaryPicksSetFor(kind);
-  const checked = set.has(key);
-  const bg = checked ? 'background:var(--surface);' : '';
-  const safeKey = escapeAttr(key);
-  return '<div data-summary-row="' + kind + '" data-summary-key="' + safeKey + '" style="display:flex;align-items:flex-start;gap:6px;padding:3px 4px;border-radius:2px;cursor:pointer;' + bg + '" onclick="toggleSummaryPick(\'' + kind + '\', this.getAttribute(\'data-summary-key\'))">' +
-    '<input type="checkbox" ' + (checked ? 'checked' : '') + ' style="margin-top:2px;pointer-events:none;" />' +
-    '<div style="flex:1;min-width:0;word-break:break-word;">' + labelHtml + '</div></div>';
-}
-
-function setSummaryPickerTab(tab) {
-  summaryPickerTab = tab;
-  summaryFilter = '';
-  renderSummaryGeneratorView();
-}
-
 function toggleSummaryPick(kind, key) {
   const set = summaryPicksSetFor(kind);
   if (set.has(key)) set.delete(key); else set.add(key);
-  renderSummaryGeneratorView();
+  renderSummarizeMainIfActive();
+  updateSummarizeCompPill();
 }
 
 function clearSummaryPicks(kind) {
@@ -233,108 +60,507 @@ function clearSummaryPicks(kind) {
   else if (kind === 'connections') summaryPicks.connectionIdxs.clear();
   else if (kind === 'spans') summaryPicks.spanRefs.clear();
   else if (kind === 'articles') summaryPicks.articleIds.clear();
-  renderSummaryGeneratorView();
+  renderSummarizeMainIfActive();
+  updateSummarizeCompPill();
 }
 
-function summaryPicksSelectVisible() {
-  const set = summaryPicksSetFor(summaryPickerTabKindSingular());
-  document.querySelectorAll('#summary-picker-list [data-summary-row]').forEach((row) => {
-    set.add(row.getAttribute('data-summary-key'));
+// ---- doc-derived data ----
+
+// Spans whose source matches this article (by url, falling back to title).
+function summarySpansFromArticle(item) {
+  const out = [];
+  if (!item) return out;
+  const wantUrl = item.link || '';
+  const wantTitle = item.title || '';
+  Object.entries(graph.entities || {}).forEach(([id, e]) => {
+    if (!e) return;
+    (e.spans || []).forEach((sp, i) => {
+      if (!sp) return;
+      const u = sp.sourceUrl || '';
+      const t = sp.sourceTitle || '';
+      if ((wantUrl && u === wantUrl) || (!u && wantTitle && t === wantTitle)) {
+        out.push({ entityId: id, spanIdx: i, span: sp, entity: e });
+      }
+    });
   });
-  renderSummaryGeneratorView();
+  return out;
 }
 
-function summaryPicksInvertVisible() {
-  const set = summaryPicksSetFor(summaryPickerTabKindSingular());
-  document.querySelectorAll('#summary-picker-list [data-summary-row]').forEach((row) => {
-    const k = row.getAttribute('data-summary-key');
-    if (set.has(k)) set.delete(k); else set.add(k);
+// Connection indices whose evidence came from this article.
+function summaryConnectionsFromArticle(item) {
+  const out = [];
+  if (!item) return out;
+  const wantUrl = item.link || '';
+  const wantTitle = item.title || '';
+  (graph.connections || []).forEach((c, i) => {
+    if (!c) return;
+    const u = c.sourceUrl || '';
+    const t = c.sourceTitle || '';
+    if ((wantUrl && u === wantUrl) || (!u && wantTitle && t === wantTitle)) {
+      out.push({ idx: i, con: c });
+    }
   });
-  renderSummaryGeneratorView();
+  return out;
 }
 
-// ---- main panel ----
-function renderSummaryMainHtml() {
-  let html = '<div style="padding:16px;display:flex;flex-direction:column;height:calc(100vh - 180px);">';
+// Three-state checkbox: 'on' = article picked, 'half' = some sub-picks,
+// 'off' = nothing.
+function summarizeDocState(item) {
+  const articleId = summaryArticleKey(item);
+  if (summaryPicks.articleIds.has(articleId)) return 'on';
+  const ents = summaryEntitiesFromArticle(item);
+  for (const id of ents) if (summaryPicks.entityIds.has(id)) return 'half';
+  const spans = summarySpansFromArticle(item);
+  for (const s of spans) if (summaryPicks.spanRefs.has(summarySpanKey(s.entityId, s.spanIdx))) return 'half';
+  const cons = summaryConnectionsFromArticle(item);
+  for (const c of cons) if (summaryPicks.connectionIdxs.has(String(c.idx))) return 'half';
+  return 'off';
+}
 
-  html += '<div style="border:1px solid var(--border);border-radius:3px;padding:10px;margin-bottom:12px;background:var(--surface);">';
-  html += '<div class="lp-label" style="margin-top:0;">framing (optional)</div>';
-  html += '<textarea id="summary-framing" placeholder="e.g. focus on procurement, keep under 250 words" rows="2" oninput="summaryPicks.framing=this.value" style="width:100%;font-family:inherit;font-size:11px;padding:6px;background:var(--bg);border:1px solid var(--border);color:var(--text-bright);border-radius:3px;box-sizing:border-box;">' + escapeAttr(summaryPicks.framing || '') + '</textarea>';
+// Sources eligible for the chat: any ingested article. Walked docs are
+// tagged so the UI can offer drill-down; unwalked docs are pickable at
+// article-level only.
+function summarizeLpDocs() {
+  return (allItems || []).filter((it) => !!it);
+}
+
+// ---- view orchestration ----
+
+function switchToSummarizeView() {
+  const sect = document.getElementById('section-summarize');
+  if (sect && getComputedStyle(sect).display === 'none') {
+    sect.style.display = '';
+    const caret = document.getElementById('caret-summarize');
+    if (caret) caret.classList.remove('collapsed');
+  }
+  showView('summarize');
+  try { renderSummarize(); } catch (err) { console.error('renderSummarize failed', err); }
+}
+
+function renderSummarizeMainIfActive() {
+  if (currentView === 'summarize') renderSummarize();
+  updateSummarizeCompPill();
+}
+
+// Called by showView() for the 'summarize' view branch.
+function renderSummarizeMainView() { renderSummarize(); }
+
+// Back-compat aliases for any caller still using the old names.
+function renderSummaryGeneratorView() { renderSummarizeMainIfActive(); }
+function renderSummarizeLpList() { updateSummarizeCompPill(); }
+function renderSummaryPickerList() { /* picker tabs retired */ }
+
+function updateSummarizeCompPill() {
+  const pill = document.getElementById('summarize-comp-pill');
+  if (!pill) return;
+  const a = summaryPicks.articleIds.size;
+  const e = summaryPicks.entityIds.size;
+  const c = summaryPicks.connectionIdxs.size;
+  const s = summaryPicks.spanRefs.size;
+  if (!a && !e && !c && !s) { pill.textContent = ''; return; }
+  pill.textContent = a + 'd · ' + e + 's · ' + c + 'c · ' + s + 'sp';
+}
+
+// ---- the three-pane renderer ----
+
+function renderSummarize() {
+  const root = document.getElementById('view-summarize');
+  if (!root) return;
+
+  const detailOpen = !!summaryDetailDocId;
+  const sourcesWidth = detailOpen ? '260px' : '300px';
+  const detailCol = detailOpen
+    ? '<div style="width:340px;border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;background:var(--surface);">' + renderDetailPane() + '</div>'
+    : '';
+
+  let html = '<div style="display:flex;flex:1;overflow:hidden;height:100%;">';
+  html += '<div style="width:' + sourcesWidth + ';border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;">' + renderSourcesPane() + '</div>';
+  html += '<div style="flex:1;display:flex;flex-direction:column;overflow:hidden;">' + renderChatPane() + '</div>';
+  html += detailCol;
+  html += '</div>';
+  root.innerHTML = html;
+
+  // Auto-scroll chat to bottom after render.
+  const transcript = document.getElementById('summary-transcript');
+  if (transcript) transcript.scrollTop = transcript.scrollHeight;
+
+  updateSummarizeCompPill();
+}
+
+// ---- sources pane ----
+
+function renderSourcesPane() {
+  const docs = summarizeLpDocs();
+  const a = summaryPicks.articleIds.size;
+  const e = summaryPicks.entityIds.size;
+  const c = summaryPicks.connectionIdxs.size;
+  const s = summaryPicks.spanRefs.size;
+
+  let html = '<div style="padding:10px 10px 6px;border-bottom:1px solid var(--border);">';
+  html += '<div class="lp-label" style="margin-top:0;"><i class="ph ph-chats-circle"></i> sources</div>';
+  html += '<div style="font-size:10px;color:var(--text-dim);line-height:1.45;margin-bottom:6px;">pick the docs you want grounded in this chat. click a row to drill into its sites / spans / connections.</div>';
+  html += '<div style="font-size:10px;color:var(--text-dim);">' + a + ' docs · ' + e + ' sites · ' + c + ' cons · ' + s + ' spans picked</div>';
+  html += '<div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap;">';
+  html += '<button class="act-btn" style="font-size:10px;padding:3px 6px;" onclick="clearSummaryPicks(\'all\')"><i class="ph ph-eraser"></i> clear</button>';
+  html += '</div></div>';
+
+  html += '<div style="flex:1;overflow-y:auto;padding:4px 0;">';
+  if (!docs.length) {
+    html += '<div style="color:var(--text-dim);padding:12px;font-size:11px;">no ingested docs yet. ingest via URL, file, paste, or a feed first.</div>';
+  } else {
+    docs.forEach((item) => { html += renderSourceRow(item); });
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderSourceRow(item) {
+  const articleId = summaryArticleKey(item);
+  const safeId = escapeAttr(articleId);
+  const state = summarizeDocState(item);
+  const walked = ((item._walkLog || []).length) > 0;
+  const isOpen = summaryDetailDocId === articleId;
+
+  const box = state === 'on'
+    ? '<i class="ph-fill ph-check-square" style="color:var(--accent);"></i>'
+    : state === 'half'
+      ? '<i class="ph-fill ph-minus-square" style="color:var(--accent);opacity:0.7;"></i>'
+      : '<i class="ph ph-square" style="color:var(--text-dim);"></i>';
+  const badge = walked
+    ? '<span style="font-size:9px;color:var(--accent);background:rgba(120,200,140,0.12);padding:1px 4px;border-radius:2px;text-transform:uppercase;letter-spacing:0.3px;">walked</span>'
+    : '<span style="font-size:9px;color:var(--text-dim);background:rgba(160,160,160,0.12);padding:1px 4px;border-radius:2px;text-transform:uppercase;letter-spacing:0.3px;">ingested</span>';
+
+  const rowBg = isOpen ? 'background:var(--surface);' : '';
+  let html = '<div style="border-bottom:1px solid var(--border);padding:6px 10px;display:flex;align-items:flex-start;gap:6px;font-size:11px;cursor:pointer;' + rowBg + '" onclick="openSummaryDetail(\'' + safeId + '\')">';
+  html += '<span style="padding-top:1px;cursor:pointer;" onclick="event.stopPropagation();toggleSummarizeArticle(\'' + safeId + '\')">' + box + '</span>';
+  html += '<div style="flex:1;min-width:0;">';
+  html += '<div style="color:var(--text-bright);word-break:break-word;line-height:1.3;">' + escapeAttr((item.title || '(untitled)').slice(0, 90)) + '</div>';
+  html += '<div style="display:flex;gap:6px;align-items:center;margin-top:3px;flex-wrap:wrap;">' + badge;
+  html += '<span style="font-size:9px;color:var(--text-dim);">' + escapeAttr(item.sourceName || '') + '</span>';
+  html += '</div>';
+  html += '</div></div>';
+  return html;
+}
+
+function toggleSummarizeArticle(articleId) {
+  const item = (allItems || []).find((it) => summaryArticleKey(it) === articleId);
+  if (!item) return;
+  const state = summarizeDocState(item);
+  if (state === 'on') {
+    summaryPicks.articleIds.delete(articleId);
+  } else if (state === 'half') {
+    // half = sub-picks present. Clear them, then promote to whole-article pick.
+    summaryEntitiesFromArticle(item).forEach((id) => summaryPicks.entityIds.delete(id));
+    summarySpansFromArticle(item).forEach((s) => summaryPicks.spanRefs.delete(summarySpanKey(s.entityId, s.spanIdx)));
+    summaryConnectionsFromArticle(item).forEach((c) => summaryPicks.connectionIdxs.delete(String(c.idx)));
+    summaryPicks.articleIds.add(articleId);
+  } else {
+    summaryPicks.articleIds.add(articleId);
+  }
+  renderSummarizeMainIfActive();
+}
+
+// ---- detail pane (right column) ----
+
+function openSummaryDetail(articleId) {
+  summaryDetailDocId = articleId;
+  renderSummarizeMainIfActive();
+}
+
+function closeSummaryDetail() {
+  summaryDetailDocId = null;
+  renderSummarizeMainIfActive();
+}
+
+function renderDetailPane() {
+  const item = (allItems || []).find((it) => summaryArticleKey(it) === summaryDetailDocId);
+  if (!item) {
+    return '<div style="padding:14px;font-size:11px;color:var(--text-dim);">source not found.<div style="margin-top:8px;"><button class="act-btn" style="font-size:10px;" onclick="closeSummaryDetail()">close</button></div></div>';
+  }
+  const walked = ((item._walkLog || []).length) > 0;
+  const articleId = summaryArticleKey(item);
+  const state = summarizeDocState(item);
+  const ents = summaryEntitiesFromArticle(item);
+  const spans = summarySpansFromArticle(item);
+  const cons = summaryConnectionsFromArticle(item);
+
+  let html = '<div style="padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:8px;">';
+  html += '<div style="flex:1;min-width:0;">';
+  html += '<div style="font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">source</div>';
+  html += '<div style="color:var(--text-bright);font-size:12px;line-height:1.3;word-break:break-word;">' + escapeAttr(item.title || '(untitled)') + '</div>';
+  html += '<div style="font-size:10px;color:var(--text-dim);margin-top:3px;">' + escapeAttr(item.sourceName || '') + (item.link ? ' · <a href="' + escapeAttr(item.link) + '" target="_blank" style="color:var(--text-dim);">link</a>' : '') + '</div>';
+  html += '</div>';
+  html += '<button class="act-btn" style="font-size:10px;padding:3px 6px;" onclick="closeSummaryDetail()" title="close"><i class="ph ph-x"></i></button>';
+  html += '</div>';
+
+  html += '<div style="padding:10px 12px;border-bottom:1px solid var(--border);">';
+  const safeId = escapeAttr(articleId);
+  const wholeBtnStyle = state === 'on'
+    ? 'background:var(--accent);color:#1a1a1a;border-color:var(--accent);'
+    : '';
+  const wholeLabel = state === 'on' ? '✓ whole article picked' : (state === 'half' ? 'pick whole article (overrides sub-picks)' : 'pick whole article');
+  html += '<button class="act-btn" style="width:100%;font-size:10px;padding:4px 6px;' + wholeBtnStyle + '" onclick="toggleSummarizeArticle(\'' + safeId + '\')">' + wholeLabel + '</button>';
+  html += '</div>';
+
+  html += '<div style="flex:1;overflow-y:auto;padding:8px 12px;">';
+  if (!walked) {
+    html += '<div style="font-size:10px;color:var(--text-dim);line-height:1.5;">this doc has not been walked yet. drill-down picks for sites, spans, and connections light up once the walk runs over it. you can still include the whole article above.</div>';
+  } else {
+    html += renderSourceDetailBody(item, ents, spans, cons);
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderSourceDetailBody(item, ents, spans, cons) {
+  let html = '';
+
+  if (ents.size) {
+    html += '<div style="font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;margin:4px 0 4px;">sites (' + ents.size + ')</div>';
+    [...ents].forEach((id) => {
+      const e = graph.entities[id];
+      if (!e) return;
+      const checked = summaryPicks.entityIds.has(id);
+      const box = checked
+        ? '<i class="ph-fill ph-check-square" style="color:var(--accent);"></i>'
+        : '<i class="ph ph-square" style="color:var(--text-dim);"></i>';
+      html += '<div style="display:flex;align-items:flex-start;gap:6px;padding:3px 0;font-size:10px;cursor:pointer;" onclick="toggleSummaryPick(\'entity\', \'' + escapeAttr(id) + '\')">';
+      html += '<span>' + box + '</span>';
+      html += '<div style="flex:1;min-width:0;"><span style="color:var(--text-bright);">' + escapeAttr(e.canonical || id) + '</span> <span style="color:var(--text-dim);">— ' + escapeAttr(e.kind || '') + '</span></div>';
+      html += '</div>';
+    });
+  }
+
+  if (spans.length) {
+    html += '<div style="font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;margin:10px 0 4px;">spans (' + spans.length + ')</div>';
+    spans.forEach(({ entityId, spanIdx, span, entity }) => {
+      const key = summarySpanKey(entityId, spanIdx);
+      const checked = summaryPicks.spanRefs.has(key);
+      const box = checked
+        ? '<i class="ph-fill ph-check-square" style="color:var(--accent);"></i>'
+        : '<i class="ph ph-square" style="color:var(--text-dim);"></i>';
+      html += '<div style="display:flex;align-items:flex-start;gap:6px;padding:3px 0;font-size:10px;cursor:pointer;" onclick="toggleSummaryPick(\'span\', \'' + escapeAttr(key) + '\')">';
+      html += '<span>' + box + '</span>';
+      html += '<div style="flex:1;min-width:0;color:var(--text);word-break:break-word;line-height:1.4;"><span style="color:var(--text-dim);">' + escapeAttr((entity.canonical || entityId).slice(0, 30)) + ':</span> "' + escapeAttr((span.text || '').slice(0, 140)) + '"</div>';
+      html += '</div>';
+    });
+  }
+
+  if (cons.length) {
+    html += '<div style="font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;margin:10px 0 4px;">connections (' + cons.length + ')</div>';
+    cons.forEach(({ idx, con }) => {
+      const key = String(idx);
+      const checked = summaryPicks.connectionIdxs.has(key);
+      const box = checked
+        ? '<i class="ph-fill ph-check-square" style="color:var(--accent);"></i>'
+        : '<i class="ph ph-square" style="color:var(--text-dim);"></i>';
+      const fn = (graph.entities[con.from] && graph.entities[con.from].canonical) || con.from;
+      const tn = (graph.entities[con.to] && graph.entities[con.to].canonical) || con.to;
+      html += '<div style="display:flex;align-items:flex-start;gap:6px;padding:3px 0;font-size:10px;cursor:pointer;" onclick="toggleSummaryPick(\'connection\', \'' + escapeAttr(key) + '\')">';
+      html += '<span>' + box + '</span>';
+      html += '<div style="flex:1;min-width:0;color:var(--text);line-height:1.4;"><span style="color:var(--text-bright);">' + escapeAttr(fn) + '</span> <span style="color:var(--accent);">' + escapeAttr(con.relation || '?') + '</span> <span style="color:var(--text-bright);">' + escapeAttr(tn) + '</span></div>';
+      html += '</div>';
+    });
+  }
+
+  if (!ents.size && !spans.length && !cons.length) {
+    html += '<div style="color:var(--text-dim);font-size:10px;padding:6px 0;">no sites, spans, or connections recorded for this doc.</div>';
+  }
+  return html;
+}
+
+// ---- chat pane (middle) ----
+
+function renderChatPane() {
+  const a = summaryPicks.articleIds.size;
+  const e = summaryPicks.entityIds.size;
+  const c = summaryPicks.connectionIdxs.size;
+  const s = summaryPicks.spanRefs.size;
+  const total = a + e + c + s;
 
   const togChip = (key, label) => {
     const on = summaryPicks[key] !== false;
     const style = on ? 'background:var(--accent);color:#1a1a1a;border-color:var(--accent);' : '';
-    return '<button class="act-btn" style="font-size:10px;padding:3px 6px;' + style + '" onclick="summaryPicks.' + key + '=!(summaryPicks.' + key + '!==false);renderSummaryGeneratorView()">' + label + ': ' + (on ? 'on' : 'off') + '</button>';
+    return '<button class="act-btn" style="font-size:10px;padding:3px 6px;' + style + '" onclick="summaryPicks.' + key + '=!(summaryPicks.' + key + '!==false);renderSummarize()">' + label + ': ' + (on ? 'on' : 'off') + '</button>';
   };
 
-  html += '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center;">';
+  let html = '<div style="padding:10px 14px 6px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap;">';
+  html += '<div style="font-size:13px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;"><i class="ph ph-chats-circle"></i> chat with docs</div>';
+  html += '<div style="font-size:10px;color:var(--text-dim);">' + total + ' picks · ' + a + 'd · ' + e + 's · ' + c + 'c · ' + s + 'sp</div>';
+  html += '<div style="flex:1;"></div>';
   html += togChip('includeSources', 'sources');
   html += togChip('includeNotes', 'editor notes');
   html += togChip('includeHypotheses', 'hypotheses');
-  html += '<div style="flex:1;"></div>';
-  html += '<button class="act-btn" style="font-size:11px;padding:4px 12px;background:var(--accent);color:#1a1a1a;border-color:var(--accent);font-weight:600;" onclick="generateSummaryFromPicks()"><i class="ph ph-play"></i> generate</button>';
+  html += '<button class="act-btn" style="font-size:10px;padding:3px 6px;" onclick="summaryChat=[];renderSummarize()" title="clear conversation"><i class="ph ph-eraser"></i> clear chat</button>';
+  html += '</div>';
+
+  html += '<div id="summary-transcript" style="flex:1;overflow-y:auto;padding:14px 18px;">';
+  html += renderChatTranscript(total);
+  html += '</div>';
+
+  // Composer + framing + one-shot digest.
+  html += '<div style="border-top:1px solid var(--border);padding:8px 12px;background:var(--surface);">';
+  html += '<details style="margin-bottom:6px;"><summary style="font-size:10px;color:var(--text-dim);cursor:pointer;">framing (optional)</summary>';
+  html += '<textarea id="summary-framing-input" placeholder="extra instructions just for this conversation. e.g. focus on procurement, keep under 250 words" rows="2" oninput="summaryPicks.framing=this.value" style="width:100%;margin-top:6px;font-family:inherit;font-size:11px;padding:6px;background:var(--bg);border:1px solid var(--border);color:var(--text-bright);border-radius:3px;box-sizing:border-box;">' + escapeAttr(summaryPicks.framing || '') + '</textarea>';
+  html += '</details>';
+
+  const disabled = total === 0 ? 'opacity:0.5;cursor:not-allowed;' : '';
+  const disabledAttr = total === 0 ? ' disabled' : '';
+  html += '<div style="display:flex;gap:6px;align-items:flex-start;">';
+  html += '<textarea id="summary-input" placeholder="' + (total === 0 ? 'pick a source first…' : 'ask a question grounded in the picked sources…') + '" rows="2" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();const v=this.value;this.value=\'\';summaryAsk(v);}" style="flex:1;font-family:inherit;font-size:12px;padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text-bright);border-radius:3px;resize:vertical;' + disabled + '"' + disabledAttr + '></textarea>';
+  html += '<div style="display:flex;flex-direction:column;gap:4px;">';
+  html += '<button class="act-btn" style="font-size:11px;padding:6px 12px;background:var(--accent);color:#1a1a1a;border-color:var(--accent);font-weight:600;' + disabled + '"' + disabledAttr + ' onclick="const i=document.getElementById(\'summary-input\');const v=i.value;i.value=\'\';summaryAsk(v);"><i class="ph ph-paper-plane-tilt"></i> ask</button>';
+  html += '<button class="act-btn" style="font-size:10px;padding:4px 12px;' + disabled + '"' + disabledAttr + ' onclick="generateSummaryFromPicks()" title="one-shot digest from the picked sources"><i class="ph ph-file-text"></i> digest</button>';
+  html += '</div>';
   html += '</div>';
   html += '</div>';
 
-  html += '<div id="summary-output-panel" style="flex:1;overflow-y:auto;border:1px solid var(--border);border-radius:3px;padding:14px;background:var(--bg);position:relative;">';
-  html += renderSummaryOutputHtml();
-  html += '</div>';
-
-  html += '</div>';
   return html;
 }
 
-function renderSummaryOutputHtml() {
-  if (!summaryOutput) {
-    return '<div style="color:var(--text-dim);font-size:11px;">no summary yet. pick inputs in the sidebar, optionally add framing, then press generate.</div>';
+function renderChatTranscript(totalPicks) {
+  if (!summaryChat.length) {
+    if (totalPicks === 0) {
+      return '<div style="color:var(--text-dim);font-size:11px;line-height:1.6;">pick one or more sources on the left, then ask a question here or click <em>digest</em> for a one-shot summary.</div>';
+    }
+    return '<div style="color:var(--text-dim);font-size:11px;line-height:1.6;">ready when you are. ask anything grounded in the ' + totalPicks + ' picked item(s).</div>';
   }
-  if (summaryOutput.pending) {
-    return '<div style="color:var(--text-dim);font-size:11px;">…</div>';
-  }
-  if (summaryOutput.error) {
-    return '<div style="color:#c06060;font-size:11px;">✗ ' + escapeAttr(summaryOutput.error) + '</div>';
-  }
-  let html = '<div style="font-size:12px;line-height:1.6;color:var(--text);">' + mdToHtml(summaryOutput.md, { linkNodes: true }) + '</div>';
-  const u = summaryOutput.usage || {};
-  const c = summaryOutput.composition || {};
-  html += '<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border);font-size:10px;color:var(--text-dim);display:flex;gap:10px;flex-wrap:wrap;align-items:center;">';
-  html += '<span>in ' + (u.input_tokens != null ? u.input_tokens : '?') + ' / out ' + (u.output_tokens != null ? u.output_tokens : '?') + ' tok · ' + (summaryOutput.ms || '?') + 'ms · ' + escapeAttr(summaryOutput.model || '?') + '</span>';
-  html += '<span>composition: ' + (c.entities || 0) + ' sites · ' + (c.connections || 0) + ' cons · ' + (c.spans || 0) + ' spans · ' + (c.sources || 0) + ' sources</span>';
-  html += '<div style="flex:1;"></div>';
-  html += '<button class="act-btn" style="font-size:10px;padding:3px 8px;" onclick="copySummaryMarkdown()"><i class="ph ph-copy"></i> copy md</button>';
-  html += '<button class="act-btn" style="font-size:10px;padding:3px 8px;" onclick="uploadSummaryToArchive()" title="export as interactive HTML and upload to archive.org"><i class="ph ph-upload-simple"></i> archive.org</button>';
-  html += '<button class="act-btn" style="font-size:10px;padding:3px 8px;" onclick="summaryOutput=null;renderSummaryGeneratorView()"><i class="ph ph-trash"></i> clear</button>';
-  html += '</div>';
+  let html = '';
+  summaryChat.forEach((m) => {
+    if (m.role === 'user') {
+      html += '<div style="margin-bottom:14px;text-align:right;"><div style="display:inline-block;max-width:80%;background:var(--surface);padding:8px 12px;border-radius:8px;font-size:12px;text-align:left;line-height:1.5;white-space:pre-wrap;">' + escapeAttr(m.content) + '</div></div>';
+    } else {
+      const body = m.pending
+        ? '<div style="color:var(--text-dim);font-size:12px;">…</div>'
+        : (m.error
+            ? '<div style="color:#c06060;font-size:12px;">✗ ' + escapeAttr(m.content) + '</div>'
+            : '<div style="font-size:12px;line-height:1.6;color:var(--text);">' + mdToHtml(m.content, { linkNodes: true }) + '</div>');
+      html += '<div style="margin-bottom:14px;"><div style="max-width:90%;">' + body;
+      if (m.composition && !m.pending && !m.error) {
+        const cmp = m.composition;
+        const u = m.usage || {};
+        html += '<div style="margin-top:8px;padding-top:6px;border-top:1px dashed var(--border);font-size:10px;color:var(--text-dim);display:flex;gap:10px;flex-wrap:wrap;align-items:center;">';
+        html += '<span>' + (cmp.entities || 0) + ' sites · ' + (cmp.connections || 0) + ' cons · ' + (cmp.spans || 0) + ' spans · ' + (cmp.sources || 0) + ' sources</span>';
+        if (u.input_tokens != null) html += '<span>in ' + u.input_tokens + ' / out ' + (u.output_tokens || 0) + ' tok</span>';
+        html += '<div style="flex:1;"></div>';
+        html += '<button class="act-btn" style="font-size:9px;padding:2px 6px;" onclick="copyChatTurnMarkdown(' + m.ts + ')"><i class="ph ph-copy"></i> copy</button>';
+        html += '<button class="act-btn" style="font-size:9px;padding:2px 6px;" onclick="uploadChatTurnToArchive(' + m.ts + ')" title="export as interactive HTML and upload to archive.org"><i class="ph ph-upload-simple"></i> archive.org</button>';
+        html += '</div>';
+      }
+      html += '</div></div>';
+    }
+  });
   return html;
 }
 
-// ---- generation ----
-async function generateSummaryFromPicks() {
-  const apiKey = getApiKey();
-  if (!apiKey) { await showAlert('Set your Anthropic API key first'); return; }
+function copyChatTurnMarkdown(ts) {
+  const turn = summaryChat.find((m) => m.ts === ts);
+  if (!turn || !turn.content) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(turn.content).catch(() => {});
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = turn.content;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (_) {}
+    document.body.removeChild(ta);
+  }
+}
 
+// ---- ask / generate (chat-style) ----
+
+// Build the focused-entity set from the current picks.
+function summaryFocusedFromPicks() {
   const focused = new Set([...summaryPicks.entityIds]);
-
   summaryPicks.connectionIdxs.forEach((idxStr) => {
     const c = graph.connections[parseInt(idxStr, 10)];
     if (!c) return;
     if (graph.entities[c.from]) focused.add(c.from);
     if (graph.entities[c.to]) focused.add(c.to);
   });
-
   summaryPicks.articleIds.forEach((aid) => {
     const item = (allItems || []).find((it) => summaryArticleKey(it) === aid);
     if (!item) return;
     summaryEntitiesFromArticle(item).forEach((id) => focused.add(id));
   });
-
   summaryPicks.spanRefs.forEach((k) => {
     const { entityId } = summaryParseSpanKey(k);
     if (graph.entities[entityId]) focused.add(entityId);
   });
+  return focused;
+}
 
+async function summaryAsk(question) {
+  question = (question || '').trim();
+  if (!question) return;
+  const apiKey = getApiKey();
+  if (!apiKey) { await showAlert('Set your Anthropic API key first'); return; }
+
+  const focused = summaryFocusedFromPicks();
   if (!focused.size) {
-    await showAlert('Pick at least one site, connection, span, or article first.');
+    await showAlert('Pick at least one source, site, span, or connection first.');
+    return;
+  }
+
+  // Push user turn + pending assistant turn.
+  const userTs = Date.now();
+  summaryChat.push({ role: 'user', content: question, ts: userTs });
+  const assistantTs = userTs + 1;
+  const pending = { role: 'assistant', content: '…', ts: assistantTs, pending: true };
+  summaryChat.push(pending);
+  renderSummarize();
+
+  // Build context (focused subgraph + voices + sources).
+  const built = buildSummaryContext(focused);
+
+  // Conversation history (last few user+assistant turns, excluding the pending one).
+  const recent = summaryChat.slice(0, -1).slice(-8);
+  const convo = recent
+    .filter((t) => t.content && !t.pending && !t.error)
+    .map((t) => (t.role === 'user' ? 'USER: ' : 'ASSISTANT: ') + t.content)
+    .join('\n\n');
+
+  const framing = (summaryPicks.framing || '').trim();
+  const userMsg = [
+    '=== FOCUSED SUBGRAPH (editor-curated picks) ===',
+    built.context,
+    '',
+    '=== CONVERSATION ===',
+    convo,
+  ].filter(Boolean).join('\n');
+
+  const baseSystem = getPrompt();
+  const systemPrompt = framing
+    ? baseSystem + '\n\n---\nEDITORIAL OVERRIDE FOR THIS CONVERSATION\n' + framing + '\n---'
+    : baseSystem;
+
+  try {
+    const r = await callClaudeRaw(systemPrompt, userMsg, 1200);
+    pending.content = r.text;
+    pending.pending = false;
+    pending.usage = r.usage;
+    pending.ms = r.ms;
+    pending.model = r.model;
+    pending.composition = built.composition;
+  } catch (e) {
+    pending.content = e.message || String(e);
+    pending.pending = false;
+    pending.error = true;
+  }
+  renderSummarize();
+}
+
+// One-shot standardized digest from the current picks — appended to the
+// chat as an assistant turn. Uses the queue so it's cancellable and
+// visible on the process tab.
+async function generateSummaryFromPicks() {
+  const apiKey = getApiKey();
+  if (!apiKey) { await showAlert('Set your Anthropic API key first'); return; }
+
+  const focused = summaryFocusedFromPicks();
+  if (!focused.size) {
+    await showAlert('Pick at least one source, site, span, or connection first.');
     return;
   }
 
@@ -346,48 +572,52 @@ async function generateSummaryFromPicks() {
     ? baseSystem + '\n\n---\nEDITORIAL OVERRIDE FOR THIS DIGEST\nThe instructions below come from the editor for this single summary only. They take priority over the defaults wherever they conflict.\n\n' + framing + '\n---'
     : baseSystem;
 
-  summaryOutput = { pending: true, ts: Date.now() };
-  renderSummaryGeneratorView();
+  const userTs = Date.now();
+  const sizeLabel = focused.size + ' site' + (focused.size === 1 ? '' : 's');
+  summaryChat.push({ role: 'user', content: 'Generate digest from picked sources (' + sizeLabel + ').', ts: userTs });
+  const assistantTs = userTs + 1;
+  const pending = { role: 'assistant', content: '…', ts: assistantTs, pending: true, composition: built.composition };
+  summaryChat.push(pending);
+  renderSummarize();
 
-  // Enqueue as a queue job so it's cancellable + visible on the process tab.
   enqueueJob('summary', {
-    key: 'summary-' + Date.now(),
-    title: 'summary · ' + (focused.size) + ' sites',
+    key: 'summary-' + assistantTs,
+    title: 'digest · ' + sizeLabel,
     systemPrompt,
     framingHeader,
     composition: built.composition,
+    assistantTs,
   });
 }
 
 async function runSummaryJob(job, signal) {
   const t = job.target;
+  const turn = summaryChat.find((m) => m.ts === t.assistantTs);
   try {
     const r = await callClaudeRaw(t.systemPrompt, t.framingHeader, 2000, null, { signal });
-    summaryOutput = {
-      md: r.text,
-      ts: Date.now(),
-      usage: r.usage,
-      ms: r.ms,
-      model: r.model,
-      composition: t.composition,
-    };
-  } catch (e) {
-    if (e && e.name === 'AbortError') {
-      summaryOutput = { error: 'cancelled', ts: Date.now() };
-      renderSummaryGeneratorView();
-      throw e;
+    if (turn) {
+      turn.content = r.text;
+      turn.pending = false;
+      turn.usage = r.usage;
+      turn.ms = r.ms;
+      turn.model = r.model;
+      turn.composition = t.composition;
     }
-    summaryOutput = { error: e.message, ts: Date.now() };
-    renderSummaryGeneratorView();
+  } catch (e) {
+    if (turn) {
+      turn.content = (e && e.name === 'AbortError') ? 'cancelled' : (e.message || String(e));
+      turn.pending = false;
+      turn.error = true;
+    }
+    if (e && e.name === 'AbortError') { renderSummarizeMainIfActive(); throw e; }
+    renderSummarizeMainIfActive();
     throw e;
   }
-  renderSummaryGeneratorView();
+  renderSummarizeMainIfActive();
 }
 
-// Build the focused-subgraph context block from explicit picks. Mirrors the
-// section layout of buildLibrarianDigestContext() (SITES / CONNECTIONS /
-// SOURCES) so the system prompt sees a familiar shape, but iteration is
-// driven by explicit picks rather than scope→seed→neighbor expansion.
+// ---- focused-subgraph context builder (unchanged shape) ----
+
 function buildSummaryContext(focused) {
   const includeSources = summaryPicks.includeSources !== false;
   const includeNotes = summaryPicks.includeNotes !== false;
@@ -443,7 +673,6 @@ function buildSummaryContext(focused) {
     }
   }
 
-  // Connections: explicit picks ∪ any whose both endpoints landed in focused
   const conIdxSet = new Set();
   summaryPicks.connectionIdxs.forEach((s) => conIdxSet.add(parseInt(s, 10)));
   (graph.connections || []).forEach((c, i) => {
@@ -459,7 +688,6 @@ function buildSummaryContext(focused) {
     });
   }
 
-  // Sources: collected from focused-entity spans + connection sources
   const srcMap = new Map();
   const addSrc = (title, url) => {
     if (!title && !url) return;
@@ -472,6 +700,11 @@ function buildSummaryContext(focused) {
     (e.spans || []).forEach((sp) => addSrc(sp.sourceTitle, sp.sourceUrl));
   }
   cons.forEach((c) => addSrc(c.sourceTitle, c.sourceUrl));
+  // Whole-article picks contribute their own source line.
+  summaryPicks.articleIds.forEach((aid) => {
+    const item = (allItems || []).find((it) => summaryArticleKey(it) === aid);
+    if (item) addSrc(item.title, item.link);
+  });
   const sources = [...srcMap.values()];
   composition.sources = sources.length;
   if (includeSources && sources.length) {
@@ -480,8 +713,24 @@ function buildSummaryContext(focused) {
     sources.slice(0, 12).forEach((s) => lines.push('  - ' + (s.title || '(untitled)') + (s.url ? ' — ' + s.url : '')));
   }
 
-  // Voices block — group voices by voiceRelation so the digest LLM can
-  // tell journalist reporting apart from interested-party assertion.
+  // Whole-article body picks: include a slice of the article body.
+  if (summaryPicks.articleIds.size) {
+    const bodyLines = [];
+    summaryPicks.articleIds.forEach((aid) => {
+      const item = (allItems || []).find((it) => summaryArticleKey(it) === aid);
+      if (!item) return;
+      const body = (item.body || item.snippet || '').trim();
+      if (!body) return;
+      bodyLines.push('=== ARTICLE: ' + (item.title || '(untitled)') + ' ===');
+      bodyLines.push(body.slice(0, 4000));
+    });
+    if (bodyLines.length) {
+      lines.push('');
+      lines.push('PICKED ARTICLE BODIES:');
+      lines.push(bodyLines.join('\n\n'));
+    }
+  }
+
   const byRel = { attested_by: [], asserted_by: [], documented_in: [], characterized_by: [] };
   for (const id of focused) {
     const e = graph.entities[id];
@@ -495,7 +744,7 @@ function buildSummaryContext(focused) {
   const anyVoice = Object.values(byRel).some(arr => arr.length);
   if (anyVoice) {
     lines.push('');
-    lines.push('VOICES (grouped by relation — attribution must travel into the digest):');
+    lines.push('VOICES (grouped by relation — attribution must travel into the answer):');
     Object.entries(byRel).forEach(([rel, arr]) => {
       if (!arr.length) return;
       lines.push('  ' + rel + ': ' + arr.map(v => v.canonical).join(', '));
@@ -531,301 +780,4 @@ function buildSummaryFramingHeader(built) {
     '=== FOCUSED SUBGRAPH ===',
     built.context,
   ].join('\n');
-}
-
-function copySummaryMarkdown() {
-  if (!summaryOutput || !summaryOutput.md) return;
-  const text = summaryOutput.md;
-  const done = () => {
-    const panel = document.getElementById('summary-output-panel');
-    if (!panel) return;
-    const note = document.createElement('div');
-    note.textContent = '✓ copied';
-    note.style.cssText = 'position:absolute;background:var(--accent);color:#1a1a1a;padding:4px 10px;font-size:11px;border-radius:3px;top:14px;right:14px;';
-    panel.appendChild(note);
-    setTimeout(() => note.remove(), 1200);
-  };
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(done).catch(() => {});
-  } else {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    try { document.execCommand('copy'); done(); } catch (_) {}
-    document.body.removeChild(ta);
-  }
-}
-
-// =====================================================================
-// Top-line "summarize" surface: document-centric drill-down picker in
-// the left panel + standalone view-summarize for framing + output.
-// Reuses summaryPicks, buildSummaryContext, generateSummaryFromPicks.
-// =====================================================================
-
-// Spans whose source matches this article (by url, falling back to title).
-function summarySpansFromArticle(item) {
-  const out = [];
-  if (!item) return out;
-  const wantUrl = item.link || '';
-  const wantTitle = item.title || '';
-  Object.entries(graph.entities || {}).forEach(([id, e]) => {
-    if (!e) return;
-    (e.spans || []).forEach((sp, i) => {
-      if (!sp) return;
-      const u = sp.sourceUrl || '';
-      const t = sp.sourceTitle || '';
-      if ((wantUrl && u === wantUrl) || (!u && wantTitle && t === wantTitle)) {
-        out.push({ entityId: id, spanIdx: i, span: sp, entity: e });
-      }
-    });
-  });
-  return out;
-}
-
-// Connection indices whose evidence came from this article.
-function summaryConnectionsFromArticle(item) {
-  const out = [];
-  if (!item) return out;
-  const wantUrl = item.link || '';
-  const wantTitle = item.title || '';
-  (graph.connections || []).forEach((c, i) => {
-    if (!c) return;
-    const u = c.sourceUrl || '';
-    const t = c.sourceTitle || '';
-    if ((wantUrl && u === wantUrl) || (!u && wantTitle && t === wantTitle)) {
-      out.push({ idx: i, con: c });
-    }
-  });
-  return out;
-}
-
-// Three-state checkbox: 'on' = article picked, 'half' = some sub-picks,
-// 'off' = nothing. Drives the doc-row checkbox and the toggle action.
-function summarizeDocState(item) {
-  const articleId = summaryArticleKey(item);
-  if (summaryPicks.articleIds.has(articleId)) return 'on';
-  const ents = summaryEntitiesFromArticle(item);
-  for (const id of ents) if (summaryPicks.entityIds.has(id)) return 'half';
-  const spans = summarySpansFromArticle(item);
-  for (const s of spans) if (summaryPicks.spanRefs.has(summarySpanKey(s.entityId, s.spanIdx))) return 'half';
-  const cons = summaryConnectionsFromArticle(item);
-  for (const c of cons) if (summaryPicks.connectionIdxs.has(String(c.idx))) return 'half';
-  return 'off';
-}
-
-// Articles eligible for the lp picker: anything walked, plus anything the
-// user has ingested. The walked check is heuristic — _walkLog is the
-// canonical marker of "this doc contributed to the graph".
-function summarizeLpDocs() {
-  return (allItems || []).filter((it) => ((it && it._walkLog) || []).length > 0);
-}
-
-function renderSummarizeLpList() {
-  const el = document.getElementById('summarize-lp-list');
-  if (!el) return;
-  const docs = summarizeLpDocs();
-  if (!docs.length) {
-    el.innerHTML = '<div style="color:var(--text-dim);padding:6px;font-size:10px;">no walked docs yet. ingest something and run the walk.</div>';
-    updateSummarizeCompPill();
-    return;
-  }
-  let html = '';
-  docs.forEach((item) => { html += renderSummarizeLpDocRow(item); });
-  el.innerHTML = html;
-  updateSummarizeCompPill();
-}
-
-function renderSummarizeLpDocRow(item) {
-  const articleId = summaryArticleKey(item);
-  const safeId = escapeAttr(articleId);
-  const state = summarizeDocState(item);
-  const expanded = summaryPicks.lpExpanded.has(articleId);
-  const ents = summaryEntitiesFromArticle(item);
-  const spans = summarySpansFromArticle(item);
-  const cons = summaryConnectionsFromArticle(item);
-  const opCount = (item._walkLog || []).length;
-
-  const box = state === 'on'
-    ? '<i class="ph-fill ph-check-square" style="color:var(--accent);"></i>'
-    : state === 'half'
-      ? '<i class="ph-fill ph-minus-square" style="color:var(--accent);opacity:0.6;"></i>'
-      : '<i class="ph ph-square" style="color:var(--text-dim);"></i>';
-  const caret = expanded ? 'ph-caret-down' : 'ph-caret-right';
-
-  let html = '<div style="border-bottom:1px solid var(--border);padding:3px 0;">';
-  html += '<div style="display:flex;align-items:flex-start;gap:4px;font-size:11px;">';
-  html += '<span style="cursor:pointer;padding-top:2px;" onclick="toggleSummarizeLpExpand(\'' + safeId + '\')"><i class="ph ' + caret + '" style="font-size:10px;color:var(--text-dim);"></i></span>';
-  html += '<span style="cursor:pointer;padding-top:1px;" onclick="toggleSummarizeLpDoc(\'' + safeId + '\')">' + box + '</span>';
-  html += '<div style="flex:1;min-width:0;cursor:pointer;" onclick="toggleSummarizeLpExpand(\'' + safeId + '\')">';
-  html += '<div style="color:var(--text-bright);word-break:break-word;">' + escapeAttr((item.title || '(untitled)').slice(0, 80)) + '</div>';
-  html += '<div style="color:var(--text-dim);font-size:9px;">' + escapeAttr(item.sourceName || '') + ' · ' + ents.size + ' sites · ' + spans.length + ' spans · ' + cons.length + ' cons · ' + opCount + ' ops</div>';
-  html += '</div></div>';
-
-  if (expanded) {
-    html += '<div style="padding:4px 0 4px 20px;">';
-    html += renderSummarizeLpDrilldown(item, ents, spans, cons);
-    html += '</div>';
-  }
-  html += '</div>';
-  return html;
-}
-
-function renderSummarizeLpDrilldown(item, ents, spans, cons) {
-  let html = '';
-
-  // Entities sub-section
-  if (ents.size) {
-    html += '<div style="font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;margin:4px 0 2px;">sites (' + ents.size + ')</div>';
-    [...ents].forEach((id) => {
-      const e = graph.entities[id];
-      if (!e) return;
-      const checked = summaryPicks.entityIds.has(id);
-      const box = checked
-        ? '<i class="ph-fill ph-check-square" style="color:var(--accent);"></i>'
-        : '<i class="ph ph-square" style="color:var(--text-dim);"></i>';
-      html += '<div style="display:flex;align-items:flex-start;gap:5px;padding:2px 0;font-size:10px;cursor:pointer;" onclick="toggleSummaryPick(\'entity\', \'' + escapeAttr(id) + '\');renderSummarizeLpList();renderSummarizeMainIfActive();">';
-      html += '<span>' + box + '</span>';
-      html += '<div style="flex:1;min-width:0;"><span style="color:var(--text-bright);">' + escapeAttr(e.canonical || id) + '</span> <span style="color:var(--text-dim);">— ' + escapeAttr(e.kind || '') + '</span></div>';
-      html += '</div>';
-    });
-  }
-
-  // Spans sub-section
-  if (spans.length) {
-    html += '<div style="font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;margin:6px 0 2px;">spans (' + spans.length + ')</div>';
-    spans.forEach(({ entityId, spanIdx, span, entity }) => {
-      const key = summarySpanKey(entityId, spanIdx);
-      const checked = summaryPicks.spanRefs.has(key);
-      const box = checked
-        ? '<i class="ph-fill ph-check-square" style="color:var(--accent);"></i>'
-        : '<i class="ph ph-square" style="color:var(--text-dim);"></i>';
-      html += '<div style="display:flex;align-items:flex-start;gap:5px;padding:2px 0;font-size:10px;cursor:pointer;" onclick="toggleSummaryPick(\'span\', \'' + escapeAttr(key) + '\');renderSummarizeLpList();renderSummarizeMainIfActive();">';
-      html += '<span>' + box + '</span>';
-      html += '<div style="flex:1;min-width:0;color:var(--text);word-break:break-word;"><span style="color:var(--text-dim);">' + escapeAttr((entity.canonical || entityId).slice(0, 30)) + ':</span> "' + escapeAttr((span.text || '').slice(0, 110)) + '"</div>';
-      html += '</div>';
-    });
-  }
-
-  // Connections sub-section
-  if (cons.length) {
-    html += '<div style="font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;margin:6px 0 2px;">connections (' + cons.length + ')</div>';
-    cons.forEach(({ idx, con }) => {
-      const key = String(idx);
-      const checked = summaryPicks.connectionIdxs.has(key);
-      const box = checked
-        ? '<i class="ph-fill ph-check-square" style="color:var(--accent);"></i>'
-        : '<i class="ph ph-square" style="color:var(--text-dim);"></i>';
-      const fn = (graph.entities[con.from] && graph.entities[con.from].canonical) || con.from;
-      const tn = (graph.entities[con.to] && graph.entities[con.to].canonical) || con.to;
-      html += '<div style="display:flex;align-items:flex-start;gap:5px;padding:2px 0;font-size:10px;cursor:pointer;" onclick="toggleSummaryPick(\'connection\', \'' + escapeAttr(key) + '\');renderSummarizeLpList();renderSummarizeMainIfActive();">';
-      html += '<span>' + box + '</span>';
-      html += '<div style="flex:1;min-width:0;color:var(--text);"><span style="color:var(--text-bright);">' + escapeAttr(fn) + '</span> <span style="color:var(--accent);">' + escapeAttr(con.relation || '?') + '</span> <span style="color:var(--text-bright);">' + escapeAttr(tn) + '</span></div>';
-      html += '</div>';
-    });
-  }
-
-  if (!ents.size && !spans.length && !cons.length) {
-    html += '<div style="color:var(--text-dim);font-size:10px;padding:4px 0;">no sites / spans / connections recorded for this doc.</div>';
-  }
-  return html;
-}
-
-function toggleSummarizeLpDoc(articleId) {
-  const item = (allItems || []).find((it) => summaryArticleKey(it) === articleId);
-  if (!item) return;
-  const state = summarizeDocState(item);
-  if (state === 'on') {
-    summaryPicks.articleIds.delete(articleId);
-  } else if (state === 'half') {
-    // clear sub-picks contributed by this doc, then promote to whole-doc pick.
-    summaryEntitiesFromArticle(item).forEach((id) => summaryPicks.entityIds.delete(id));
-    summarySpansFromArticle(item).forEach((s) => summaryPicks.spanRefs.delete(summarySpanKey(s.entityId, s.spanIdx)));
-    summaryConnectionsFromArticle(item).forEach((c) => summaryPicks.connectionIdxs.delete(String(c.idx)));
-    summaryPicks.articleIds.add(articleId);
-  } else {
-    summaryPicks.articleIds.add(articleId);
-  }
-  renderSummarizeLpList();
-  renderSummarizeMainIfActive();
-}
-
-function toggleSummarizeLpExpand(articleId) {
-  if (summaryPicks.lpExpanded.has(articleId)) summaryPicks.lpExpanded.delete(articleId);
-  else summaryPicks.lpExpanded.add(articleId);
-  renderSummarizeLpList();
-}
-
-function updateSummarizeCompPill() {
-  const pill = document.getElementById('summarize-comp-pill');
-  if (!pill) return;
-  const a = summaryPicks.articleIds.size;
-  const e = summaryPicks.entityIds.size;
-  const c = summaryPicks.connectionIdxs.size;
-  const s = summaryPicks.spanRefs.size;
-  if (!a && !e && !c && !s) { pill.textContent = ''; return; }
-  pill.textContent = a + 'd · ' + e + 's · ' + c + 'c · ' + s + 'sp';
-}
-
-// ---- view-summarize (top-level view) ----
-function switchToSummarizeView() {
-  // expand the lp section if collapsed
-  const sect = document.getElementById('section-summarize');
-  if (sect && getComputedStyle(sect).display === 'none') {
-    sect.style.display = '';
-    const caret = document.getElementById('caret-summarize');
-    if (caret) caret.classList.remove('collapsed');
-  }
-  // Transition the view first so a render failure can't strand the user on feed.
-  showView('summarize');
-  try {
-    renderSummarizeLpList();
-  } catch (err) {
-    console.error('renderSummarizeLpList failed', err);
-  }
-}
-
-function renderSummarizeMainIfActive() {
-  if (currentView === 'summarize') renderSummarizeMainView();
-}
-
-function renderSummarizeMainView() {
-  const root = document.getElementById('view-summarize');
-  if (!root) return;
-  const a = summaryPicks.articleIds.size;
-  const e = summaryPicks.entityIds.size;
-  const c = summaryPicks.connectionIdxs.size;
-  const s = summaryPicks.spanRefs.size;
-  const total = a + e + c + s;
-
-  const togChip = (key, label) => {
-    const on = summaryPicks[key] !== false;
-    const style = on ? 'background:var(--accent);color:#1a1a1a;border-color:var(--accent);' : '';
-    return '<button class="act-btn" style="font-size:10px;padding:3px 6px;' + style + '" onclick="summaryPicks.' + key + '=!(summaryPicks.' + key + '!==false);renderSummarizeMainView()">' + label + ': ' + (on ? 'on' : 'off') + '</button>';
-  };
-
-  let html = '<div style="padding:16px;display:flex;flex-direction:column;height:100%;box-sizing:border-box;overflow:hidden;">';
-  html += '<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:10px;flex-wrap:wrap;">';
-  html += '<div style="font-size:13px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;"><i class="ph ph-file-text"></i> summarize</div>';
-  html += '<div style="font-size:11px;color:var(--text-dim);">' + a + ' docs · ' + e + ' sites · ' + c + ' cons · ' + s + ' spans picked</div>';
-  html += '</div>';
-
-  html += '<div style="border:1px solid var(--border);border-radius:3px;padding:10px;margin-bottom:12px;background:var(--surface);">';
-  html += '<div class="lp-label" style="margin-top:0;">framing (optional)</div>';
-  html += '<textarea id="summarize-main-framing" placeholder="optional extra instructions. picks already drive the focused subgraph — only add here if you want to override style or scope." rows="2" oninput="summaryPicks.framing=this.value" style="width:100%;font-family:inherit;font-size:11px;padding:6px;background:var(--bg);border:1px solid var(--border);color:var(--text-bright);border-radius:3px;box-sizing:border-box;">' + escapeAttr(summaryPicks.framing || '') + '</textarea>';
-  html += '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center;">';
-  html += togChip('includeSources', 'sources');
-  html += togChip('includeNotes', 'editor notes');
-  html += togChip('includeHypotheses', 'hypotheses');
-  html += '<div style="flex:1;"></div>';
-  const genDisabled = total === 0 ? 'opacity:0.5;cursor:not-allowed;' : '';
-  html += '<button class="act-btn" style="font-size:11px;padding:4px 14px;background:var(--accent);color:#1a1a1a;border-color:var(--accent);font-weight:600;' + genDisabled + '" onclick="generateSummaryFromPicks().then(renderSummarizeMainView)"' + (total === 0 ? ' disabled' : '') + '><i class="ph ph-play"></i> generate</button>';
-  html += '</div></div>';
-
-  html += '<div id="summary-output-panel" style="flex:1;overflow-y:auto;border:1px solid var(--border);border-radius:3px;padding:14px;background:var(--bg);position:relative;">';
-  html += renderSummaryOutputHtml();
-  html += '</div>';
-
-  html += '</div>';
-  root.innerHTML = html;
 }

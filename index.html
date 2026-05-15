@@ -486,14 +486,10 @@
   </div>
 
   <div class="lp-section">
-    <div class="lp-label" style="cursor:pointer;"><span onclick="toggleLpSection('summarize')" style="display:flex;align-items:center;gap:4px;flex:1;"><i class="ph ph-caret-down lp-caret" id="caret-summarize"></i><i class="ph ph-file-text"></i> summarize</span><span id="summarize-comp-pill" style="font-size:9px;color:var(--text-dim);font-weight:400;text-transform:none;letter-spacing:0;"></span></div>
+    <div class="lp-label" style="cursor:pointer;"><span onclick="toggleLpSection('summarize')" style="display:flex;align-items:center;gap:4px;flex:1;"><i class="ph ph-caret-down lp-caret" id="caret-summarize"></i><i class="ph ph-chats-circle"></i> chat with docs</span><span id="summarize-comp-pill" style="font-size:9px;color:var(--text-dim);font-weight:400;text-transform:none;letter-spacing:0;"></span></div>
     <div id="section-summarize">
-      <p style="font-size:10px;color:var(--text-dim);line-height:1.45;margin:0 0 6px;">pick docs, drill into them. toggles drive the focused subgraph.</p>
-      <button class="act-btn" style="width:100%;padding:4px 8px;font-size:11px;background:var(--accent);color:#1a1a1a;border-color:var(--accent);font-weight:600;margin-bottom:6px;" onclick="switchToSummarizeView()"><i class="ph ph-play"></i> open summarize</button>
-      <div id="summarize-lp-list" style="font-size:11px;max-height:280px;overflow-y:auto;border-top:1px solid var(--border);padding-top:4px;"></div>
-      <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap;">
-        <button class="act-btn" style="font-size:9px;padding:2px 4px;" onclick="clearSummaryPicks('all');renderSummarizeLpList();renderSummarizeMainIfActive();">clear all</button>
-      </div>
+      <p style="font-size:10px;color:var(--text-dim);line-height:1.45;margin:0 0 6px;">pick sources, ask questions. drill into sites / spans / connections inside each source.</p>
+      <button class="act-btn" style="width:100%;padding:4px 8px;font-size:11px;background:var(--accent);color:#1a1a1a;border-color:var(--accent);font-weight:600;" onclick="switchToSummarizeView()"><i class="ph ph-chats-circle"></i> open</button>
     </div>
   </div>
 
@@ -529,7 +525,7 @@
       <button class="graph-tab" id="tab-scrub" onclick="graphTab('scrub')"><i class="ph ph-clock-counter-clockwise"></i> scrubber</button>
       <button class="graph-tab" id="tab-dream" onclick="graphTab('dream')"><i class="ph ph-moon-stars"></i> dream</button>
       <button class="graph-tab" id="tab-librarian" onclick="graphTab('librarian')"><i class="ph ph-chat-circle-dots"></i> librarian</button>
-      <button class="graph-tab" id="tab-summary" onclick="graphTab('summary')"><i class="ph ph-file-text"></i> summary</button>
+      <button class="graph-tab" id="tab-summary" onclick="switchToSummarizeView()"><i class="ph ph-chats-circle"></i> chat with docs</button>
       <button class="graph-tab" id="tab-eva" onclick="graphTab('eva')"><i class="ph ph-scales"></i> evaluate</button>
       <button class="graph-tab" onclick="exportAllSites()"><i class="ph ph-export"></i></button>
       <div style="flex:1;"></div>
