@@ -88,12 +88,15 @@ a.link { color: var(--accent); }
 <body>
 
 <header>
+  <a href="index.html" title="Back to the reader app"
+     style="font-family:var(--mono);font-size:13px;color:var(--text-dim);text-decoration:none;">← {plain text}</a>
   <h1>Minisite Editor</h1>
   <button onclick="setBlockType('p')">¶ Paragraph</button>
   <button onclick="setBlockType('quote')">" Quote</button>
   <button onclick="setBlockType('section')">§ Section</button>
   <button onclick="tagEntity()">+ Tag Entity</button>
   <div class="spacer"></div>
+  <button onclick="viewMinisite()">view minisite</button>
   <div class="status" id="status">ready</div>
   <button onclick="doPublish('draft')">Save Draft</button>
   <button class="primary" onclick="doPublish('published')">Publish</button>
@@ -144,6 +147,7 @@ a.link { color: var(--accent); }
 </div>
 
 <script src="js/publish/eo-publish.js"></script>
+<script src="js/publish/relations.js"></script>
 <script src="js/publish/opfs-store.js"></script>
 <script src="js/publish/fold.js"></script>
 <script src="js/publish/api.js"></script>
@@ -157,6 +161,7 @@ var workingConnections = [];   // { from, to, rel, evidence, article }
 var loadedEntityHash = {};     // id -> hash at load time
 var loadedConnHash = {};       // connSlug -> hash at load time
 var pendingRange = null;
+var walkEntities = {};         // id -> editor-shaped entity bridged from the reader app's walk graph
 
 function $(id) { return document.getElementById(id); }
 function val(id) { return $(id).value.trim(); }
@@ -347,24 +352,47 @@ function openEntityPicker(selectedText) {
       '<span class="dot" style="display:inline-block;background:' + colorFor(e.type) + '"></span> ' +
       esc(e.name) + ' <span style="color:var(--text-faint)">· ' + esc(id) + '</span></div>';
   }).join('');
+  var walkIds = Object.keys(walkEntities).filter(function (id) { return !workingEntities[id]; }).sort();
+  var walkList = walkIds.map(function (id) {
+    var e = walkEntities[id];
+    return '<div class="pick-item" onclick="pickWalkEntity(\'' + esc(id) + '\')">' +
+      '<span class="dot" style="display:inline-block;background:' + colorFor(e.type) + '"></span> ' +
+      esc(e.name) + ' <span style="color:var(--text-faint)">· ' + esc(id) + '</span></div>';
+  }).join('');
   $('modal').innerHTML = '<h3>Tag entity</h3>' +
     '<div class="hint">Selected: "' + esc(selectedText) + '"</div>' +
     '<input id="pick-search" placeholder="filter entities…" style="width:100%;margin-bottom:10px;' +
     'background:var(--surface);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:4px">' +
-    '<div id="pick-list">' + (list || '<div class="hint">No entities yet.</div>') + '</div>' +
+    '<div id="pick-list">' + (list || '<div class="hint">No published entities yet.</div>') + '</div>' +
+    (walkList ? '<div class="hint" style="margin-top:14px;border-top:1px solid var(--border);' +
+      'padding-top:10px">from your reading · not yet published</div>' +
+      '<div id="pick-walk-list">' + walkList + '</div>' : '') +
     '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">' +
     '<button onclick="newEntityFromPicker()">+ Create new entity</button></div>';
   openModal();
   var search = $('pick-search');
   search.oninput = function () {
     var q = search.value.toLowerCase();
-    Array.prototype.forEach.call($('pick-list').children, function (c) {
-      c.style.display = c.textContent.toLowerCase().indexOf(q) >= 0 ? '' : 'none';
+    ['pick-list', 'pick-walk-list'].forEach(function (lid) {
+      var el = $(lid);
+      if (!el) return;
+      Array.prototype.forEach.call(el.children, function (c) {
+        c.style.display = c.textContent.toLowerCase().indexOf(q) >= 0 ? '' : 'none';
+      });
     });
   };
   search.focus();
 }
 function pickEntity(id) { closeModal(); applyTag(id); }
+function pickWalkEntity(id) {
+  var w = walkEntities[id];
+  if (w && !workingEntities[id]) {
+    workingEntities[id] = { id: id, name: w.name, type: w.type, description: w.description, articles: [] };
+    renderEntityList();
+  }
+  closeModal();
+  applyTag(id);
+}
 function newEntityFromPicker() {
   var typeOpts = Object.keys(TYPE_LABELS).map(function (k) {
     return '<option value="' + k + '">' + TYPE_LABELS[k] + '</option>';
@@ -407,13 +435,22 @@ function entitySelectOptions(sel) {
       esc(workingEntities[id].name) + '</option>';
   }).join('');
 }
+function relationVocab() {
+  return (typeof Relations !== 'undefined') ? Relations.buildVocab(workingConnections) : [];
+}
 function openConnForm(idx) {
   var c = (idx != null) ? workingConnections[idx] : null;
+  var vocab = relationVocab();
+  var opts = vocab.map(function (r) { return '<option value="' + esc(r) + '">'; }).join('');
   $('modal').innerHTML = '<h3>' + (c ? 'Edit connection' : 'New connection') + '</h3>' +
     '<div class="field"><label>From</label><select id="c-from">' + entitySelectOptions(c && c.from) + '</select></div>' +
     '<div class="field"><label>To</label><select id="c-to">' + entitySelectOptions(c && c.to) + '</select></div>' +
-    '<div class="field"><label>Relation</label><input id="c-rel" value="' + esc(c ? c.rel : '') +
-    '" placeholder="CEO of"></div>' +
+    '<div class="field"><label>Relation</label><input id="c-rel" list="c-rel-vocab" value="' +
+    esc(c ? c.rel : '') + '" placeholder="funds, cites, employs…">' +
+    '<datalist id="c-rel-vocab">' + opts + '</datalist></div>' +
+    '<div class="field"><label>Definition <span style="text-transform:none;color:var(--text-faint)">' +
+    '— one line, required for a new relation word</span></label>' +
+    '<input id="c-reldef" value="' + esc(c && c.relDef ? c.relDef : '') + '" placeholder="what this relation means"></div>' +
     '<div class="field"><label>Evidence</label><textarea id="c-ev" rows="3">' +
     esc(c ? c.evidence : '') + '</textarea></div>' +
     '<button class="primary" onclick="saveConn(' + (c ? idx : 'null') + ')">Save</button> ' +
@@ -423,7 +460,12 @@ function openConnForm(idx) {
 function saveConn(idx) {
   var from = $('c-from').value, to = $('c-to').value, rel = val('c-rel');
   if (!from || !to || !rel) { status('Connection needs from, to, relation', 'err'); return; }
-  var conn = { from: from, to: to, rel: rel, evidence: $('c-ev').value.trim(), article: null };
+  var relDef = val('c-reldef');
+  var vocab = relationVocab();
+  if (typeof Relations !== 'undefined' && !Relations.isKnown(rel, vocab) && !relDef) {
+    status('"' + rel + '" is a new relation — add a one-line definition', 'err'); return;
+  }
+  var conn = { from: from, to: to, rel: rel, relDef: relDef, evidence: $('c-ev').value.trim(), article: null };
   if (idx != null) { conn.article = workingConnections[idx].article; workingConnections[idx] = conn; }
   else workingConnections.push(conn);
   closeModal();
@@ -451,7 +493,10 @@ async function loadSites() {
     workingEntities[id] = { id: id, name: e.name, type: e.type, description: e.description, articles: e.articles || [] };
   });
   workingConnections = folded.connections.map(function (c) {
-    return { from: c.from, to: c.to, rel: c.rel, evidence: c.evidence, article: c.article };
+    return {
+      from: c.from, to: c.to, rel: c.rel, evidence: c.evidence, article: c.article,
+      relDef: (c.meta && c.meta.relDef) || c.relDef || '',
+    };
   });
   snapshotHashes();
   renderEntityList();
@@ -470,7 +515,8 @@ function snapshotHashes() {
   loadedConnHash = {};
   workingConnections.forEach(function (c) {
     var entry = EO.connectionEntry({
-      site: site, from: c.from, to: c.to, rel: c.rel, evidence: c.evidence, article: c.article,
+      site: site, from: c.from, to: c.to, rel: c.rel, evidence: c.evidence,
+      article: c.article, relDef: c.relDef,
     });
     loadedConnHash[entry.slug] = entry.hash;
   });
@@ -482,13 +528,54 @@ async function loadArticle(slug) {
   if (art) { loadArticleIntoEditor(art); status('Loaded article "' + slug + '" for editing'); }
 }
 
+// ── walk-graph bridge ──────────────────────────────────────────────────
+// The reader app (index.html) walks documents into a 9-terrain entity graph
+// stored in localStorage. Same origin lets us read it directly, so entities
+// discovered while reading become taggable here without re-typing.
+function walkEntityToWorking(id, w) {
+  w = w || {};
+  var hay = ((w.subtype || '') + ' ' + (w.kind || '')).toLowerCase();
+  var type = 'org';
+  if (/person|official|journalist|reporter|speaker/.test(hay)) type = 'person';
+  else if (/gov|agenc|department|commission|senat|congress|council|ministr|bureau|court/.test(hay)) type = 'gov';
+  else if (/media|news|paper|press|broadcast|outlet/.test(hay)) type = 'media';
+  return {
+    id: id,
+    name: w.displayName || w.canonical || id,
+    type: type,
+    description: w.hypothesis || '',
+    articles: [],
+  };
+}
+function loadWalkGraph() {
+  walkEntities = {};
+  var raw;
+  try { raw = localStorage.getItem('plaintext_graph'); } catch (e) { return; }
+  if (!raw) return;
+  var g;
+  try { g = JSON.parse(raw); } catch (e) { return; }
+  var ents = (g && g.entities) || {};
+  Object.keys(ents).forEach(function (id) {
+    walkEntities[id] = walkEntityToWorking(id, ents[id]);
+  });
+}
+function viewMinisite() {
+  var slug = EO.slugify(val('f-slug'));
+  location.href = slug ? 'minisite.html?slug=' + encodeURIComponent(slug) : 'minisite.html';
+}
+
 // ── publish ────────────────────────────────────────────────────────────
-async function doPublish(stance) {
+// doPublish() builds an append plan and shows a preview; the user confirms
+// before any line is written. INS/CON lines publish before the article DEF
+// so the article's entityRefs always resolve on the minisite.
+function doPublish(stance) { openPublishPreview(stance); }
+
+function buildPublishPlan(stance) {
   var site = val('f-site'), slug = EO.slugify(val('f-slug'));
   var title = val('f-title');
-  if (!site) { status('Need a site namespace', 'err'); return; }
-  if (!slug) { status('Need an article slug', 'err'); return; }
-  if (!title) { status('Need a title', 'err'); return; }
+  if (!site) { status('Need a site namespace', 'err'); return null; }
+  if (!slug) { status('Need an article slug', 'err'); return null; }
+  if (!title) { status('Need a title', 'err'); return null; }
   $('f-slug').value = slug;
 
   var ser = serializeBody();
@@ -498,66 +585,104 @@ async function doPublish(stance) {
   };
   var author = val('f-author') || 'anon';
 
+  // record this article on every referenced entity
+  ser.entityRefs.forEach(function (id) {
+    var e = workingEntities[id];
+    if (!e) return;
+    e.articles = e.articles || [];
+    var found = null;
+    for (var i = 0; i < e.articles.length; i++) if (e.articles[i].slug === slug) found = e.articles[i];
+    if (found) { found.title = title; found.date = meta.date; }
+    else e.articles.push({ slug: slug, title: title, date: meta.date });
+  });
+
+  var entityEntries = [];
+  Object.keys(workingEntities).forEach(function (id) {
+    var e = workingEntities[id];
+    var entry = EO.entityEntry({
+      site: site, slug: id, name: e.name, entityType: e.type,
+      description: e.description, articles: e.articles, author: author,
+    });
+    if (loadedEntityHash[id] !== entry.hash) entityEntries.push(entry);
+  });
+
+  var connEntries = [];
+  workingConnections.forEach(function (c) {
+    var ce = EO.connectionEntry({
+      site: site, from: c.from, to: c.to, rel: c.rel, evidence: c.evidence,
+      article: c.article || slug, author: author, relDef: c.relDef,
+    });
+    if (loadedConnHash[ce.slug] !== ce.hash) connEntries.push(ce);
+  });
+
+  var artEntry = EO.articleEntry({
+    site: site, slug: slug, title: title, meta: meta,
+    sections: ser.sections, entityRefs: ser.entityRefs, author: author, stance: stance,
+  });
+
+  return {
+    site: site, slug: slug, stance: stance, refCount: ser.entityRefs.length,
+    entityEntries: entityEntries, connEntries: connEntries, articleEntry: artEntry,
+  };
+}
+
+function openPublishPreview(stance) {
+  var plan = buildPublishPlan(stance);
+  if (!plan) return;
+  var rows = [];
+  rows.push('<div><b style="color:var(--text-dim)">seed</b> ' + esc(EO.SITE_FILE) + ' · ' +
+    esc(EO.articleFile(plan.slug)) + ' <span style="color:var(--text-faint)">(only if new)</span></div>');
+  plan.entityEntries.forEach(function (e) {
+    rows.push('<div><b style="color:var(--media)">INS</b> sites.jsonl · ' +
+      esc(e.slug) + ' · ' + esc(e.payload.entityType) + '</div>');
+  });
+  plan.connEntries.forEach(function (c) {
+    rows.push('<div><b style="color:var(--accent)">CON</b> sites.jsonl · ' +
+      esc(c.payload.from) + ' → ' + esc(c.payload.to) + ' · ' + esc(c.payload.rel) + '</div>');
+  });
+  rows.push('<div><b style="color:var(--person)">DEF</b> ' + esc(EO.articleFile(plan.slug)) +
+    ' · ' + esc(plan.slug) + ' · ' + plan.refCount + ' refs · ' + esc(plan.stance) + '</div>');
+  $('modal').innerHTML = '<h3>About to append</h3>' +
+    '<div class="hint">' + plan.entityEntries.length + ' entit' +
+    (plan.entityEntries.length === 1 ? 'y' : 'ies') + ', ' + plan.connEntries.length +
+    ' connection' + (plan.connEntries.length === 1 ? '' : 's') +
+    ', 1 article — appended to the {plain text} log on GitHub.</div>' +
+    '<div style="font-family:var(--mono);font-size:11px;line-height:1.95;margin:10px 0;' +
+    'border:1px solid var(--border);border-radius:5px;padding:8px 10px;background:var(--surface-2)">' +
+    rows.join('') + '</div>' +
+    '<button class="primary" id="prev-go">append &amp; publish</button> ' +
+    '<button onclick="closeModal()">Cancel</button>';
+  openModal();
+  $('prev-go').onclick = function () { executePublishPlan(plan); };
+}
+
+async function executePublishPlan(plan) {
+  closeModal();
   try {
     status('Seeding files…');
     await PublishAPI.seed(EO.SITE_FILE);
-    await PublishAPI.seed(EO.articleFile(slug));
+    await PublishAPI.seed(EO.articleFile(plan.slug));
 
-    // record this article on every referenced entity
-    ser.entityRefs.forEach(function (id) {
-      var e = workingEntities[id];
-      if (!e) return;
-      e.articles = e.articles || [];
-      var found = null;
-      for (var i = 0; i < e.articles.length; i++) if (e.articles[i].slug === slug) found = e.articles[i];
-      if (found) { found.title = title; found.date = meta.date; }
-      else e.articles.push({ slug: slug, title: title, date: meta.date });
-    });
-
-    // publish changed/new entities to the aggregating sites log
-    var pubE = 0;
-    var ids = Object.keys(workingEntities);
-    for (var i = 0; i < ids.length; i++) {
-      var e = workingEntities[ids[i]];
-      var entry = EO.entityEntry({
-        site: site, slug: ids[i], name: e.name, entityType: e.type,
-        description: e.description, articles: e.articles, author: author,
-      });
-      if (loadedEntityHash[ids[i]] === entry.hash) continue;
-      status('Publishing entity ' + (pubE + 1) + '…');
-      await PublishAPI.publish(EO.SITE_FILE, entry);
-      loadedEntityHash[ids[i]] = entry.hash;
-      pubE++;
+    var i;
+    for (i = 0; i < plan.entityEntries.length; i++) {
+      status('Publishing entity ' + (i + 1) + '/' + plan.entityEntries.length + '…');
+      await PublishAPI.publish(EO.SITE_FILE, plan.entityEntries[i]);
+      loadedEntityHash[plan.entityEntries[i].slug] = plan.entityEntries[i].hash;
+    }
+    for (i = 0; i < plan.connEntries.length; i++) {
+      status('Publishing connection ' + (i + 1) + '/' + plan.connEntries.length + '…');
+      await PublishAPI.publish(EO.SITE_FILE, plan.connEntries[i]);
+      loadedConnHash[plan.connEntries[i].slug] = plan.connEntries[i].hash;
     }
 
-    // publish changed/new connections
-    var pubC = 0;
-    for (var j = 0; j < workingConnections.length; j++) {
-      var c = workingConnections[j];
-      var ce = EO.connectionEntry({
-        site: site, from: c.from, to: c.to, rel: c.rel,
-        evidence: c.evidence, article: c.article || slug, author: author,
-      });
-      if (loadedConnHash[ce.slug] === ce.hash) continue;
-      status('Publishing connection ' + (pubC + 1) + '…');
-      await PublishAPI.publish(EO.SITE_FILE, ce);
-      loadedConnHash[ce.slug] = ce.hash;
-      pubC++;
-    }
-
-    // publish the article version to its own file
     status('Publishing article…');
-    var artEntry = EO.articleEntry({
-      site: site, slug: slug, title: title, meta: meta,
-      sections: ser.sections, entityRefs: ser.entityRefs, author: author, stance: stance,
-    });
-    await PublishAPI.publish(EO.articleFile(slug), artEntry);
+    await PublishAPI.publish(EO.articleFile(plan.slug), plan.articleEntry);
 
     renderEntityList();
     renderConnList();
-    var url = 'minisite.html?slug=' + encodeURIComponent(slug);
-    status('Published — ' + pubE + ' entities, ' + pubC + ' connections, article (' + stance + ')', 'ok');
-    showResult(url, slug);
+    status('Published — ' + plan.entityEntries.length + ' entities, ' +
+      plan.connEntries.length + ' connections, article (' + plan.stance + ')', 'ok');
+    showResult('minisite.html?slug=' + encodeURIComponent(plan.slug), plan.slug);
   } catch (err) {
     status('Publish failed: ' + err.message, 'err');
   }
@@ -575,9 +700,14 @@ function showResult(url, slug) {
 async function boot() {
   status('Loading entities…');
   await loadSites();
+  loadWalkGraph();
   var slug = param('slug');
   if (slug) { $('f-slug').value = slug; await loadArticle(slug); }
-  else status('Ready — ' + Object.keys(workingEntities).length + ' entities loaded');
+  else {
+    var wn = Object.keys(walkEntities).filter(function (id) { return !workingEntities[id]; }).length;
+    status('Ready — ' + Object.keys(workingEntities).length + ' entities loaded' +
+      (wn ? ' · ' + wn + ' from your reading' : ''));
+  }
 }
 boot();
 </script>

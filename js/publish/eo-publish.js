@@ -56,7 +56,7 @@
     var e = {
       op: 'CON', site: o.site, slug: connectionSlug(o.from, o.to, o.rel),
       title: o.rel, stance: 'published', terrain: 'Link',
-      author: o.author || 'anon', meta: {},
+      author: o.author || 'anon', meta: o.relDef ? { relDef: o.relDef } : {},
       payload: {
         from: o.from, to: o.to, rel: o.rel,
         evidence: o.evidence || '', article: o.article || null,
