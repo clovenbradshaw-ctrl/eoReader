@@ -98,12 +98,12 @@ function renderDocument() {
     ' source' + (enabledCount === 1 ? '' : 's') + ' in chat/summary scope</span>';
   html += '</div>';
 
-  // multi-document source strip (NotebookLM-style toggles)
-  html += '<details class="doc-sources"' + (enabledCount > 1 ? ' open' : '') + '>';
-  html += '<summary><i class="ph ph-stack"></i> sources (' + visibleSources.length +
-    ') — toggle which docs feed chat &amp; summary</summary>';
+  // multi-document source scope — always visible chip bar (wireframe 4·V1)
+  html += '<div class="doc-sources-bar">';
+  html += '<span class="doc-sources-label"><i class="ph ph-stack"></i> in scope · ' +
+    enabledCount + ' of ' + visibleSources.length + ' docs feed chat &amp; summary</span>';
   html += '<div class="doc-sources-body">' + renderDocSourceStrip(visibleSources) + '</div>';
-  html += '</details>';
+  html += '</div>';
 
   // active tab pane
   html += '<div id="doc-pane"></div>';
@@ -139,24 +139,22 @@ function renderDocPane() {
 
 function renderDocSourceStrip(visibleSources) {
   if (!visibleSources.length) return '<div style="padding:6px 16px;font-size:10px;color:var(--text-dim);">no documents.</div>';
+  // current doc anchored first, rest follow
+  const ordered = visibleSources.slice().sort((a, b) =>
+    (a.id === currentDocId ? -1 : 0) - (b.id === currentDocId ? -1 : 0));
   let html = '';
-  visibleSources.forEach(s => {
+  ordered.forEach(s => {
     const idx = ensureItemForSource(s);
     const key = summaryArticleKey(allItems[idx]);
     const enabled = summaryPicks.articleIds.has(key);
     const isCurrent = s.id === currentDocId;
-    const box = enabled
-      ? '<i class="ph-fill ph-check-square" style="color:var(--accent);"></i>'
-      : '<i class="ph ph-square" style="color:var(--text-dim);"></i>';
-    html += '<div class="doc-src-row' + (isCurrent ? ' current' : '') +
-      '" onclick="openDocument(\'' + escapeAttr(s.id) + '\')">';
-    html += '<span onclick="event.stopPropagation();docToggleSource(\'' + escapeAttr(s.id) + '\')">' + box + '</span>';
-    html += '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:' +
-      (isCurrent ? 'var(--text-bright)' : 'var(--text)') + ';">' + escapeAttr(s.title || '(untitled)') + '</span>';
-    html += s.processed
-      ? '<span style="font-size:9px;color:var(--accent);">' + countDocSites(s.url, s.title) + ' sites</span>'
-      : '<span style="font-size:9px;color:var(--text-dim);">new</span>';
-    html += '</div>';
+    const meta = s.processed ? countDocSites(s.url, s.title) + ' sites' : 'new';
+    html += '<span class="doc-src-chip' + (isCurrent ? ' current' : '') + (enabled ? ' on' : '') +
+      '" title="' + escapeAttr(meta) + '" onclick="openDocument(\'' + escapeAttr(s.id) + '\')">';
+    html += '<span class="dsc-toggle" onclick="event.stopPropagation();docToggleSource(\'' +
+      escapeAttr(s.id) + '\')">' + (enabled ? '✓' : '+') + '</span>';
+    html += '<span class="dsc-name">' + escapeAttr(s.title || '(untitled)') + '</span>';
+    html += '</span>';
   });
   return html;
 }
