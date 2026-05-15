@@ -16,16 +16,14 @@ async function librarianAsk(question) {
   // 1. mechanical routing
   const routeInfo = routeLibrarianQuestion(question);
 
-  // summary route delegates to the digest generator so the librarian
-  // produces the standardized digest from the graph alone.
+  // summary route hands off to the dedicated "chat with docs" view —
+  // picks get seeded from the matched scope, then the user can ask follow-ups
+  // there with full source-toggle control.
   if (routeInfo.route === 'summary') {
     if (routeInfo.matchedEntities && routeInfo.matchedEntities.length) {
-      return librarianGenerateSummary(
-        { kind: 'entity', ids: routeInfo.matchedEntities },
-        { skipModal: true }
-      );
+      return openSummaryFromScope({ kind: 'entity', ids: routeInfo.matchedEntities }, question);
     }
-    return librarianGenerateSummary({ kind: 'topic', text: question });
+    return openSummaryFromScope({ kind: 'topic', text: question }, question);
   }
 
   librarianChat.push({ role: 'user', content: question, ts: Date.now() });
@@ -116,179 +114,54 @@ function askLibrarianAbout(id) {
   librarianAsk('Tell me about `' + id + '` — ' + e.canonical + '. What does the index say it is, and what is it connected to?');
 }
 
-// Generate a standardized digest entry from a focused subgraph.
-// scope: { kind: 'entity'|'terrain'|'topic'|'all', ids?, terrain?, text? }
-// opts:  { includeSources, includeConnections, includeNotes, includeSpans, skipModal }
-// When called with no args, opens a scope+toggles modal.
+// Legacy entry point — preserved so older callers still work, but routes
+// into the new "chat with docs" view rather than running the digest inline.
 async function librarianGenerateSummary(scope, opts) {
   opts = opts || {};
-
-  const apiKey = getApiKey();
-  if (!apiKey) { await showAlert('Set your Anthropic API key first'); return; }
-
-  // open scope/toggles modal unless caller passes scope + skipModal
-  if (!scope || !opts.skipModal) {
-    const presetKind = scope && scope.kind ? scope.kind : 'all';
-    const presetTarget = scope
-      ? (scope.kind === 'entity' && Array.isArray(scope.ids)
-          ? (graph.entities[scope.ids[0]]?.canonical || '')
-          : scope.terrain || scope.text || '')
-      : '';
-    const dialog = await showPrompt({
-      title: 'Generate summary from graph',
-      submitLabel: 'Generate',
-      fields: [
-        { name: 'scope', label: 'Scope', type: 'chips',
-          options: ['this entity', 'a terrain', 'topic', 'whole index'],
-          default: presetKind === 'entity' ? 'this entity' :
-                   presetKind === 'terrain' ? 'a terrain' :
-                   presetKind === 'topic' ? 'topic' : 'whole index' },
-        { name: 'target', label: 'Entity / terrain / topic text', type: 'text',
-          placeholder: 'e.g. MNPD, Field, "private policing in Nashville"',
-          default: presetTarget },
-        { name: 'sources', label: 'Feed sources list to the prompt?', type: 'chips',
-          options: ['on', 'off'], default: opts.includeSources === false ? 'off' : 'on' },
-        { name: 'connections', label: 'Feed related connections to the prompt?', type: 'chips',
-          options: ['on', 'off'], default: opts.includeConnections === false ? 'off' : 'on' },
-        { name: 'spans', label: 'Feed evidence spans + processing trail (DEF/EVA/REC)?', type: 'chips',
-          options: ['on', 'off'], default: opts.includeSpans === false ? 'off' : 'on' },
-        { name: 'notes', label: 'Feed editor notes to the prompt?', type: 'chips',
-          options: ['on', 'off'], default: opts.includeNotes === false ? 'off' : 'on' },
-        { name: 'framing', label: 'Extra framing (optional)', type: 'textarea',
-          placeholder: 'e.g. "focus on procurement", "keep under 250 words"' },
-      ],
-    });
-    if (dialog === null) return;
-
-    const target = (dialog.target || '').trim();
-    if (dialog.scope === 'this entity') {
-      const ids = [...matchEntitiesInText(target)];
-      if (!ids.length) {
-        await showAlert('No indexed entity matches "' + target + '". Try a different name or use the "topic" scope.');
-        return;
-      }
-      scope = { kind: 'entity', ids };
-    } else if (dialog.scope === 'a terrain') {
-      if (!target) { await showAlert('Name a terrain (Entity, Field, Network, Kind, Link, Void, Atmosphere, Lens, Paradigm).'); return; }
-      scope = { kind: 'terrain', terrain: target };
-    } else if (dialog.scope === 'topic') {
-      if (!target) { await showAlert('Type a topic to summarize.'); return; }
-      scope = { kind: 'topic', text: target };
-    } else {
-      scope = { kind: 'all' };
-    }
-    opts = {
-      includeSources: dialog.sources !== 'off',
-      includeConnections: dialog.connections !== 'off',
-      includeSpans: dialog.spans !== 'off',
-      includeNotes: dialog.notes !== 'off',
-      framing: (dialog.framing || '').trim(),
-    };
-  }
-
-  if (currentView !== 'index') toggleGraph();
-  if (activeGraphTab !== 'librarian') graphTab('librarian');
-
-  // record the user-facing intent in the chat
-  const scopeLabel =
-    scope.kind === 'entity' ? 'entity: ' + (scope.ids || []).map(id => graph.entities[id]?.canonical || id).join(', ') :
-    scope.kind === 'terrain' ? 'terrain: ' + scope.terrain :
-    scope.kind === 'topic' ? 'topic: ' + scope.text :
-    'whole index';
-  const togglesLabel = [
-    'sources:' + (opts.includeSources === false ? 'off' : 'on'),
-    'connections:' + (opts.includeConnections === false ? 'off' : 'on'),
-    'spans:' + (opts.includeSpans === false ? 'off' : 'on'),
-    'notes:' + (opts.includeNotes === false ? 'off' : 'on'),
-  ].join(', ');
-  librarianChat.push({ role: 'user', content: 'Generate summary — ' + scopeLabel + ' (' + togglesLabel + (opts.framing ? '; framing: ' + opts.framing : '') + ')', ts: Date.now() });
-  renderLibrarianView();
-
-  const built = buildLibrarianDigestContext(scope, opts);
-  if (!built.focused.length) {
-    const msg = { role: 'assistant', content: 'No indexed sites match that scope yet — process an article first or broaden the scope.', ts: Date.now() };
-    librarianChat.push(msg);
-    renderLibrarianView();
-    return;
-  }
-
-  const framingSystemBlock = opts.framing
-    ? '---\nEDITORIAL OVERRIDE FOR THIS DIGEST\n'
-      + 'The instructions below come from the editor for this single summary only. They take priority over the defaults wherever they conflict.\n\n'
-      + opts.framing
-      + '\n---'
-    : '';
-
-  // Headline + Source line: derive a topic line and a source list from the
-  // focused subgraph, since there's no single article driving this digest.
-  const headlineGuess =
-    scope.kind === 'entity' ? (graph.entities[scope.ids[0]]?.canonical || scope.ids[0]) :
-    scope.kind === 'terrain' ? scope.terrain + ' — index summary' :
-    scope.kind === 'topic' ? scope.text :
-    'Index summary';
-  const sourcesLine = built.sources.length
-    ? built.sources.slice(0, 6).map(s => s.url ? '[' + (s.title || s.url) + '](' + s.url + ')' : (s.title || '')).filter(Boolean).join(' · ')
-    : '';
-
-  const framingHeader = [
-    '=== DIGEST FROM GRAPH TRAVERSAL ===',
-    'Produce the standardized digest exactly as the system prompt specifies. There is no single article — the focused subgraph below (hypotheses, processing trail, connections, spans, sources) is your only evidence. Quote spans verbatim; do not fabricate quotations beyond what is provided.',
-    '',
-    'Headline topic: ' + headlineGuess + ' (rewrite for clarity if useful — still ### H3).',
-    'Source line (use as the italic Markdown source line; if empty, use "Source: index, multiple feeds"): *' + (sourcesLine || 'Source: index, multiple feeds') + '*',
-    '',
-    'Voice convention in the context below: span and connection lines end with "according to <voice> (<relation>) in <publication>". Relations are attested_by (journalist reporting), asserted_by (quoted speaker), documented_in (cited record), characterized_by (interpretive frame). Carry attribution through to the bullets.',
-    '',
-    '=== FOCUSED SUBGRAPH ===',
-    built.context,
-  ].join('\n');
-
-  const assistantMsg = { role: 'assistant', content: '…', ts: Date.now(), pending: true };
-  librarianChat.push(assistantMsg);
-  renderLibrarianView();
-
-  const step = {
-    ts: assistantMsg.ts,
-    question: 'GENERATE SUMMARY — ' + scopeLabel,
-    routeInfo: { route: 'summary', matchedEntities: built.focused, signals: { metaScore: 0, connectionScore: 0, summaryScore: 1, namedHits: built.focused.length, tokens: 0 } },
-    composition: built.composition,
-    focused: built.focused,
-    contextPreview: built.context,
-    usage: null, ms: null, model: null, suggestions: [],
-  };
-  step.composition.estimatedInputTokens = estimateTokens(getPrompt()) + estimateTokens(framingHeader);
-
-  try {
-    const baseSystem = getPrompt();
-    const systemPrompt = framingSystemBlock ? baseSystem + '\n\n' + framingSystemBlock : baseSystem;
-    const r = await callLLM({
-      system: systemPrompt,
-      user: framingHeader,
-      maxTokens: 2000,
-      role: 'digest',
-    });
-    assistantMsg.content = r.text;
-    assistantMsg.pending = false;
-    step.usage = r.usage;
-    step.ms = r.ms;
-    step.model = r.model;
-  } catch (e) {
-    assistantMsg.content = '✗ error: ' + e.message;
-    assistantMsg.pending = false;
-    step.error = e.message;
-  }
-
-  step.suggestions = analyzeLibrarianStep(step);
-  librarianTelemetryLog.push(step);
-  librarianSuggestions.push({ ts: Date.now(), turnTs: step.ts, fromLLM: false, items: step.suggestions });
-  assistantMsg.telemetry = step;
-
-  renderLibrarianView();
-  maybeRunLLMEva(step);
+  await openSummaryFromScope(scope, null, opts);
+  return;
 }
 
-// Convenience: generate a summary scoped to a specific entity id.
-function librarianSummarizeEntity(id) {
+// Seed summaryPicks from a scope description, open the chat-with-docs
+// view, and (if a question was provided) ask it. Used by:
+//   - librarianAsk summary-route hand-off,
+//   - the entity page "chat with docs" button,
+//   - legacy librarianGenerateSummary callers.
+async function openSummaryFromScope(scope, question, opts) {
+  scope = scope || { kind: 'all' };
+  opts = opts || {};
+
+  // Resolve entity ids from the scope.
+  const entityIds = new Set();
+  if (scope.kind === 'entity' && Array.isArray(scope.ids)) {
+    scope.ids.forEach((id) => { if (graph.entities[id]) entityIds.add(id); });
+  } else if (scope.kind === 'topic' && scope.text) {
+    if (typeof matchEntitiesInText === 'function') {
+      [...matchEntitiesInText(scope.text)].forEach((id) => entityIds.add(id));
+    }
+  }
+
+  if (entityIds.size) {
+    summaryPicks.entityIds = new Set([...summaryPicks.entityIds, ...entityIds]);
+  }
+  if (opts.includeSources != null) summaryPicks.includeSources = opts.includeSources !== false;
+  if (opts.includeNotes != null)   summaryPicks.includeNotes   = opts.includeNotes !== false;
+  if (opts.framing) summaryPicks.framing = opts.framing;
+
+  if (typeof switchToSummarizeView === 'function') switchToSummarizeView();
+
+  if (question && typeof summaryAsk === 'function') {
+    return summaryAsk(question);
+  }
+}
+
+// Convenience for the entity-detail "chat with docs" button.
+function openSummaryWithEntity(id) {
   if (!graph.entities[id]) return;
-  return librarianGenerateSummary({ kind: 'entity', ids: [id] });
+  return openSummaryFromScope({ kind: 'entity', ids: [id] });
+}
+
+// Back-compat: any remaining callers of librarianSummarizeEntity.
+function librarianSummarizeEntity(id) {
+  return openSummaryWithEntity(id);
 }

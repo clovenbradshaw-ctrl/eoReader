@@ -48,8 +48,9 @@ let dreamCandidates = [];
 // librarian chat transcript
 let librarianChat = [];
 
-// summary generator: explicit user picks at any granularity. UI-only state,
-// not persisted. See js/summary.js for the renderer + generator.
+// summarize: NotebookLM-style chat with picked docs. Sources are articles
+// (any ingested item); drill-down picks sites/spans/connections inside a
+// source. UI-only state, not persisted. See js/summary.js.
 let summaryPicks = {
   entityIds: new Set(),
   connectionIdxs: new Set(),
@@ -59,10 +60,9 @@ let summaryPicks = {
   includeSources: true,
   includeNotes: true,
   includeHypotheses: true,
-  lpExpanded: new Set(),
 };
-let summaryOutput = null;
-let summaryPickerTab = 'entities';
+let summaryChat = [];           // [{role, content, ts, telemetry?, pending?}]
+let summaryDetailDocId = null;  // article key of source open in the right pane
 
 // ---- the event log (append-only, content-hashed, the fold substrate) ----
 // Each event is one of: SIG, DEF, CON, EVA, REC, SEG, FEEDBACK, RENAME, DELETE.
@@ -556,19 +556,29 @@ function updateGraphCount() {
 function showView(view) {
   if (view === 'index' && currentView !== 'index') lastNonIndexView = currentView;
   currentView = view;
-  document.getElementById('view-feed').style.display = view === 'feed' ? '' : 'none';
-  document.getElementById('view-index').style.display = view === 'index' ? 'flex' : 'none';
-  const disc = document.getElementById('view-discover');
-  if (disc) disc.style.display = view === 'discover' ? 'flex' : 'none';
-  const sum = document.getElementById('view-summarize');
-  if (sum) sum.style.display = view === 'summarize' ? 'flex' : 'none';
+  const idx = document.getElementById('view-index');
+  if (view === 'index') {
+    // overlay the index on top of whatever was here — don't hide the underlying view
+    idx.style.display = 'flex';
+    idx.classList.add('overlay');
+  } else {
+    idx.style.display = 'none';
+    idx.classList.remove('overlay');
+    document.getElementById('view-feed').style.display = view === 'feed' ? '' : 'none';
+    const disc = document.getElementById('view-discover');
+    if (disc) disc.style.display = view === 'discover' ? 'flex' : 'none';
+    const sum = document.getElementById('view-summarize');
+    if (sum) sum.style.display = view === 'summarize' ? 'flex' : 'none';
+  }
   const btn = document.getElementById('graph-toggle');
   if (btn) btn.classList.toggle('active', view === 'index');
   const lbl = document.getElementById('graph-toggle-label');
-  if (lbl) lbl.textContent = view === 'index' ? lastNonIndexView : 'index';
+  if (lbl) lbl.textContent = view === 'index' ? 'back' : 'all entities';
   if (view === 'index') renderGraphPanel();
   if (view === 'discover' && typeof renderDiscover === 'function') renderDiscover();
-  if (view === 'summarize' && typeof renderSummarizeMainView === 'function') renderSummarizeMainView();
+  if (view === 'summarize' && typeof renderSummarizeMainView === 'function') {
+    try { renderSummarizeMainView(); } catch (err) { console.error('renderSummarizeMainView failed', err); }
+  }
 }
 
 function toggleGraph() {
@@ -590,6 +600,8 @@ function closeDiscover() {
 }
 
 function graphTab(tab) {
+  // 'summary' is no longer an in-graph panel — it opens the standalone view.
+  if (tab === 'summary') { if (typeof switchToSummarizeView === 'function') switchToSummarizeView(); return; }
   activeGraphTab = tab;
   document.querySelectorAll('.index-toolbar .graph-tab').forEach(t => t.classList.remove('active'));
   const tabEl = document.getElementById('tab-' + tab);

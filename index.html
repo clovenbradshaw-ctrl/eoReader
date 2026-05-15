@@ -215,9 +215,101 @@
   .ge-item {
     padding: 6px 8px; border: 1px solid var(--border); border-radius: 3px;
     margin-bottom: 4px; cursor: pointer; font-size: 11px;
+    border-left-width: 3px;
   }
   .ge-item:hover { border-color: #555; }
   .ge-item.selected { border-color: var(--accent); background: #1e2a1e; }
+  .ge-item[data-kind="Entity"] { border-left-color: #5588aa; }
+  .ge-item[data-kind="Kind"] { border-left-color: #aa8855; }
+  .ge-item[data-kind="Field"] { border-left-color: #55aa88; }
+  .ge-item[data-kind="Link"] { border-left-color: #7788cc; }
+  .ge-item[data-kind="Network"] { border-left-color: #cc7788; }
+  .ge-item[data-kind="Atmosphere"] { border-left-color: #8877aa; }
+  .ge-item[data-kind="Lens"] { border-left-color: #aa55aa; }
+  .ge-item[data-kind="Paradigm"] { border-left-color: #cc9944; }
+  .ge-item[data-kind="Void"] { border-left-color: #666; }
+
+  /* subtype filter chips above the entity list */
+  .subtype-chip-row {
+    display: flex; flex-wrap: wrap; gap: 4px;
+    padding: 4px 0 8px; margin-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .subtype-chip {
+    display: inline-flex; align-items: baseline; gap: 4px;
+    padding: 2px 8px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--surface);
+    color: var(--text-dim); font-size: 10px;
+    cursor: pointer; user-select: none;
+    transition: border-color 0.12s, color 0.12s, background 0.12s;
+  }
+  .subtype-chip:hover { color: var(--text-bright); border-color: #555; }
+  .subtype-chip.active {
+    color: var(--text-bright); border-color: var(--accent); background: #1e2a1e;
+  }
+  .subtype-chip-count { color: var(--text-dim); font-size: 9px; }
+  .subtype-chip.active .subtype-chip-count { color: var(--accent); }
+  .subtype-chip-clear { color: #c06060; border-color: #c06060; }
+
+  /* record page layout: content on the left, entities aside on the right */
+  .record-page { padding: 16px; }
+  .record-header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    gap: 12px; margin-bottom: 12px; flex-wrap: wrap;
+  }
+  .record-title {
+    font-size: 16px; font-weight: 700; color: var(--text-bright);
+    font-family: -apple-system, sans-serif;
+  }
+  .record-meta { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+  .record-url { font-size: 11px; margin-top: 2px; }
+  .record-url a { color: var(--accent); }
+  .record-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  .record-layout { display: flex; gap: 16px; align-items: flex-start; }
+  .record-layout.no-aside .record-main { width: 100%; }
+  .record-main { flex: 1; min-width: 0; }
+  .record-generated {
+    margin-bottom: 16px; padding: 12px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 3px;
+  }
+  .record-body {
+    font-family: -apple-system, sans-serif; font-size: 13px; line-height: 1.8;
+    color: var(--text); background: var(--surface);
+    padding: 16px; border-radius: 3px;
+    max-height: 60vh; overflow-y: auto; white-space: pre-wrap;
+  }
+
+  .record-aside {
+    width: 320px; flex-shrink: 0;
+    border: 1px solid var(--border); border-radius: 3px;
+    background: var(--surface);
+    max-height: calc(100vh - 120px); display: flex; flex-direction: column;
+    position: sticky; top: 16px;
+  }
+  .record-aside-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px; border-bottom: 1px solid var(--border);
+  }
+  .record-aside-close {
+    padding: 2px 6px; font-size: 11px;
+  }
+  .record-aside-body { padding: 8px 10px; overflow-y: auto; flex: 1; }
+  .record-layout.aside-collapsed .record-aside { display: none; }
+
+  @media (max-width: 900px) {
+    .record-layout { flex-direction: column; }
+    .record-aside { width: 100%; position: static; max-height: 50vh; }
+  }
+
+  /* index view as overlay so the record behind stays in place */
+  #view-index.overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 50;
+    box-shadow: 0 -8px 24px rgba(0,0,0,0.4);
+    background: var(--bg);
+  }
   .ge-name { color: var(--text-bright); font-weight: 600; }
   .ge-kind { color: var(--text-dim); font-size: 9px; margin-left: 4px; }
   .ge-def { color: var(--text-dim); font-size: 10px; margin-top: 2px; font-style: italic; }
@@ -294,7 +386,7 @@
   #left-panel .lp-item .lp-badge { font-size: 8px; padding: 0 4px; border-radius: 2px; white-space: nowrap; }
   #left-panel input[type="text"] { width: 100%; margin-bottom: 6px; }
   #left-panel .lp-actions { display: flex; gap: 4px; flex-wrap: wrap; }
-  #main-content { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+  #main-content { flex: 1; overflow-y: auto; display: flex; flex-direction: column; position: relative; }
   #view-feed { flex: 1; padding: 0 24px 40px; overflow-y: auto; }
   #view-index { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   .library-scroll { flex: 1; overflow-y: auto; }
@@ -315,7 +407,7 @@
   <div class="controls">
     <input type="text" id="search" placeholder="search..." style="width:180px;" />
     <div style="flex:1;"></div>
-    <button class="prompt-toggle" onclick="toggleGraph()" id="graph-toggle"><i class="ph ph-graph"></i> <span id="graph-toggle-label">index</span> <span id="graph-count">0</span></button>
+    <button class="prompt-toggle" onclick="toggleGraph()" id="graph-toggle"><i class="ph ph-graph"></i> <span id="graph-toggle-label">all entities</span> <span id="graph-count">0</span></button>
     <span id="matrix-status" class="matrix-indicator" onclick="togglePrompt()"></span>
     <button class="prompt-toggle" onclick="togglePrompt()"><i class="ph ph-gear"></i></button>
     <div class="status" id="status"></div>
@@ -421,14 +513,10 @@
   </div>
 
   <div class="lp-section">
-    <div class="lp-label" style="cursor:pointer;"><span onclick="toggleLpSection('summarize')" style="display:flex;align-items:center;gap:4px;flex:1;"><i class="ph ph-caret-down lp-caret" id="caret-summarize"></i><i class="ph ph-file-text"></i> summarize</span><span id="summarize-comp-pill" style="font-size:9px;color:var(--text-dim);font-weight:400;text-transform:none;letter-spacing:0;"></span></div>
+    <div class="lp-label" style="cursor:pointer;"><span onclick="toggleLpSection('summarize')" style="display:flex;align-items:center;gap:4px;flex:1;"><i class="ph ph-caret-down lp-caret" id="caret-summarize"></i><i class="ph ph-chats-circle"></i> chat with docs</span><span id="summarize-comp-pill" style="font-size:9px;color:var(--text-dim);font-weight:400;text-transform:none;letter-spacing:0;"></span></div>
     <div id="section-summarize">
-      <p style="font-size:10px;color:var(--text-dim);line-height:1.45;margin:0 0 6px;">pick docs, drill into them. toggles drive the focused subgraph.</p>
-      <button class="act-btn" style="width:100%;padding:4px 8px;font-size:11px;background:var(--accent);color:#1a1a1a;border-color:var(--accent);font-weight:600;margin-bottom:6px;" onclick="switchToSummarizeView()"><i class="ph ph-play"></i> open summarize</button>
-      <div id="summarize-lp-list" style="font-size:11px;max-height:280px;overflow-y:auto;border-top:1px solid var(--border);padding-top:4px;"></div>
-      <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap;">
-        <button class="act-btn" style="font-size:9px;padding:2px 4px;" onclick="clearSummaryPicks('all');renderSummarizeLpList();renderSummarizeMainIfActive();">clear all</button>
-      </div>
+      <p style="font-size:10px;color:var(--text-dim);line-height:1.45;margin:0 0 6px;">pick sources, ask questions. drill into sites / spans / connections inside each source.</p>
+      <button class="act-btn" style="width:100%;padding:4px 8px;font-size:11px;background:var(--accent);color:#1a1a1a;border-color:var(--accent);font-weight:600;" onclick="switchToSummarizeView()"><i class="ph ph-chats-circle"></i> open</button>
     </div>
   </div>
 
@@ -464,7 +552,7 @@
       <button class="graph-tab" id="tab-scrub" onclick="graphTab('scrub')"><i class="ph ph-clock-counter-clockwise"></i> scrubber</button>
       <button class="graph-tab" id="tab-dream" onclick="graphTab('dream')"><i class="ph ph-moon-stars"></i> dream</button>
       <button class="graph-tab" id="tab-librarian" onclick="graphTab('librarian')"><i class="ph ph-chat-circle-dots"></i> librarian</button>
-      <button class="graph-tab" id="tab-summary" onclick="graphTab('summary')"><i class="ph ph-file-text"></i> summary</button>
+      <button class="graph-tab" id="tab-summary" onclick="switchToSummarizeView()"><i class="ph ph-chats-circle"></i> chat with docs</button>
       <button class="graph-tab" id="tab-eva" onclick="graphTab('eva')"><i class="ph ph-scales"></i> evaluate</button>
       <button class="graph-tab" onclick="exportAllSites()"><i class="ph ph-export"></i></button>
       <div style="flex:1;"></div>

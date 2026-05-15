@@ -292,8 +292,6 @@ function renderGraphPanel() {
     renderDreamView();
   } else if (activeGraphTab === 'librarian') {
     renderLibrarianView();
-  } else if (activeGraphTab === 'summary') {
-    renderSummaryGeneratorView();
   } else if (activeGraphTab === 'eva') {
     renderEvaView();
   }
@@ -312,10 +310,33 @@ function groupKeyOf(e, id) {
   return e.nameGroup || id;
 }
 
+function subtypeKeyOf(e) {
+  return ((e.subtype || e.kind || 'other') + '').toLowerCase();
+}
+
+function toggleSubtypeFilter(st) {
+  if (!(window.activeSubtypeFilters instanceof Set)) window.activeSubtypeFilters = new Set();
+  if (window.activeSubtypeFilters.has(st)) window.activeSubtypeFilters.delete(st);
+  else window.activeSubtypeFilters.add(st);
+  try {
+    localStorage.setItem('eo_subtypeFilters', JSON.stringify([...window.activeSubtypeFilters]));
+  } catch (e) {}
+  renderEntityList();
+}
+
+function clearSubtypeFilters() {
+  window.activeSubtypeFilters = new Set();
+  try { localStorage.removeItem('eo_subtypeFilters'); } catch (e) {}
+  renderEntityList();
+}
+
 (function () {
   try {
     if (localStorage.getItem('eo_groupByNameGroup') === '1') window.groupByNameGroup = true;
+    const raw = localStorage.getItem('eo_subtypeFilters');
+    if (raw) window.activeSubtypeFilters = new Set(JSON.parse(raw));
   } catch (e) {}
+  if (!(window.activeSubtypeFilters instanceof Set)) window.activeSubtypeFilters = new Set();
 })();
 
 function renderEntityList() {
@@ -387,28 +408,70 @@ function renderEntityList() {
     return;
   }
 
-  // default: terrain-grouped list
-  const terrains = ['Entity','Link','Network','Kind','Field','Void','Atmosphere','Lens','Paradigm'];
-  const grouped = {};
-  terrains.forEach(t => grouped[t] = []);
-  grouped['Other'] = [];
-  ids.forEach(id => {
-    const t = graph.entities[id].kind || 'Other';
-    if (grouped[t]) grouped[t].push(id);
-    else grouped['Other'].push(id);
+  // default: subtype-grouped list, sorted by connection count, with subtype chip filter
+  const filters = window.activeSubtypeFilters instanceof Set ? window.activeSubtypeFilters : new Set();
+
+  // precompute connection counts once
+  const conCounts = {};
+  ids.forEach(id => { conCounts[id] = 0; });
+  graph.connections.forEach(c => {
+    if (conCounts[c.from] != null) conCounts[c.from]++;
+    if (conCounts[c.to] != null) conCounts[c.to]++;
   });
 
-  let html = '';
-  terrains.concat(['Other']).forEach(terrain => {
-    const group = grouped[terrain];
-    if (!group || !group.length) return;
-    group.sort((a, b) => graph.entities[a].canonical.localeCompare(graph.entities[b].canonical));
+  // chip row reflects the pre-chip pool so users can see what's available even when filtering
+  const subtypeCounts = {};
+  ids.forEach(id => {
+    const st = subtypeKeyOf(graph.entities[id]);
+    subtypeCounts[st] = (subtypeCounts[st] || 0) + 1;
+  });
+  const chipOrder = Object.keys(subtypeCounts).sort((a, b) =>
+    subtypeCounts[b] - subtypeCounts[a] || a.localeCompare(b));
+
+  let html = '<div class="subtype-chip-row">';
+  chipOrder.forEach(st => {
+    const active = filters.has(st);
+    html += '<span class="subtype-chip' + (active ? ' active' : '') + '" onclick="toggleSubtypeFilter(\'' + escapeAttr(st) + '\')">' +
+      escapeAttr(st) + ' <span class="subtype-chip-count">' + subtypeCounts[st] + '</span></span>';
+  });
+  if (filters.size) {
+    html += '<span class="subtype-chip subtype-chip-clear" onclick="clearSubtypeFilters()">clear</span>';
+  }
+  html += '</div>';
+
+  // apply chip filter
+  const visibleIds = filters.size
+    ? ids.filter(id => filters.has(subtypeKeyOf(graph.entities[id])))
+    : ids;
+
+  if (!visibleIds.length) {
+    html += '<div style="color:var(--text-dim);padding:8px;font-size:11px;">no entities match the active filters</div>';
+    el.innerHTML = html;
+    return;
+  }
+
+  // bucket by subtype
+  const grouped = {};
+  visibleIds.forEach(id => {
+    const st = subtypeKeyOf(graph.entities[id]);
+    (grouped[st] = grouped[st] || []).push(id);
+  });
+
+  // group order: largest first, ties alpha
+  const groupOrder = Object.keys(grouped).sort((a, b) =>
+    grouped[b].length - grouped[a].length || a.localeCompare(b));
+
+  groupOrder.forEach(st => {
+    const group = grouped[st];
+    // within-group sort: connection count desc, then canonical asc
+    group.sort((a, b) =>
+      (conCounts[b] || 0) - (conCounts[a] || 0) ||
+      graph.entities[a].canonical.localeCompare(graph.entities[b].canonical));
 
     html += '<div class="lp-label" style="margin-top:8px;cursor:pointer;font-size:9px;" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'\':\'none\'">';
-    html += '<i class="ph ph-caret-down" style="font-size:8px;"></i> ' + terrain + ' <span style="color:var(--text-dim);">(' + group.length + ')</span></div>';
+    html += '<i class="ph ph-caret-down" style="font-size:8px;"></i> ' + escapeAttr(st) + ' <span style="color:var(--text-dim);">(' + group.length + ')</span></div>';
     html += '<div>';
     if (window.groupByNameGroup) {
-      // bucket by nameGroup (or id when no group); render groups with >1 member as collapsible
       const buckets = {};
       const order = [];
       group.forEach(id => {
@@ -423,11 +486,11 @@ function renderEntityList() {
           const id = members[0];
           const e = graph.entities[id];
           const sel = id === selectedEntity ? ' selected' : '';
-          const conCount = graph.connections.filter(c => c.from === id || c.to === id).length;
+          const conCount = conCounts[id] || 0;
           const name = e.displayName && e.displayName !== e.canonical
             ? escapeAttr(e.displayName) + ' <span style="color:var(--text-dim);font-size:9px;">(' + escapeAttr(e.canonical) + ')</span>'
             : escapeAttr(e.canonical);
-          html += '<div class="ge-item' + sel + '" onclick="selectEntity(\'' + id + '\')">' +
+          html += '<div class="ge-item' + sel + '" data-kind="' + escapeAttr(e.kind || 'Other') + '" onclick="selectEntity(\'' + id + '\')">' +
             '<span class="ge-name">' + name + '</span>' +
             (e.subtype ? '<span class="ge-kind">' + e.subtype + '</span>' : '') +
             (conCount ? ' <span class="ge-kind"><i class="ph ph-flow-arrow"></i>' + conCount + '</span>' : '') +
@@ -443,8 +506,8 @@ function renderEntityList() {
           members.forEach(id => {
             const e = graph.entities[id];
             const sel = id === selectedEntity ? ' selected' : '';
-            const conCount = graph.connections.filter(c => c.from === id || c.to === id).length;
-            html += '<div class="ge-item' + sel + '" onclick="event.stopPropagation();selectEntity(\'' + id + '\')">' +
+            const conCount = conCounts[id] || 0;
+            html += '<div class="ge-item' + sel + '" data-kind="' + escapeAttr(e.kind || 'Other') + '" onclick="event.stopPropagation();selectEntity(\'' + id + '\')">' +
               '<span class="ge-name">' + escapeAttr(e.canonical) + '</span>' +
               (e.subtype ? '<span class="ge-kind">' + e.subtype + '</span>' : '') +
               (conCount ? ' <span class="ge-kind"><i class="ph ph-flow-arrow"></i>' + conCount + '</span>' : '') +
@@ -457,11 +520,11 @@ function renderEntityList() {
       group.forEach(id => {
         const e = graph.entities[id];
         const sel = id === selectedEntity ? ' selected' : '';
-        const conCount = graph.connections.filter(c => c.from === id || c.to === id).length;
+        const conCount = conCounts[id] || 0;
         const name = e.displayName && e.displayName !== e.canonical
           ? escapeAttr(e.canonical) + ' <span style="color:var(--text-dim);font-size:9px;">[' + escapeAttr(e.displayName) + ']</span>'
           : escapeAttr(e.canonical);
-        html += '<div class="ge-item' + sel + '" onclick="selectEntity(\'' + id + '\')">' +
+        html += '<div class="ge-item' + sel + '" data-kind="' + escapeAttr(e.kind || 'Other') + '" onclick="selectEntity(\'' + id + '\')">' +
           '<span class="ge-name">' + name + '</span>' +
           (e.subtype ? '<span class="ge-kind">' + e.subtype + '</span>' : '') +
           (conCount ? ' <span class="ge-kind"><i class="ph ph-flow-arrow"></i>' + conCount + '</span>' : '') +
@@ -703,7 +766,7 @@ function renderEntityDetail(id) {
 
   html += '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">';
   html += '<button class="act-btn" onclick="exportSite(\'' + id + '\')"><i class="ph ph-export"></i> export dossier</button>';
-  html += '<button class="act-btn" onclick="librarianSummarizeEntity(\'' + id + '\')"><i class="ph ph-file-text"></i> generate summary</button>';
+  html += '<button class="act-btn" onclick="openSummaryWithEntity(\'' + id + '\')"><i class="ph ph-chats-circle"></i> chat with docs</button>';
   html += '<button class="act-btn" onclick="askLibrarianAbout(\'' + id + '\')"><i class="ph ph-chat-circle"></i> ask librarian</button>';
   html += '<button class="act-btn" style="color:#c06060;border-color:#c06060;" onclick="deleteEntity(\'' + id + '\')"><i class="ph ph-trash"></i> delete</button>';
   html += '</div>';
@@ -1177,14 +1240,19 @@ function viewSourceInMain(srcIdx) {
   const el = document.getElementById('view-feed');
   const itemIdx = allItems.findIndex(it => it._sourceId === s.id || (s.url && it.link === s.url));
 
-  let html = '<div style="padding:16px;">';
-  html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">';
+  const linkedSites = s.processed
+    ? Object.entries(graph.entities).filter(([id, e]) =>
+        (e.sources || []).some(src => src.url === s.url || src.title === s.title))
+    : [];
+
+  let html = '<div class="record-page">';
+  html += '<div class="record-header">';
   html += '<div>';
-  html += '<div style="font-size:16px;font-weight:700;color:var(--text-bright);font-family:-apple-system,sans-serif;">' + escapeAttr(s.title || '') + '</div>';
-  html += '<div style="font-size:11px;color:var(--text-dim);margin-top:4px;">' + escapeAttr(s.sourceName || '') + ' · ' + new Date(s.ingestedAt || s.date).toLocaleDateString() + '</div>';
-  if (s.url) html += '<div style="font-size:11px;margin-top:2px;"><a href="' + escapeAttr(s.url) + '" target="_blank" style="color:var(--accent);">' + escapeAttr(s.url) + '</a></div>';
+  html += '<div class="record-title">' + escapeAttr(s.title || '') + '</div>';
+  html += '<div class="record-meta">' + escapeAttr(s.sourceName || '') + ' · ' + new Date(s.ingestedAt || s.date).toLocaleDateString() + '</div>';
+  if (s.url) html += '<div class="record-url"><a href="' + escapeAttr(s.url) + '" target="_blank">' + escapeAttr(s.url) + '</a></div>';
   html += '</div>';
-  html += '<div style="display:flex;gap:6px;">';
+  html += '<div class="record-actions">';
   html += '<button class="act-btn" onclick="pinSource(' + srcIdx + ')"><i class="ph ph-push-pin' + (s.pinned ? '-fill' : '') + '"></i> ' + (s.pinned ? 'unpin' : 'pin') + '</button>';
   html += '<button class="act-btn" onclick="' + (s.hidden ? 'unhideSource' : 'hideSource') + '(' + srcIdx + ')"><i class="ph ph-eye' + (s.hidden ? '' : '-slash') + '"></i> ' + (s.hidden ? 'unhide' : 'hide') + '</button>';
   if (itemIdx >= 0) {
@@ -1196,38 +1264,60 @@ function viewSourceInMain(srcIdx) {
       html += '<button class="act-btn" onclick="generateDigest(' + itemIdx + ', this)"><i class="ph ph-lightning"></i> generate</button>';
     }
   }
+  if (linkedSites.length) {
+    html += '<button class="act-btn record-aside-toggle" onclick="toggleRecordAside()" title="toggle entities panel"><i class="ph ph-side-bar-simple"></i> <span id="record-aside-count">' + linkedSites.length + '</span></button>';
+  }
   html += '<button class="act-btn" onclick="renderItems()"><i class="ph ph-arrow-left"></i> back</button>';
   html += '</div></div>';
 
-  if (s.processed) {
-    const linkedSites = Object.entries(graph.entities)
-      .filter(([id, e]) => (e.sources || []).some(src => src.url === s.url || src.title === s.title));
-    if (linkedSites.length) {
-      html += '<div style="margin-bottom:12px;"><div class="lp-label"><i class="ph ph-map-pin"></i> sites found (' + linkedSites.length + ')</div>';
-      html += renderEntityGroups(linkedSites);
-      html += '</div>';
-    }
-    html += renderReprocessHistory(s);
-  } else {
-    html += '<div style="color:var(--text-dim);font-size:11px;margin-bottom:12px;"><i class="ph ph-info"></i> not yet processed — click process to index this content</div>';
-  }
+  html += '<div class="record-layout' + (linkedSites.length ? '' : ' no-aside') + '">';
+  html += '<div class="record-main">';
 
   if (itemIdx >= 0 && allItems[itemIdx].generatedRaw) {
-    html += '<div style="margin-bottom:16px;padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:3px;">';
-    html += '<div class="lp-label"><i class="ph ph-lightning"></i> generated entry</div>';
+    html += '<div class="record-generated"><div class="lp-label"><i class="ph ph-lightning"></i> generated entry</div>';
     html += mdToHtml(allItems[itemIdx].generatedRaw, { linkNodes: true });
     html += '</div>';
   }
 
   html += '<div class="lp-label" style="margin-top:8px;"><i class="ph ph-article"></i> source content</div>';
-  html += '<div style="font-family:-apple-system,sans-serif;font-size:13px;line-height:1.8;color:var(--text);background:var(--surface);padding:16px;border-radius:3px;max-height:60vh;overflow-y:auto;white-space:pre-wrap;">' + escapeAttr(s.body || '(no content)') + '</div>';
+  html += '<div class="record-body">' + escapeAttr(s.body || '(no content)') + '</div>';
+
+  if (s.processed) {
+    html += renderReprocessHistory(s);
+  } else {
+    html += '<div style="color:var(--text-dim);font-size:11px;margin-top:12px;margin-bottom:12px;"><i class="ph ph-info"></i> not yet processed — click process to index this content</div>';
+  }
 
   html += '<div style="margin-top:12px;display:flex;gap:8px;">';
   html += '<button class="act-btn" style="color:#c06060;border-color:#c06060;" onclick="deleteSource(' + srcIdx + ')"><i class="ph ph-trash"></i> delete source</button>';
   html += '</div>';
 
-  html += '</div>';
+  html += '</div>'; // /record-main
+
+  if (linkedSites.length) {
+    html += '<aside class="record-aside" id="record-aside">';
+    html += '<div class="record-aside-head"><span class="lp-label" style="margin:0;"><i class="ph ph-map-pin"></i> sites found (' + linkedSites.length + ')</span>';
+    html += '<button class="act-btn record-aside-close" onclick="toggleRecordAside()" title="hide entities panel"><i class="ph ph-x"></i></button></div>';
+    html += '<div class="record-aside-body">' + renderEntityGroups(linkedSites) + '</div>';
+    html += '</aside>';
+  }
+
+  html += '</div>'; // /record-layout
+  html += '</div>'; // /record-page
   el.innerHTML = html;
+
+  // restore collapse preference
+  if (linkedSites.length) {
+    const collapsed = (typeof localStorage !== 'undefined' && localStorage.getItem('eo_recordAsideCollapsed') === '1');
+    document.querySelector('.record-layout')?.classList.toggle('aside-collapsed', collapsed);
+  }
+}
+
+function toggleRecordAside() {
+  const layout = document.querySelector('.record-layout');
+  if (!layout) return;
+  const collapsed = layout.classList.toggle('aside-collapsed');
+  try { localStorage.setItem('eo_recordAsideCollapsed', collapsed ? '1' : '0'); } catch (e) {}
 }
 
 async function deleteSource(idx) {

@@ -849,7 +849,12 @@ async function generateDigest(idx, btn) {
     const systemPrompt = framingSystemBlock
       ? baseSystem + '\n\n' + framingSystemBlock
       : baseSystem;
-    const rawOutput = await callClaude(systemPrompt, userMsg, 2000);
+    const rawOutput = await callLLMText({
+      system: systemPrompt,
+      user: userMsg,
+      maxTokens: 2000,
+      role: 'digest',
+    });
     item.generatedRaw = rawOutput;
 
     const sentences = splitSentences(item.body);
