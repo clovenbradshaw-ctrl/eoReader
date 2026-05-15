@@ -19,7 +19,7 @@ let customFeeds = [];
 
 let selectedEntity = null;
 let activeGraphTab = 'entities';
-let currentView = 'feed';
+let currentView = 'library';
 
 // walk session
 let walk = {
@@ -553,10 +553,19 @@ function updateGraphCount() {
   if (el) el.textContent = Object.keys(graph.entities).length;
 }
 
+// Three real destinations: 'library' (landing), 'document' (workspace),
+// 'index' (graph, shown as an overlay). 'feed' is the de-emphasized RSS
+// reading list.
 function showView(view) {
   if (view === 'index' && currentView !== 'index') lastNonIndexView = currentView;
   currentView = view;
   const idx = document.getElementById('view-index');
+  const others = {
+    'view-library': 'flex',
+    'view-document': 'flex',
+    'view-feed': '',
+    'view-discover': 'flex',
+  };
   if (view === 'index') {
     // overlay the index on top of whatever was here — don't hide the underlying view
     idx.style.display = 'flex';
@@ -564,21 +573,20 @@ function showView(view) {
   } else {
     idx.style.display = 'none';
     idx.classList.remove('overlay');
-    document.getElementById('view-feed').style.display = view === 'feed' ? '' : 'none';
-    const disc = document.getElementById('view-discover');
-    if (disc) disc.style.display = view === 'discover' ? 'flex' : 'none';
-    const sum = document.getElementById('view-summarize');
-    if (sum) sum.style.display = view === 'summarize' ? 'flex' : 'none';
+    for (const [id, disp] of Object.entries(others)) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = (id === 'view-' + view) ? disp : 'none';
+    }
   }
   const btn = document.getElementById('graph-toggle');
   if (btn) btn.classList.toggle('active', view === 'index');
   const lbl = document.getElementById('graph-toggle-label');
   if (lbl) lbl.textContent = view === 'index' ? 'back' : 'all entities';
   if (view === 'index') renderGraphPanel();
+  if (view === 'library' && typeof renderLibrary === 'function') renderLibrary();
+  if (view === 'feed' && typeof renderItems === 'function') renderItems();
+  if (view === 'document' && typeof renderDocument === 'function') renderDocument();
   if (view === 'discover' && typeof renderDiscover === 'function') renderDiscover();
-  if (view === 'summarize' && typeof renderSummarizeMainView === 'function') {
-    try { renderSummarizeMainView(); } catch (err) { console.error('renderSummarizeMainView failed', err); }
-  }
 }
 
 function toggleGraph() {
@@ -589,8 +597,8 @@ function toggleGraph() {
   }
 }
 
-let lastNonIndexView = 'feed';
-let lastNonDiscoverView = 'feed';
+let lastNonIndexView = 'library';
+let lastNonDiscoverView = 'library';
 function openDiscover() {
   if (currentView !== 'discover') lastNonDiscoverView = currentView;
   showView('discover');

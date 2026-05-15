@@ -259,13 +259,10 @@ function toggleHiddenSources() {
 function openFeedItem(idx) {
   const item = allItems[idx];
   if (!item) return;
+  // Promote-on-open: an RSS item becomes a document the moment it's opened.
   const src = promoteFeedItemToSource(idx);
-  if (src) {
-    const srcIdx = sources.indexOf(src);
-    viewSourceInMain(srcIdx);
-  } else {
-    scrollToItem(idx);
-  }
+  if (src) openDocument(src.id);
+  else scrollToItem(idx);
 }
 
 // ---- graph rendering ----
@@ -583,10 +580,12 @@ function selectEntity(id) {
   renderGraphPanel();
 }
 
-function renderEntityDetail(id) {
+function renderEntityDetail(id, targetEl, navFn) {
   const e = graph.entities[id];
   if (!e) return;
-  const main = document.getElementById('graph-main-content');
+  const main = targetEl || document.getElementById('graph-main-content');
+  if (!main) return;
+  navFn = navFn || 'selectEntity';
   const cons = graph.connections.filter(c => c.from === id || c.to === id);
 
   let html = '<div class="ge-detail">';
@@ -674,7 +673,7 @@ function renderEntityDetail(id) {
       html += '<div style="padding:4px 0;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:flex-start;">';
       html += '<div style="flex:1;">';
       html += '<span style="color:var(--text-bright);">' + dir + '</span> <strong style="color:var(--accent);">' + escapeAttr(c.relation) + '</strong> ';
-      html += '<span style="color:var(--text-bright);cursor:pointer;text-decoration:underline;" onclick="selectEntity(\'' + other + '\')">' + escapeAttr(otherName) + '</span>';
+      html += '<span style="color:var(--text-bright);cursor:pointer;text-decoration:underline;" onclick="' + navFn + '(\'' + other + '\')">' + escapeAttr(otherName) + '</span>';
       html += ' <span style="font-size:9px;color:' + confColor + ';">' + conf + '</span>';
       html += ' <span style="font-size:9px;color:' + provColor + ';" title="provenance">' + provenanceLabel(prov) + '</span>';
       if (c.evidence) html += '<div style="font-size:10px;color:var(--text-dim);font-style:italic;">' + escapeAttr(c.evidence) + '</div>';
@@ -1049,100 +1048,150 @@ function filterBySource(key) {
   renderSourcesList();
 }
 
-function renderLibrary() {
-  const el = document.getElementById('lp-library');
-  const countEl = document.getElementById('library-count');
-  if (!el) return;
-  const searchVal = (document.getElementById('library-search')?.value || '').toLowerCase();
+// How many sites (graph entities) were extracted from a given doc.
+function countDocSites(url, title) {
+  let n = 0;
+  for (const e of Object.values(graph.entities)) {
+    if ((e.sources || []).some(s => (url && s.url === url) || (title && s.title === title))) n++;
+  }
+  return n;
+}
 
-  // build candidate list: persisted sources + processed feed items not yet in sources
+let librarySort = { col: 'recent', dir: -1 };
+function setLibrarySort(col) {
+  if (librarySort.col === col) librarySort.dir *= -1;
+  else librarySort = { col, dir: (col === 'title' || col === 'source') ? 1 : -1 };
+  renderLibrary();
+}
+
+// The Library: a dense, sortable, searchable table of every document.
+// Renders into #view-library. Toolbar is built once so the search input
+// keeps focus across re-renders.
+function renderLibrary() {
+  const root = document.getElementById('view-library');
+  if (!root) return;
+
+  if (!document.getElementById('lib-table-wrap')) {
+    root.innerHTML =
+      '<div class="lib-toolbar">' +
+        '<input type="text" id="lib-search" placeholder="search documents..." oninput="renderLibrary()" />' +
+        '<select id="lib-filter" onchange="renderLibrary()">' +
+          '<option value="all">all</option>' +
+          '<option value="processed">processed</option>' +
+          '<option value="new">unprocessed</option>' +
+        '</select>' +
+        '<button class="act-btn" id="lib-hidden-btn" onclick="toggleHiddenSources()"></button>' +
+        '<div style="flex:1;"></div>' +
+        '<label class="act-btn" style="cursor:pointer;"><i class="ph ph-file-arrow-up"></i> upload file' +
+          '<input type="file" accept=".txt,.md,.html,.pdf" style="display:none;" onchange="ingestFile(event)" /></label>' +
+        '<button class="act-btn" onclick="ingestPaste()"><i class="ph ph-clipboard-text"></i> paste text</button>' +
+      '</div>' +
+      '<div class="lib-scroll"><div id="lib-table-wrap"></div></div>';
+  }
+
+  const searchVal = (document.getElementById('lib-search')?.value || '').toLowerCase();
+  const filterVal = document.getElementById('lib-filter')?.value || 'all';
+
+  // candidate list: persisted sources + processed feed items not yet saved
   let items = [];
   sources.forEach((s, i) => {
     items.push({
-      title: s.title,
-      sourceName: s.sourceName,
+      title: s.title, sourceName: s.sourceName,
       date: s.ingestedAt || s.date,
       lastInteracted: s.lastInteracted || (s.ingestedAt ? new Date(s.ingestedAt).getTime() : 0),
-      processed: s.processed,
-      pinned: !!s.pinned,
-      hidden: !!s.hidden,
-      type: 'source',
-      idx: i,
-      url: s.url,
+      processed: !!s.processed, pinned: !!s.pinned, hidden: !!s.hidden,
+      type: 'source', idx: i, id: s.id, url: s.url,
+      sites: countDocSites(s.url, s.title),
     });
   });
   allItems.forEach((item, i) => {
     if (!item._processed) return;
-    const alreadyInSources = sources.some(s => s.url === item.link || s.title === item.title);
-    if (alreadyInSources) return;
+    if (sources.some(s => s.url === item.link || s.title === item.title)) return;
     items.push({
-      title: item.title,
-      sourceName: item.sourceName,
+      title: item.title, sourceName: item.sourceName,
       date: item.date ? item.date.toISOString() : '',
       lastInteracted: item.date ? new Date(item.date).getTime() : 0,
-      processed: true,
-      pinned: false,
-      hidden: false,
-      type: 'feed',
-      idx: i,
-      url: item.link,
+      processed: true, pinned: false, hidden: false,
+      type: 'feed', idx: i, id: null, url: item.link,
+      sites: countDocSites(item.link, item.title),
     });
   });
 
-  if (showHidden) {
-    items = items.filter(it => it.hidden);
-  } else {
-    items = items.filter(it => !it.hidden);
+  items = items.filter(it => showHidden ? it.hidden : !it.hidden);
+  if (filterVal === 'processed') items = items.filter(it => it.processed);
+  else if (filterVal === 'new') items = items.filter(it => !it.processed);
+  if (searchVal) {
+    items = items.filter(it =>
+      (it.title || '').toLowerCase().includes(searchVal) ||
+      (it.sourceName || '').toLowerCase().includes(searchVal));
   }
 
-  // pinned first, then by lastInteracted desc, then by date desc as tiebreaker
+  const dir = librarySort.dir;
   items.sort((a, b) => {
-    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-    if ((b.lastInteracted || 0) !== (a.lastInteracted || 0)) return (b.lastInteracted || 0) - (a.lastInteracted || 0);
-    return new Date(b.date || 0) - new Date(a.date || 0);
+    switch (librarySort.col) {
+      case 'title': return dir * (a.title || '').localeCompare(b.title || '');
+      case 'source': return dir * (a.sourceName || '').localeCompare(b.sourceName || '');
+      case 'date': return dir * (new Date(a.date || 0) - new Date(b.date || 0));
+      case 'sites': return dir * ((a.sites || 0) - (b.sites || 0));
+      case 'state': return dir * ((a.processed ? 1 : 0) - (b.processed ? 1 : 0));
+      default:
+        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+        if ((b.lastInteracted || 0) !== (a.lastInteracted || 0)) return (b.lastInteracted || 0) - (a.lastInteracted || 0);
+        return new Date(b.date || 0) - new Date(a.date || 0);
+    }
   });
 
-  if (searchVal) {
-    items = items.filter(it => (it.title || '').toLowerCase().includes(searchVal) || (it.sourceName || '').toLowerCase().includes(searchVal));
-  }
-
+  const countEl = document.getElementById('library-count');
   if (countEl) countEl.textContent = items.length;
-
   const hiddenCount = sources.filter(s => s.hidden).length;
-  let toolbar = '<div style="display:flex;justify-content:space-between;align-items:center;font-size:9px;color:var(--text-dim);margin:4px 0;">';
-  toolbar += '<span>' + (showHidden ? 'hidden' : 'visible') + '</span>';
-  toolbar += '<button class="act-btn" style="padding:1px 6px;font-size:9px;" onclick="toggleHiddenSources()">' +
-    (showHidden ? '<i class="ph ph-eye"></i> show visible' : '<i class="ph ph-eye-slash"></i> hidden (' + hiddenCount + ')') + '</button>';
-  toolbar += '</div>';
+  const hiddenBtn = document.getElementById('lib-hidden-btn');
+  if (hiddenBtn) hiddenBtn.innerHTML = showHidden
+    ? '<i class="ph ph-eye"></i> show visible'
+    : '<i class="ph ph-eye-slash"></i> hidden (' + hiddenCount + ')';
 
+  const wrap = document.getElementById('lib-table-wrap');
   if (!items.length) {
-    el.innerHTML = toolbar + '<div style="color:var(--text-dim);font-size:10px;padding:4px;">' + (showHidden ? 'no hidden sources' : 'no content yet') + '</div>';
+    wrap.innerHTML = '<div class="lib-empty">' +
+      (showHidden ? 'no hidden documents' :
+        'no documents yet — upload a file or paste text to get started.') + '</div>';
     return;
   }
 
-  el.innerHTML = toolbar + items.map(it => {
-    const badge = it.processed
-      ? '<span class="lp-badge" style="background:#88C07022;color:var(--accent);"><i class="ph ph-check"></i></span>'
-      : '<span class="lp-badge" style="background:#88888822;color:var(--text-dim);">new</span>';
-    const pinIcon = it.pinned
-      ? '<span style="color:var(--accent);" title="pinned"><i class="ph ph-push-pin-fill"></i></span>'
-      : '';
-    const onclick = it.type === 'source'
-      ? 'viewSourceInMain(' + it.idx + ')'
+  const arrow = (col) => librarySort.col === col ? (librarySort.dir < 0 ? ' ▾' : ' ▴') : '';
+  let html = '<table class="lib-table"><thead><tr>' +
+    '<th onclick="setLibrarySort(\'title\')">document' + arrow('title') + '</th>' +
+    '<th onclick="setLibrarySort(\'source\')">source' + arrow('source') + '</th>' +
+    '<th onclick="setLibrarySort(\'date\')">date' + arrow('date') + '</th>' +
+    '<th onclick="setLibrarySort(\'sites\')">sites' + arrow('sites') + '</th>' +
+    '<th onclick="setLibrarySort(\'state\')">state' + arrow('state') + '</th>' +
+    '<th></th></tr></thead><tbody>';
+
+  items.forEach(it => {
+    const open = it.type === 'source'
+      ? 'openDocument(\'' + escapeAttr(it.id) + '\')'
       : 'openFeedItem(' + it.idx + ')';
-    const actions = it.type === 'source'
-      ? '<button class="act-btn" style="padding:1px 4px;font-size:9px;border:none;" onclick="event.stopPropagation();pinSource(' + it.idx + ')" title="' + (it.pinned ? 'unpin' : 'pin') + '"><i class="ph ph-' + (it.pinned ? 'push-pin-fill' : 'push-pin') + '"></i></button>' +
-        '<button class="act-btn" style="padding:1px 4px;font-size:9px;border:none;color:var(--text-dim);" onclick="event.stopPropagation();' + (it.hidden ? 'unhideSource' : 'hideSource') + '(' + it.idx + ')" title="' + (it.hidden ? 'unhide' : 'hide') + '"><i class="ph ph-eye' + (it.hidden ? '' : '-slash') + '"></i></button>'
-      : '';
-    return '<div class="lp-item" onclick="' + onclick + '">' +
-      '<div style="flex:1;min-width:0;">' +
-        '<div class="lp-title">' + pinIcon + escapeAttr((it.title || '').slice(0, 50)) + '</div>' +
-        '<div class="lp-meta">' + escapeAttr(it.sourceName || '') + '</div>' +
-      '</div>' +
-      actions +
-      badge +
-    '</div>';
-  }).join('');
+    const badge = it.processed
+      ? '<span class="lib-badge proc"><i class="ph ph-check"></i> indexed</span>'
+      : '<span class="lib-badge new">new</span>';
+    const pin = it.pinned ? '<i class="ph ph-push-pin-fill" style="color:var(--accent);"></i> ' : '';
+    let actions = '';
+    if (it.type === 'source') {
+      actions =
+        '<button onclick="event.stopPropagation();pinSource(' + it.idx + ')" title="' + (it.pinned ? 'unpin' : 'pin') + '"><i class="ph ph-push-pin' + (it.pinned ? '-fill' : '') + '"></i></button>' +
+        '<button onclick="event.stopPropagation();' + (it.hidden ? 'unhideSource' : 'hideSource') + '(' + it.idx + ')" title="' + (it.hidden ? 'unhide' : 'hide') + '"><i class="ph ph-eye' + (it.hidden ? '' : '-slash') + '"></i></button>';
+    }
+    const dateStr = it.date ? new Date(it.date).toLocaleDateString() : '';
+    html += '<tr onclick="' + open + '">' +
+      '<td class="lib-title-cell">' + pin + escapeAttr((it.title || '(untitled)').slice(0, 110)) + '</td>' +
+      '<td class="lib-cell-dim">' + escapeAttr(it.sourceName || '') + '</td>' +
+      '<td class="lib-cell-dim">' + escapeAttr(dateStr) + '</td>' +
+      '<td class="lib-cell-dim">' + (it.sites || 0) + '</td>' +
+      '<td>' + badge + '</td>' +
+      '<td class="lib-row-actions">' + actions + '</td>' +
+    '</tr>';
+  });
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
 }
 
 function scrollToItem(idx) {
@@ -1229,95 +1278,10 @@ function renderReprocessHistory(s) {
   return out;
 }
 
+// Back-compat: the old record page is now the document workspace.
 function viewSourceInMain(srcIdx) {
   const s = sources[srcIdx];
-  if (!s) return;
-  s.lastInteracted = Date.now();
-  saveGraph();
-
-  if (currentView !== 'feed') showView('feed');
-
-  const el = document.getElementById('view-feed');
-  const itemIdx = allItems.findIndex(it => it._sourceId === s.id || (s.url && it.link === s.url));
-
-  const linkedSites = s.processed
-    ? Object.entries(graph.entities).filter(([id, e]) =>
-        (e.sources || []).some(src => src.url === s.url || src.title === s.title))
-    : [];
-
-  let html = '<div class="record-page">';
-  html += '<div class="record-header">';
-  html += '<div>';
-  html += '<div class="record-title">' + escapeAttr(s.title || '') + '</div>';
-  html += '<div class="record-meta">' + escapeAttr(s.sourceName || '') + ' · ' + new Date(s.ingestedAt || s.date).toLocaleDateString() + '</div>';
-  if (s.url) html += '<div class="record-url"><a href="' + escapeAttr(s.url) + '" target="_blank">' + escapeAttr(s.url) + '</a></div>';
-  html += '</div>';
-  html += '<div class="record-actions">';
-  html += '<button class="act-btn" onclick="pinSource(' + srcIdx + ')"><i class="ph ph-push-pin' + (s.pinned ? '-fill' : '') + '"></i> ' + (s.pinned ? 'unpin' : 'pin') + '</button>';
-  html += '<button class="act-btn" onclick="' + (s.hidden ? 'unhideSource' : 'hideSource') + '(' + srcIdx + ')"><i class="ph ph-eye' + (s.hidden ? '' : '-slash') + '"></i> ' + (s.hidden ? 'unhide' : 'hide') + '</button>';
-  if (itemIdx >= 0) {
-    const isProcessed = !!s.processed;
-    const label = isProcessed ? 'reprocess' : 'process';
-    const icon = isProcessed ? 'ph-arrows-clockwise' : 'ph-cpu';
-    html += '<button class="act-btn" onclick="startWalk(' + itemIdx + ')"><i class="ph ' + icon + '"></i> ' + label + '</button>';
-    if (isProcessed) {
-      html += '<button class="act-btn" onclick="generateDigest(' + itemIdx + ', this)"><i class="ph ph-lightning"></i> generate</button>';
-    }
-  }
-  if (linkedSites.length) {
-    html += '<button class="act-btn record-aside-toggle" onclick="toggleRecordAside()" title="toggle entities panel"><i class="ph ph-side-bar-simple"></i> <span id="record-aside-count">' + linkedSites.length + '</span></button>';
-  }
-  html += '<button class="act-btn" onclick="renderItems()"><i class="ph ph-arrow-left"></i> back</button>';
-  html += '</div></div>';
-
-  html += '<div class="record-layout' + (linkedSites.length ? '' : ' no-aside') + '">';
-  html += '<div class="record-main">';
-
-  if (itemIdx >= 0 && allItems[itemIdx].generatedRaw) {
-    html += '<div class="record-generated"><div class="lp-label"><i class="ph ph-lightning"></i> generated entry</div>';
-    html += mdToHtml(allItems[itemIdx].generatedRaw, { linkNodes: true });
-    html += '</div>';
-  }
-
-  html += '<div class="lp-label" style="margin-top:8px;"><i class="ph ph-article"></i> source content</div>';
-  html += '<div class="record-body">' + escapeAttr(s.body || '(no content)') + '</div>';
-
-  if (s.processed) {
-    html += renderReprocessHistory(s);
-  } else {
-    html += '<div style="color:var(--text-dim);font-size:11px;margin-top:12px;margin-bottom:12px;"><i class="ph ph-info"></i> not yet processed — click process to index this content</div>';
-  }
-
-  html += '<div style="margin-top:12px;display:flex;gap:8px;">';
-  html += '<button class="act-btn" style="color:#c06060;border-color:#c06060;" onclick="deleteSource(' + srcIdx + ')"><i class="ph ph-trash"></i> delete source</button>';
-  html += '</div>';
-
-  html += '</div>'; // /record-main
-
-  if (linkedSites.length) {
-    html += '<aside class="record-aside" id="record-aside">';
-    html += '<div class="record-aside-head"><span class="lp-label" style="margin:0;"><i class="ph ph-map-pin"></i> sites found (' + linkedSites.length + ')</span>';
-    html += '<button class="act-btn record-aside-close" onclick="toggleRecordAside()" title="hide entities panel"><i class="ph ph-x"></i></button></div>';
-    html += '<div class="record-aside-body">' + renderEntityGroups(linkedSites) + '</div>';
-    html += '</aside>';
-  }
-
-  html += '</div>'; // /record-layout
-  html += '</div>'; // /record-page
-  el.innerHTML = html;
-
-  // restore collapse preference
-  if (linkedSites.length) {
-    const collapsed = (typeof localStorage !== 'undefined' && localStorage.getItem('eo_recordAsideCollapsed') === '1');
-    document.querySelector('.record-layout')?.classList.toggle('aside-collapsed', collapsed);
-  }
-}
-
-function toggleRecordAside() {
-  const layout = document.querySelector('.record-layout');
-  if (!layout) return;
-  const collapsed = layout.classList.toggle('aside-collapsed');
-  try { localStorage.setItem('eo_recordAsideCollapsed', collapsed ? '1' : '0'); } catch (e) {}
+  if (s) openDocument(s.id);
 }
 
 async function deleteSource(idx) {

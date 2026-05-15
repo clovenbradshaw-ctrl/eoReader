@@ -361,7 +361,7 @@
   .walk-controls button:disabled { opacity: 0.4; cursor: default; }
 
   /* app layout */
-  #app-layout { display: flex; min-height: calc(100vh - 60px); }
+  #app-layout { display: flex; height: calc(100vh - 57px); overflow: hidden; }
   #left-panel {
     width: 260px; flex-shrink: 0;
     border-right: 1px solid var(--border);
@@ -386,7 +386,7 @@
   #left-panel .lp-item .lp-badge { font-size: 8px; padding: 0 4px; border-radius: 2px; white-space: nowrap; }
   #left-panel input[type="text"] { width: 100%; margin-bottom: 6px; }
   #left-panel .lp-actions { display: flex; gap: 4px; flex-wrap: wrap; }
-  #main-content { flex: 1; overflow-y: auto; display: flex; flex-direction: column; position: relative; }
+  #main-content { flex: 1; overflow: hidden; display: flex; flex-direction: column; position: relative; }
   #view-feed { flex: 1; padding: 0 24px 40px; overflow-y: auto; }
   #view-index { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   .library-scroll { flex: 1; overflow-y: auto; }
@@ -398,6 +398,109 @@
     .graph-entities { width: 100%; }
     #view-index > div { flex-direction: column !important; }
   }
+
+  /* === document-centric spine === */
+  #view-library, #view-document { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  #view-document { position: relative; }
+
+  /* library table */
+  .lib-toolbar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 10px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .lib-toolbar input[type="text"] { width: 220px; }
+  .lib-toolbar select {
+    background: var(--surface); border: 1px solid var(--border); color: var(--text);
+    font-family: inherit; font-size: 12px; padding: 5px 6px; border-radius: 3px;
+  }
+  .lib-scroll { flex: 1; overflow-y: auto; }
+  table.lib-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.lib-table thead th {
+    position: sticky; top: 0; background: var(--bg); z-index: 1;
+    text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--border);
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--text-dim); cursor: pointer; user-select: none; white-space: nowrap;
+  }
+  table.lib-table thead th:hover { color: var(--accent); }
+  table.lib-table tbody td { padding: 7px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.lib-table tbody tr { cursor: pointer; }
+  table.lib-table tbody tr:hover { background: var(--surface); }
+  .lib-title-cell { color: var(--text-bright); font-weight: 600; }
+  .lib-cell-dim { color: var(--text-dim); white-space: nowrap; }
+  .lib-badge { font-size: 9px; padding: 1px 7px; border-radius: 8px; white-space: nowrap; }
+  .lib-badge.proc { background: #88C07022; color: var(--accent); }
+  .lib-badge.new { background: #88888822; color: var(--text-dim); }
+  .lib-row-actions { white-space: nowrap; }
+  .lib-row-actions button {
+    background: none; border: none; color: var(--text-dim);
+    cursor: pointer; font-size: 12px; padding: 2px 4px;
+  }
+  .lib-row-actions button:hover { color: var(--accent); }
+  .lib-empty { padding: 40px 16px; color: var(--text-dim); font-size: 12px; text-align: center; }
+
+  /* document workspace */
+  .doc-header {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 10px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .doc-header-main { flex: 1; min-width: 0; }
+  .doc-title { font-size: 15px; font-weight: 700; color: var(--text-bright); font-family: -apple-system, sans-serif; }
+  .doc-meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  .doc-header-actions { display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
+  .doc-tabs { display: flex; gap: 4px; padding: 6px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; align-items: center; }
+  .doc-tab {
+    background: var(--surface); border: 1px solid var(--border); color: var(--text-dim);
+    padding: 4px 16px; font-family: inherit; font-size: 12px; cursor: pointer; border-radius: 3px;
+  }
+  .doc-tab.active { color: var(--accent); border-color: var(--accent); }
+  .doc-sources { flex-shrink: 0; border-bottom: 1px solid var(--border); }
+  .doc-sources > summary {
+    padding: 6px 16px; font-size: 10px; color: var(--text-dim); cursor: pointer;
+    text-transform: uppercase; letter-spacing: 0.5px; list-style: none;
+  }
+  .doc-sources > summary::-webkit-details-marker { display: none; }
+  .doc-sources-body { max-height: 170px; overflow-y: auto; padding: 2px 0 6px; }
+  .doc-src-row {
+    display: flex; align-items: center; gap: 8px; padding: 4px 16px;
+    font-size: 11px; cursor: pointer;
+  }
+  .doc-src-row:hover { background: var(--surface); }
+  .doc-src-row.current { background: #1e2a1e; }
+  #doc-pane { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+
+  /* read tab + inline site highlighting */
+  .doc-read-body {
+    font-family: -apple-system, 'Segoe UI', Helvetica, sans-serif;
+    font-size: 14px; line-height: 1.95; color: var(--text);
+    padding: 18px 22px; max-width: 760px;
+  }
+  mark.doc-site-hl {
+    background: transparent; color: inherit; cursor: pointer;
+    border-bottom: 2px solid var(--text-dim);
+  }
+  mark.doc-site-hl:hover { background: #ffffff14; }
+  mark.doc-site-hl[data-kind="Entity"] { border-bottom-color: #5588aa; }
+  mark.doc-site-hl[data-kind="Kind"] { border-bottom-color: #aa8855; }
+  mark.doc-site-hl[data-kind="Field"] { border-bottom-color: #55aa88; }
+  mark.doc-site-hl[data-kind="Link"] { border-bottom-color: #7788cc; }
+  mark.doc-site-hl[data-kind="Network"] { border-bottom-color: #cc7788; }
+  mark.doc-site-hl[data-kind="Atmosphere"] { border-bottom-color: #8877aa; }
+  mark.doc-site-hl[data-kind="Lens"] { border-bottom-color: #aa55aa; }
+  mark.doc-site-hl[data-kind="Paradigm"] { border-bottom-color: #cc9944; }
+  mark.doc-site-hl[data-kind="Void"] { border-bottom-color: #666; }
+
+  /* site profile drawer */
+  #site-drawer {
+    position: absolute; top: 0; right: 0; bottom: 0; width: 360px; z-index: 40;
+    background: var(--surface); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; box-shadow: -8px 0 24px rgba(0,0,0,0.4);
+  }
+  #site-drawer[hidden] { display: none; }
+  .drawer-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .drawer-body { flex: 1; overflow-y: auto; padding: 12px; }
 </style>
 </head>
 <body>
@@ -513,16 +616,14 @@
   </div>
 
   <div class="lp-section">
-    <div class="lp-label" style="cursor:pointer;"><span onclick="toggleLpSection('summarize')" style="display:flex;align-items:center;gap:4px;flex:1;"><i class="ph ph-caret-down lp-caret" id="caret-summarize"></i><i class="ph ph-chats-circle"></i> chat with docs</span><span id="summarize-comp-pill" style="font-size:9px;color:var(--text-dim);font-weight:400;text-transform:none;letter-spacing:0;"></span></div>
-    <div id="section-summarize">
-      <p style="font-size:10px;color:var(--text-dim);line-height:1.45;margin:0 0 6px;">pick sources, ask questions. drill into sites / spans / connections inside each source.</p>
-      <button class="act-btn" style="width:100%;padding:4px 8px;font-size:11px;background:var(--accent);color:#1a1a1a;border-color:var(--accent);font-weight:600;" onclick="switchToSummarizeView()"><i class="ph ph-chats-circle"></i> open</button>
-    </div>
+    <div class="lp-label"><i class="ph ph-books"></i> library <span id="library-count" style="color:var(--text-dim);">0</span></div>
+    <button class="act-btn" style="width:100%;padding:5px 8px;font-size:11px;background:var(--accent);color:#1a1a1a;border-color:var(--accent);font-weight:600;" onclick="showView('library')"><i class="ph ph-table"></i> open library</button>
   </div>
 
   <div class="lp-section">
     <div class="lp-label" onclick="toggleLpSection('sources')" style="cursor:pointer;"><i class="ph ph-caret-down lp-caret" id="caret-sources"></i><i class="ph ph-rss"></i> feeds</div>
     <div id="section-sources">
+      <button class="act-btn" style="width:100%;padding:4px 8px;font-size:10px;margin-bottom:6px;" onclick="showView('feed')"><i class="ph ph-list-bullets"></i> browse feed items</button>
       <div id="lp-sources"></div>
       <div style="margin-top:6px;">
         <input type="text" id="add-feed-url" placeholder="RSS feed URL..." style="width:100%;margin-bottom:4px;" />
@@ -532,17 +633,12 @@
     </div>
   </div>
 
-  <div class="lp-section library-scroll">
-    <div class="lp-label" onclick="toggleLpSection('library')" style="cursor:pointer;"><i class="ph ph-caret-down lp-caret" id="caret-library"></i><i class="ph ph-books"></i> library <span id="library-count" style="color:var(--text-dim);">0</span></div>
-    <div id="section-library">
-      <input type="text" id="library-search" placeholder="search library..." oninput="renderLibrary()" />
-      <div id="lp-library"></div>
-    </div>
-  </div>
 </div>
 
 <div id="main-content">
-  <div id="view-feed"></div>
+  <div id="view-library" style="display:flex;"></div>
+  <div id="view-document" style="display:none;"></div>
+  <div id="view-feed" style="display:none;"></div>
   <div id="view-index" style="display:none;">
     <div class="index-toolbar">
       <button class="graph-tab active" id="tab-entities" onclick="graphTab('entities')"><i class="ph ph-map-pin"></i> sites</button>
@@ -609,6 +705,7 @@
 <script src="js/librarian-analyzer.js"></script>
 <script src="js/librarian.js"></script>
 <script src="js/summary.js"></script>
+<script src="js/document.js"></script>
 <script src="js/eva.js"></script>
 <script src="js/eo.js"></script>
 <script src="js/app.js"></script>
