@@ -109,7 +109,15 @@ async function runDreamJob(job, signal) {
 
   const ctx = buildDreamContext(fromE, toE);
   try {
-    const raw = await callClaude(DREAM_PROMPT, ctx, 700, null, { signal });
+    const r = await callLLM({
+      system: DREAM_PROMPT,
+      user: ctx,
+      maxTokens: 700,
+      role: 'dream',
+      responseFormat: 'json',
+      signal,
+    });
+    const raw = r.text;
     const clean = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
     const result = JSON.parse(clean);
     const record = {

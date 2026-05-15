@@ -40,7 +40,16 @@ async function librarianAsk(question) {
   }
   turns.push('USER: ' + question);
 
-  const userMsg = built.context + '\n\n=== CONVERSATION ===\n' + turns.join('\n\n');
+  // Two-block split for Anthropic prompt caching:
+  //   stable = focused subgraph + all prior turns
+  //   varying = the latest USER question
+  // Across a multi-turn conversation, follow-up turns hit the cache.
+  const priorTurns = turns.slice(0, -1);
+  const latestTurn = turns[turns.length - 1];
+  const stableBlock = built.context + '\n\n=== CONVERSATION ===\n' +
+    (priorTurns.length ? priorTurns.join('\n\n') + '\n\n' : '');
+  const varyingBlock = latestTurn;
+  const userMsg = stableBlock + varyingBlock;
   built.composition.conversationTurns = recent.length;
   built.composition.estimatedInputTokens = estimateTokens(LIBRARIAN_PROMPT) + estimateTokens(userMsg);
 
@@ -62,8 +71,19 @@ async function librarianAsk(question) {
     suggestions: [],
   };
 
+  const useCache = stableBlock.length > 600;
+  const userContent = useCache
+    ? [cacheBlock(stableBlock), textBlock(varyingBlock)]
+    : userMsg;
+  const systemField = useCache ? [cacheBlock(LIBRARIAN_PROMPT)] : LIBRARIAN_PROMPT;
+
   try {
-    const r = await callClaudeRaw(LIBRARIAN_PROMPT, userMsg, 1200);
+    const r = await callLLM({
+      system: systemField,
+      user: userContent,
+      maxTokens: 1200,
+      role: 'librarian',
+    });
     assistantMsg.content = r.text;
     assistantMsg.pending = false;
     step.usage = r.usage;

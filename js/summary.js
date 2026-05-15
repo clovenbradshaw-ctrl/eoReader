@@ -535,7 +535,12 @@ async function summaryAsk(question) {
     : baseSystem;
 
   try {
-    const r = await callClaudeRaw(systemPrompt, userMsg, 1200);
+    const r = await callLLM({
+      system: systemPrompt,
+      user: userMsg,
+      maxTokens: 1200,
+      role: 'summary',
+    });
     pending.content = r.text;
     pending.pending = false;
     pending.usage = r.usage;
@@ -593,7 +598,13 @@ async function runSummaryJob(job, signal) {
   const t = job.target;
   const turn = summaryChat.find((m) => m.ts === t.assistantTs);
   try {
-    const r = await callClaudeRaw(t.systemPrompt, t.framingHeader, 2000, null, { signal });
+    const r = await callLLM({
+      system: t.systemPrompt,
+      user: t.framingHeader,
+      maxTokens: 2000,
+      role: 'summary',
+      signal,
+    });
     if (turn) {
       turn.content = r.text;
       turn.pending = false;

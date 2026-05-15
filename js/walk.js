@@ -333,17 +333,41 @@ async function processAndAccept(ws, signal) {
     }
   }
 
-  const userMsg = [
+  // Two-block split for Anthropic prompt caching:
+  //   stable = article header + entity index (changes only when a SIG lands)
+  //   varying = per-sentence context + the sentence itself
+  // The cached prefix (system + stable) clears the 1024-token floor for any
+  // non-trivial entity index; subsequent sentences in the same walk hit cache.
+  const stableBlock = [
     'Article: ' + item.title + ' (' + item.sourceName + ')',
     '',
     siteIndex,
-    siteContext ? '\nRelevant sites for this sentence:\n' + siteContext : '',
+  ].filter(Boolean).join('\n');
+
+  const varyingBlock = [
+    siteContext ? 'Relevant sites for this sentence:\n' + siteContext : '',
     '\nSentence to process:',
     sentence,
   ].filter(Boolean).join('\n');
 
+  // Only mark stableBlock cacheable when it's substantial — an empty/tiny
+  // index won't reach the 1024-token floor and just costs a write penalty.
+  const useCache = stableBlock.length > 600;
+  const userContent = useCache
+    ? [cacheBlock(stableBlock), textBlock('\n' + varyingBlock)]
+    : (stableBlock + '\n' + varyingBlock);
+  const systemField = useCache ? [cacheBlock(WALK_PROMPT)] : WALK_PROMPT;
+
   try {
-    const raw = await callClaude(WALK_PROMPT, userMsg, 1500, null, { signal });
+    const r = await callLLM({
+      system: systemField,
+      user: userContent,
+      maxTokens: 1500,
+      role: 'walk',
+      responseFormat: 'json',
+      signal,
+    });
+    const raw = r.text;
     const clean = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
     const parsed = JSON.parse(clean);
 
@@ -825,7 +849,12 @@ async function generateDigest(idx, btn) {
     const systemPrompt = framingSystemBlock
       ? baseSystem + '\n\n' + framingSystemBlock
       : baseSystem;
-    const rawOutput = await callClaude(systemPrompt, userMsg, 2000);
+    const rawOutput = await callLLMText({
+      system: systemPrompt,
+      user: userMsg,
+      maxTokens: 2000,
+      role: 'digest',
+    });
     item.generatedRaw = rawOutput;
 
     const sentences = splitSentences(item.body);

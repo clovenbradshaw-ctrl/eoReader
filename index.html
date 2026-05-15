@@ -452,6 +452,33 @@
     <span class="prompt-saved" id="key-saved">saved</span>
   </div>
 
+  <label>models</label>
+  <div id="models-panel" style="margin-bottom:16px;">
+    <div id="provider-status" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;font-size:10px;"></div>
+    <div style="font-size:10px;color:var(--text-dim);margin-bottom:6px;line-height:1.4;">
+      route each role to a provider. defaults to anthropic. local providers (webllm/ollama/window-ai) keep traffic on-device.
+    </div>
+    <div id="role-policy-grid" style="display:grid;grid-template-columns:80px 1fr;gap:4px 8px;align-items:center;font-size:11px;margin-bottom:10px;"></div>
+    <details style="margin-top:6px;">
+      <summary style="font-size:10px;color:var(--text-dim);cursor:pointer;">webllm model</summary>
+      <div style="padding:6px 0;display:flex;gap:6px;align-items:center;">
+        <select id="webllm-model" style="flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text-bright);font-family:inherit;font-size:11px;padding:3px 6px;border-radius:3px;"></select>
+      </div>
+    </details>
+    <details style="margin-top:4px;">
+      <summary style="font-size:10px;color:var(--text-dim);cursor:pointer;">ollama config</summary>
+      <div style="padding:6px 0;display:flex;flex-direction:column;gap:4px;">
+        <input type="text" id="ollama-host" placeholder="http://localhost:11434" style="background:var(--bg);border:1px solid var(--border);color:var(--text-bright);font-family:inherit;font-size:11px;padding:3px 6px;border-radius:3px;" />
+        <input type="text" id="ollama-model" placeholder="llama3.2:3b" style="background:var(--bg);border:1px solid var(--border);color:var(--text-bright);font-family:inherit;font-size:11px;padding:3px 6px;border-radius:3px;" />
+      </div>
+    </details>
+    <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+      <button class="act-btn" onclick="saveModelsSettings()" style="padding:4px 12px;">save</button>
+      <button class="act-btn" onclick="probeProviders()" style="padding:4px 12px;">re-probe</button>
+      <span class="prompt-saved" id="models-saved">saved</span>
+    </div>
+  </div>
+
   <label>index data</label>
   <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
     <button class="act-btn" onclick="exportAllSites()"><i class="ph ph-export"></i> export json</button>
@@ -561,11 +588,17 @@
 
 <div id="modal-root" hidden></div>
 
-<!-- module load order matters: modal → prompts → state → api → matrix → feeds → queue → walk → render → views → dream → librarian → summary → eo → app -->
+<!-- module load order matters: modal → prompts → state → api → providers → llm → matrix → feeds → queue → walk → render → views → dream → librarian → summary → eo → app -->
 <script src="js/modal.js"></script>
 <script src="js/prompts.js"></script>
 <script src="js/state.js"></script>
 <script src="js/api.js"></script>
+<script src="js/providers/registry.js"></script>
+<script src="js/providers/anthropic.js"></script>
+<script src="js/providers/webllm.js"></script>
+<script src="js/providers/ollama.js"></script>
+<script src="js/providers/window-ai.js"></script>
+<script src="js/llm.js"></script>
 <script src="js/matrix.js"></script>
 <script src="js/feeds.js"></script>
 <script src="js/queue.js"></script>
