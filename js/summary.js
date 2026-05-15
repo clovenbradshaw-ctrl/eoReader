@@ -444,6 +444,7 @@ function renderChatTranscript(totalPicks) {
         if (u.input_tokens != null) html += '<span>in ' + u.input_tokens + ' / out ' + (u.output_tokens || 0) + ' tok</span>';
         html += '<div style="flex:1;"></div>';
         html += '<button class="act-btn" style="font-size:9px;padding:2px 6px;" onclick="copyChatTurnMarkdown(' + m.ts + ')"><i class="ph ph-copy"></i> copy</button>';
+        html += '<button class="act-btn" style="font-size:9px;padding:2px 6px;" onclick="uploadChatTurnToArchive(' + m.ts + ')" title="export as interactive HTML and upload to archive.org"><i class="ph ph-upload-simple"></i> archive.org</button>';
         html += '</div>';
       }
       html += '</div></div>';
