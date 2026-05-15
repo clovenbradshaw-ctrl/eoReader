@@ -497,7 +497,7 @@ async function summaryAsk(question) {
   if (!apiKey) { await showAlert('Set your Anthropic API key first'); return; }
 
   const focused = summaryFocusedFromPicks();
-  if (!focused.size) {
+  if (!focused.size && !summaryPicks.articleIds.size) {
     await showAlert('Pick at least one source, site, span, or connection first.');
     return;
   }
@@ -563,7 +563,7 @@ async function generateSummaryFromPicks() {
   if (!apiKey) { await showAlert('Set your Anthropic API key first'); return; }
 
   const focused = summaryFocusedFromPicks();
-  if (!focused.size) {
+  if (!focused.size && !summaryPicks.articleIds.size) {
     await showAlert('Pick at least one source, site, span, or connection first.');
     return;
   }
