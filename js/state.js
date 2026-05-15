@@ -48,8 +48,9 @@ let dreamCandidates = [];
 // librarian chat transcript
 let librarianChat = [];
 
-// summary generator: explicit user picks at any granularity. UI-only state,
-// not persisted. See js/summary.js for the renderer + generator.
+// summarize: NotebookLM-style chat with picked docs. Sources are articles
+// (any ingested item); drill-down picks sites/spans/connections inside a
+// source. UI-only state, not persisted. See js/summary.js.
 let summaryPicks = {
   entityIds: new Set(),
   connectionIdxs: new Set(),
@@ -59,10 +60,9 @@ let summaryPicks = {
   includeSources: true,
   includeNotes: true,
   includeHypotheses: true,
-  lpExpanded: new Set(),
 };
-let summaryOutput = null;
-let summaryPickerTab = 'entities';
+let summaryChat = [];           // [{role, content, ts, telemetry?, pending?}]
+let summaryDetailDocId = null;  // article key of source open in the right pane
 
 // ---- the event log (append-only, content-hashed, the fold substrate) ----
 // Each event is one of: SIG, DEF, CON, EVA, REC, SEG, FEEDBACK, RENAME, DELETE.
@@ -471,6 +471,8 @@ function closeDiscover() {
 }
 
 function graphTab(tab) {
+  // 'summary' is no longer an in-graph panel — it opens the standalone view.
+  if (tab === 'summary') { if (typeof switchToSummarizeView === 'function') switchToSummarizeView(); return; }
   activeGraphTab = tab;
   document.querySelectorAll('.index-toolbar .graph-tab').forEach(t => t.classList.remove('active'));
   const tabEl = document.getElementById('tab-' + tab);
