@@ -88,12 +88,15 @@ a.link { color: var(--accent); }
 <body>
 
 <header>
+  <a href="index.html" title="Back to the reader app"
+     style="font-family:var(--mono);font-size:13px;color:var(--text-dim);text-decoration:none;">← {plain text}</a>
   <h1>Minisite Editor</h1>
   <button onclick="setBlockType('p')">¶ Paragraph</button>
   <button onclick="setBlockType('quote')">" Quote</button>
   <button onclick="setBlockType('section')">§ Section</button>
   <button onclick="tagEntity()">+ Tag Entity</button>
   <div class="spacer"></div>
+  <button onclick="viewMinisite()">view minisite</button>
   <div class="status" id="status">ready</div>
   <button onclick="doPublish('draft')">Save Draft</button>
   <button class="primary" onclick="doPublish('published')">Publish</button>
@@ -157,6 +160,7 @@ var workingConnections = [];   // { from, to, rel, evidence, article }
 var loadedEntityHash = {};     // id -> hash at load time
 var loadedConnHash = {};       // connSlug -> hash at load time
 var pendingRange = null;
+var walkEntities = {};         // id -> editor-shaped entity bridged from the reader app's walk graph
 
 function $(id) { return document.getElementById(id); }
 function val(id) { return $(id).value.trim(); }
@@ -347,24 +351,47 @@ function openEntityPicker(selectedText) {
       '<span class="dot" style="display:inline-block;background:' + colorFor(e.type) + '"></span> ' +
       esc(e.name) + ' <span style="color:var(--text-faint)">· ' + esc(id) + '</span></div>';
   }).join('');
+  var walkIds = Object.keys(walkEntities).filter(function (id) { return !workingEntities[id]; }).sort();
+  var walkList = walkIds.map(function (id) {
+    var e = walkEntities[id];
+    return '<div class="pick-item" onclick="pickWalkEntity(\'' + esc(id) + '\')">' +
+      '<span class="dot" style="display:inline-block;background:' + colorFor(e.type) + '"></span> ' +
+      esc(e.name) + ' <span style="color:var(--text-faint)">· ' + esc(id) + '</span></div>';
+  }).join('');
   $('modal').innerHTML = '<h3>Tag entity</h3>' +
     '<div class="hint">Selected: "' + esc(selectedText) + '"</div>' +
     '<input id="pick-search" placeholder="filter entities…" style="width:100%;margin-bottom:10px;' +
     'background:var(--surface);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:4px">' +
-    '<div id="pick-list">' + (list || '<div class="hint">No entities yet.</div>') + '</div>' +
+    '<div id="pick-list">' + (list || '<div class="hint">No published entities yet.</div>') + '</div>' +
+    (walkList ? '<div class="hint" style="margin-top:14px;border-top:1px solid var(--border);' +
+      'padding-top:10px">from your reading · not yet published</div>' +
+      '<div id="pick-walk-list">' + walkList + '</div>' : '') +
     '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">' +
     '<button onclick="newEntityFromPicker()">+ Create new entity</button></div>';
   openModal();
   var search = $('pick-search');
   search.oninput = function () {
     var q = search.value.toLowerCase();
-    Array.prototype.forEach.call($('pick-list').children, function (c) {
-      c.style.display = c.textContent.toLowerCase().indexOf(q) >= 0 ? '' : 'none';
+    ['pick-list', 'pick-walk-list'].forEach(function (lid) {
+      var el = $(lid);
+      if (!el) return;
+      Array.prototype.forEach.call(el.children, function (c) {
+        c.style.display = c.textContent.toLowerCase().indexOf(q) >= 0 ? '' : 'none';
+      });
     });
   };
   search.focus();
 }
 function pickEntity(id) { closeModal(); applyTag(id); }
+function pickWalkEntity(id) {
+  var w = walkEntities[id];
+  if (w && !workingEntities[id]) {
+    workingEntities[id] = { id: id, name: w.name, type: w.type, description: w.description, articles: [] };
+    renderEntityList();
+  }
+  closeModal();
+  applyTag(id);
+}
 function newEntityFromPicker() {
   var typeOpts = Object.keys(TYPE_LABELS).map(function (k) {
     return '<option value="' + k + '">' + TYPE_LABELS[k] + '</option>';
@@ -482,6 +509,42 @@ async function loadArticle(slug) {
   if (art) { loadArticleIntoEditor(art); status('Loaded article "' + slug + '" for editing'); }
 }
 
+// ── walk-graph bridge ──────────────────────────────────────────────────
+// The reader app (index.html) walks documents into a 9-terrain entity graph
+// stored in localStorage. Same origin lets us read it directly, so entities
+// discovered while reading become taggable here without re-typing.
+function walkEntityToWorking(id, w) {
+  w = w || {};
+  var hay = ((w.subtype || '') + ' ' + (w.kind || '')).toLowerCase();
+  var type = 'org';
+  if (/person|official|journalist|reporter|speaker/.test(hay)) type = 'person';
+  else if (/gov|agenc|department|commission|senat|congress|council|ministr|bureau|court/.test(hay)) type = 'gov';
+  else if (/media|news|paper|press|broadcast|outlet/.test(hay)) type = 'media';
+  return {
+    id: id,
+    name: w.displayName || w.canonical || id,
+    type: type,
+    description: w.hypothesis || '',
+    articles: [],
+  };
+}
+function loadWalkGraph() {
+  walkEntities = {};
+  var raw;
+  try { raw = localStorage.getItem('plaintext_graph'); } catch (e) { return; }
+  if (!raw) return;
+  var g;
+  try { g = JSON.parse(raw); } catch (e) { return; }
+  var ents = (g && g.entities) || {};
+  Object.keys(ents).forEach(function (id) {
+    walkEntities[id] = walkEntityToWorking(id, ents[id]);
+  });
+}
+function viewMinisite() {
+  var slug = EO.slugify(val('f-slug'));
+  location.href = slug ? 'minisite.html?slug=' + encodeURIComponent(slug) : 'minisite.html';
+}
+
 // ── publish ────────────────────────────────────────────────────────────
 async function doPublish(stance) {
   var site = val('f-site'), slug = EO.slugify(val('f-slug'));
@@ -575,9 +638,14 @@ function showResult(url, slug) {
 async function boot() {
   status('Loading entities…');
   await loadSites();
+  loadWalkGraph();
   var slug = param('slug');
   if (slug) { $('f-slug').value = slug; await loadArticle(slug); }
-  else status('Ready — ' + Object.keys(workingEntities).length + ' entities loaded');
+  else {
+    var wn = Object.keys(walkEntities).filter(function (id) { return !workingEntities[id]; }).length;
+    status('Ready — ' + Object.keys(workingEntities).length + ' entities loaded' +
+      (wn ? ' · ' + wn + ' from your reading' : ''));
+  }
 }
 boot();
 </script>

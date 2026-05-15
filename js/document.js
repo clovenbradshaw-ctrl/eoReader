@@ -80,6 +80,7 @@ function renderDocument() {
     '</div></div>';
   html += '<div class="doc-header-actions">';
   html += '<button class="act-btn" onclick="showView(\'library\')"><i class="ph ph-arrow-left"></i> library</button>';
+  html += '<button class="act-btn" onclick="location.href=\'editor.html\'" title="Write a minisite post"><i class="ph ph-pencil-simple"></i> draft post</button>';
   html += '<button class="act-btn" onclick="docProcess()"><i class="ph ' +
     (processed ? 'ph-arrows-clockwise' : 'ph-cpu') + '"></i> ' +
     (processed ? 'reprocess' : 'process') + '</button>';
