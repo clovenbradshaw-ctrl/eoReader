@@ -607,10 +607,31 @@ function closeDiscover() {
   showView(lastNonDiscoverView === 'discover' ? 'feed' : lastNonDiscoverView);
 }
 
+// The 9 index surfaces group into 3 modes (wireframe 5·V1).
+const TAB_MODE = {
+  entities: 'sites', connections: 'sites',
+  walk: 'story', log: 'story', scrub: 'story', librarian: 'story',
+  dream: 'lab', eva: 'lab',
+};
+const MODE_FIRST_TAB = { sites: 'entities', story: 'walk', lab: 'dream' };
+
+function showIndexMode(mode) {
+  document.querySelectorAll('.index-mode').forEach(b =>
+    b.classList.toggle('active', b.id === 'mode-' + mode));
+  document.querySelectorAll('.mode-group').forEach(g => {
+    g.hidden = g.dataset.mode !== mode;
+  });
+}
+function setIndexMode(mode) {
+  showIndexMode(mode);
+  graphTab(MODE_FIRST_TAB[mode] || 'entities');
+}
+
 function graphTab(tab) {
   // 'summary' is no longer an in-graph panel — it opens the standalone view.
   if (tab === 'summary') { if (typeof switchToSummarizeView === 'function') switchToSummarizeView(); return; }
   activeGraphTab = tab;
+  showIndexMode(TAB_MODE[tab] || 'sites');
   document.querySelectorAll('.index-toolbar .graph-tab').forEach(t => t.classList.remove('active'));
   const tabEl = document.getElementById('tab-' + tab);
   if (tabEl) tabEl.classList.add('active');
