@@ -167,20 +167,12 @@ function renderSummarize() {
   const root = document.getElementById('view-summarize');
   if (!root) return;
 
-  const detailOpen = !!summaryDetailDocId;
-  const sourcesWidth = detailOpen ? '260px' : '300px';
-  const detailCol = detailOpen
-    ? '<div style="width:340px;border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;background:var(--surface);">' + renderDetailPane() + '</div>'
-    : '';
-
-  let html = '<div style="display:flex;flex:1;overflow:hidden;height:100%;">';
-  html += '<div style="width:' + sourcesWidth + ';border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;">' + renderSourcesPane() + '</div>';
-  html += '<div style="flex:1;display:flex;flex-direction:column;overflow:hidden;">' + renderChatPane() + '</div>';
-  html += detailCol;
+  let html = '<div style="display:flex;flex:1;min-height:0;overflow:hidden;height:100%;">';
+  html += '<div style="width:340px;border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0;overflow:hidden;">' + renderSourcesPane() + '</div>';
+  html += '<div style="flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden;">' + renderChatPane() + '</div>';
   html += '</div>';
   root.innerHTML = html;
 
-  // Auto-scroll chat to bottom after render.
   const transcript = document.getElementById('summary-transcript');
   if (transcript) transcript.scrollTop = transcript.scrollHeight;
 
@@ -198,13 +190,13 @@ function renderSourcesPane() {
 
   let html = '<div style="padding:10px 10px 6px;border-bottom:1px solid var(--border);">';
   html += '<div class="lp-label" style="margin-top:0;"><i class="ph ph-chats-circle"></i> sources</div>';
-  html += '<div style="font-size:10px;color:var(--text-dim);line-height:1.45;margin-bottom:6px;">pick the docs you want grounded in this chat. click a row to drill into its sites / spans / connections.</div>';
+  html += '<div style="font-size:10px;color:var(--text-dim);line-height:1.45;margin-bottom:6px;">pick the docs you want grounded in this chat. click the caret on a walked source to drill into part of it.</div>';
   html += '<div style="font-size:10px;color:var(--text-dim);">' + a + ' docs · ' + e + ' sites · ' + c + ' cons · ' + s + ' spans picked</div>';
   html += '<div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap;">';
   html += '<button class="act-btn" style="font-size:10px;padding:3px 6px;" onclick="clearSummaryPicks(\'all\')"><i class="ph ph-eraser"></i> clear</button>';
   html += '</div></div>';
 
-  html += '<div style="flex:1;overflow-y:auto;padding:4px 0;">';
+  html += '<div style="flex:1;min-height:0;overflow-y:auto;padding:4px 0;">';
   if (!docs.length) {
     html += '<div style="color:var(--text-dim);padding:12px;font-size:11px;">no ingested docs yet. ingest via URL, file, paste, or a feed first.</div>';
   } else {
@@ -219,7 +211,12 @@ function renderSourceRow(item) {
   const safeId = escapeAttr(articleId);
   const state = summarizeDocState(item);
   const walked = ((item._walkLog || []).length) > 0;
-  const isOpen = summaryDetailDocId === articleId;
+  const expanded = summaryExpanded.has(articleId);
+
+  const ents = walked ? summaryEntitiesFromArticle(item) : new Set();
+  const spans = walked ? summarySpansFromArticle(item) : [];
+  const cons = walked ? summaryConnectionsFromArticle(item) : [];
+  const subCount = ents.size + spans.length + cons.length;
 
   const box = state === 'on'
     ? '<i class="ph-fill ph-check-square" style="color:var(--accent);"></i>'
@@ -229,17 +226,37 @@ function renderSourceRow(item) {
   const badge = walked
     ? '<span style="font-size:9px;color:var(--accent);background:rgba(120,200,140,0.12);padding:1px 4px;border-radius:2px;text-transform:uppercase;letter-spacing:0.3px;">walked</span>'
     : '<span style="font-size:9px;color:var(--text-dim);background:rgba(160,160,160,0.12);padding:1px 4px;border-radius:2px;text-transform:uppercase;letter-spacing:0.3px;">ingested</span>';
+  const caret = walked && subCount
+    ? '<i class="ph ' + (expanded ? 'ph-caret-down' : 'ph-caret-right') + '" style="font-size:10px;color:var(--text-dim);"></i>'
+    : '<span style="display:inline-block;width:10px;"></span>';
+  const caretAttr = walked && subCount ? ' onclick="toggleSummaryExpand(\'' + safeId + '\')"' : '';
+  const caretCursor = walked && subCount ? 'cursor:pointer;' : '';
 
-  const rowBg = isOpen ? 'background:var(--surface);' : '';
-  let html = '<div style="border-bottom:1px solid var(--border);padding:6px 10px;display:flex;align-items:flex-start;gap:6px;font-size:11px;cursor:pointer;' + rowBg + '" onclick="openSummaryDetail(\'' + safeId + '\')">';
-  html += '<span style="padding-top:1px;cursor:pointer;" onclick="event.stopPropagation();toggleSummarizeArticle(\'' + safeId + '\')">' + box + '</span>';
-  html += '<div style="flex:1;min-width:0;">';
+  let html = '<div style="border-bottom:1px solid var(--border);padding:6px 10px;">';
+  html += '<div style="display:flex;align-items:flex-start;gap:6px;font-size:11px;">';
+  html += '<span style="padding-top:2px;' + caretCursor + '"' + caretAttr + '>' + caret + '</span>';
+  html += '<span style="padding-top:1px;cursor:pointer;" onclick="toggleSummarizeArticle(\'' + safeId + '\')">' + box + '</span>';
+  html += '<div style="flex:1;min-width:0;cursor:' + (walked && subCount ? 'pointer' : 'default') + ';"' + caretAttr + '>';
   html += '<div style="color:var(--text-bright);word-break:break-word;line-height:1.3;">' + escapeAttr((item.title || '(untitled)').slice(0, 90)) + '</div>';
   html += '<div style="display:flex;gap:6px;align-items:center;margin-top:3px;flex-wrap:wrap;">' + badge;
   html += '<span style="font-size:9px;color:var(--text-dim);">' + escapeAttr(item.sourceName || '') + '</span>';
+  if (walked && subCount) html += '<span style="font-size:9px;color:var(--text-dim);">' + ents.size + 's · ' + spans.length + 'sp · ' + cons.length + 'c</span>';
   html += '</div>';
   html += '</div></div>';
+
+  if (expanded && walked && subCount) {
+    html += '<div style="padding:6px 0 4px 26px;">';
+    html += renderSourceDetailBody(item, ents, spans, cons);
+    html += '</div>';
+  }
+  html += '</div>';
   return html;
+}
+
+function toggleSummaryExpand(articleId) {
+  if (summaryExpanded.has(articleId)) summaryExpanded.delete(articleId);
+  else summaryExpanded.add(articleId);
+  renderSummarizeMainIfActive();
 }
 
 function toggleSummarizeArticle(articleId) {
@@ -260,57 +277,7 @@ function toggleSummarizeArticle(articleId) {
   renderSummarizeMainIfActive();
 }
 
-// ---- detail pane (right column) ----
-
-function openSummaryDetail(articleId) {
-  summaryDetailDocId = articleId;
-  renderSummarizeMainIfActive();
-}
-
-function closeSummaryDetail() {
-  summaryDetailDocId = null;
-  renderSummarizeMainIfActive();
-}
-
-function renderDetailPane() {
-  const item = (allItems || []).find((it) => summaryArticleKey(it) === summaryDetailDocId);
-  if (!item) {
-    return '<div style="padding:14px;font-size:11px;color:var(--text-dim);">source not found.<div style="margin-top:8px;"><button class="act-btn" style="font-size:10px;" onclick="closeSummaryDetail()">close</button></div></div>';
-  }
-  const walked = ((item._walkLog || []).length) > 0;
-  const articleId = summaryArticleKey(item);
-  const state = summarizeDocState(item);
-  const ents = summaryEntitiesFromArticle(item);
-  const spans = summarySpansFromArticle(item);
-  const cons = summaryConnectionsFromArticle(item);
-
-  let html = '<div style="padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:8px;">';
-  html += '<div style="flex:1;min-width:0;">';
-  html += '<div style="font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">source</div>';
-  html += '<div style="color:var(--text-bright);font-size:12px;line-height:1.3;word-break:break-word;">' + escapeAttr(item.title || '(untitled)') + '</div>';
-  html += '<div style="font-size:10px;color:var(--text-dim);margin-top:3px;">' + escapeAttr(item.sourceName || '') + (item.link ? ' · <a href="' + escapeAttr(item.link) + '" target="_blank" style="color:var(--text-dim);">link</a>' : '') + '</div>';
-  html += '</div>';
-  html += '<button class="act-btn" style="font-size:10px;padding:3px 6px;" onclick="closeSummaryDetail()" title="close"><i class="ph ph-x"></i></button>';
-  html += '</div>';
-
-  html += '<div style="padding:10px 12px;border-bottom:1px solid var(--border);">';
-  const safeId = escapeAttr(articleId);
-  const wholeBtnStyle = state === 'on'
-    ? 'background:var(--accent);color:#1a1a1a;border-color:var(--accent);'
-    : '';
-  const wholeLabel = state === 'on' ? '✓ whole article picked' : (state === 'half' ? 'pick whole article (overrides sub-picks)' : 'pick whole article');
-  html += '<button class="act-btn" style="width:100%;font-size:10px;padding:4px 6px;' + wholeBtnStyle + '" onclick="toggleSummarizeArticle(\'' + safeId + '\')">' + wholeLabel + '</button>';
-  html += '</div>';
-
-  html += '<div style="flex:1;overflow-y:auto;padding:8px 12px;">';
-  if (!walked) {
-    html += '<div style="font-size:10px;color:var(--text-dim);line-height:1.5;">this doc has not been walked yet. drill-down picks for sites, spans, and connections light up once the walk runs over it. you can still include the whole article above.</div>';
-  } else {
-    html += renderSourceDetailBody(item, ents, spans, cons);
-  }
-  html += '</div>';
-  return html;
-}
+// ---- inline drill-down body ----
 
 function renderSourceDetailBody(item, ents, spans, cons) {
   let html = '';
@@ -394,7 +361,7 @@ function renderChatPane() {
   html += '<button class="act-btn" style="font-size:10px;padding:3px 6px;" onclick="summaryChat=[];renderSummarize()" title="clear conversation"><i class="ph ph-eraser"></i> clear chat</button>';
   html += '</div>';
 
-  html += '<div id="summary-transcript" style="flex:1;overflow-y:auto;padding:14px 18px;">';
+  html += '<div id="summary-transcript" style="flex:1;min-height:0;overflow-y:auto;padding:14px 18px;">';
   html += renderChatTranscript(total);
   html += '</div>';
 

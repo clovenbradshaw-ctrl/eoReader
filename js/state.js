@@ -62,7 +62,7 @@ let summaryPicks = {
   includeHypotheses: true,
 };
 let summaryChat = [];           // [{role, content, ts, telemetry?, pending?}]
-let summaryDetailDocId = null;  // article key of source open in the right pane
+let summaryExpanded = new Set(); // article keys whose drill-down is open inline
 
 // ---- the event log (append-only, content-hashed, the fold substrate) ----
 // Each event is one of: SIG, DEF, CON, EVA, REC, SEG, FEEDBACK, RENAME, DELETE.
