@@ -302,6 +302,7 @@ function renderSummaryOutputHtml() {
   html += '<span>composition: ' + (c.entities || 0) + ' sites · ' + (c.connections || 0) + ' cons · ' + (c.spans || 0) + ' spans · ' + (c.sources || 0) + ' sources</span>';
   html += '<div style="flex:1;"></div>';
   html += '<button class="act-btn" style="font-size:10px;padding:3px 8px;" onclick="copySummaryMarkdown()"><i class="ph ph-copy"></i> copy md</button>';
+  html += '<button class="act-btn" style="font-size:10px;padding:3px 8px;" onclick="uploadSummaryToArchive()" title="export as interactive HTML and upload to archive.org"><i class="ph ph-upload-simple"></i> archive.org</button>';
   html += '<button class="act-btn" style="font-size:10px;padding:3px 8px;" onclick="summaryOutput=null;renderSummaryGeneratorView()"><i class="ph ph-trash"></i> clear</button>';
   html += '</div>';
   return html;
