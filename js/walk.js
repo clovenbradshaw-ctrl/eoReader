@@ -248,6 +248,7 @@ async function runWalkJob(job, signal) {
     sentences,
     current: resumeAt,
     log: [],
+    spanMetas: [],
     context: ensureSourceSites(item),
     _priorSnapshot: (srcIdxPre >= 0 && sources[srcIdxPre].processed && resumeAt === 0)
       ? snapshotSourceEo(srcIdxPre) : null,
@@ -256,6 +257,11 @@ async function runWalkJob(job, signal) {
   // record worker reference so cancelJob can find walkState if needed
   const worker = activeWorkers.get(job.id);
   if (worker) worker.walkState = ws;
+
+  // Ping the source page in parallel with extraction — drives the citation
+  // "verified" badge only, so it must never block the walk. Reconciled after
+  // the sentence loop (see below).
+  ws.pagePromise = fetchPageText(item.link);
 
   // auto-focus this job if no walk is currently focused
   if (!focusedWalkJobId) {
@@ -306,6 +312,15 @@ async function runWalkJob(job, signal) {
       setFocusedWalkFromState(ws);
       if (activeGraphTab === 'walk') renderProcessTab();
     }
+    // Reconcile citation "verified" flags against the parallel source ping.
+    // The fetch ran for the whole walk, so this usually resolves immediately;
+    // a slow or failed ping just leaves spans unverified.
+    try {
+      const pageText = await ws.pagePromise;
+      reconcileCitations(ws.spanMetas, pageText);
+      saveGraph();
+      renderEntityList();
+    } catch (e) { console.warn('citation reconcile failed', e); }
   }
 }
 
@@ -396,7 +411,9 @@ async function processAndAccept(ws, signal) {
       sourceUrl: item.link, sourceTitle: item.title,
       sourceId: ws.context.articleId,
       voice: voiceId, voiceRelation,
+      cite: buildCitation(span, item.link),
     };
+    ws.spanMetas.push(spanMeta);
     const sourceMeta = { title: item.title, url: item.link, id: ws.context.articleId };
 
     for (const p of proposals) {
