@@ -522,9 +522,9 @@ function snapshotHashes() {
   });
 }
 async function loadArticle(slug) {
-  var text = await PublishAPI.readRaw(EO.LOG_FILE).catch(function () { return null; });
+  var text = await PublishAPI.readRaw(EO.articleFile(slug)).catch(function () { return null; });
   if (text == null) return;
-  var art = Fold.foldArticle(text, slug);
+  var art = Fold.foldArticle(text);
   if (art) { loadArticleIntoEditor(art); status('Loaded article "' + slug + '" for editing'); }
 }
 
@@ -638,7 +638,7 @@ function openPublishPreview(stance) {
     rows.push('<div><b style="color:var(--accent)">CON</b> ' + esc(EO.LOG_FILE) + ' · ' +
       esc(c.payload.from) + ' → ' + esc(c.payload.to) + ' · ' + esc(c.payload.rel) + '</div>');
   });
-  rows.push('<div><b style="color:var(--person)">DEF</b> ' + esc(EO.LOG_FILE) +
+  rows.push('<div><b style="color:var(--person)">DEF</b> ' + esc(EO.articleFile(plan.slug)) +
     ' · ' + esc(plan.slug) + ' · ' + plan.refCount + ' refs · ' + esc(plan.stance) + '</div>');
   $('modal').innerHTML = '<h3>About to append</h3>' +
     '<div class="hint">' + plan.entityEntries.length + ' entit' +
@@ -656,13 +656,18 @@ function openPublishPreview(stance) {
 
 async function executePublishPlan(plan) {
   closeModal();
-  // One webhook call appends every record (INS/CON before the article DEF) in
-  // a single server-side commit — no per-record GET/PUT race on the log file.
-  var records = plan.entityEntries.concat(plan.connEntries, [plan.articleEntry]);
+  // Entities + connections batch-append to the shared eo-log.jsonl; the
+  // article appends to its own file, articles/<slug>.jsonl. Two distinct
+  // files, so the two writes never race each other on a GitHub blob sha.
+  var logRecords = plan.entityEntries.concat(plan.connEntries);
   try {
-    status('Publishing ' + records.length + ' record' +
-      (records.length === 1 ? '' : 's') + '…');
-    await PublishAPI.publish(EO.LOG_FILE, records);
+    if (logRecords.length) {
+      status('Publishing ' + logRecords.length + ' entity/connection record' +
+        (logRecords.length === 1 ? '' : 's') + '…');
+      await PublishAPI.publish(EO.LOG_FILE, logRecords);
+    }
+    status('Publishing article…');
+    await PublishAPI.publish(EO.articleFile(plan.slug), [plan.articleEntry]);
     plan.entityEntries.forEach(function (e) { loadedEntityHash[e.slug] = e.hash; });
     plan.connEntries.forEach(function (c) { loadedConnHash[c.slug] = c.hash; });
 

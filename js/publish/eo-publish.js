@@ -53,6 +53,13 @@
     return from + '__' + to + '__' + slugify(rel);
   }
 
+  // Each article is published to its own append-only file. The minisite then
+  // downloads only the requested article instead of the whole corpus, and a
+  // republish appends a fresh DEF that fold.js resolves as the latest version.
+  function articleFile(slug) {
+    return 'articles/' + slugify(slug) + '.jsonl';
+  }
+
   function connectionEntry(o) {
     var e = {
       op: 'CON', site: o.site, slug: connectionSlug(o.from, o.to, o.rel),
@@ -78,7 +85,7 @@
   }
 
   root.EO = {
-    LOG_FILE: LOG_FILE, slugify: slugify, hash: hash,
+    LOG_FILE: LOG_FILE, slugify: slugify, hash: hash, articleFile: articleFile,
     connectionSlug: connectionSlug, articleEntry: articleEntry, entityEntry: entityEntry,
     connectionEntry: connectionEntry, retractEntry: retractEntry,
   };

@@ -171,21 +171,18 @@ function param(k) { return new URLSearchParams(location.search).get(k); }
 function colorFor(t) { return TYPE_COLORS[t] || TYPE_COLORS.org; }
 
 // ── load + fold ────────────────────────────────────────────────────────
-// The whole log is downloaded once (OPFS cache-first, background refresh);
-// the entity graph and the requested article are projected from that text,
-// so the network cost is paid a single time per visit.
-var LOG_TEXT = null;
-
+// eo-log.jsonl is the shared "sites" log — entities (INS) and connections
+// (CON). Each article is its own append-only file, articles/<slug>.jsonl.
+// Both are OPFS cache-first with a background refresh, so a revisit paints
+// instantly and a just-published version lands without a reload.
 async function loadLog() {
   var cacheKey = 'cache/eo-log.jsonl';
   var cached = await opfsStore.readText(cacheKey);
   if (cached != null) {
-    LOG_TEXT = cached;
     applyLog(cached);
     PublishAPI.readRaw(EO.LOG_FILE).then(function (fresh) {
       if (fresh != null && fresh !== cached) {
         opfsStore.writeText(cacheKey, fresh);
-        LOG_TEXT = fresh;
         applyLog(fresh);
         rerender();
       }
@@ -194,7 +191,6 @@ async function loadLog() {
     var fresh = await PublishAPI.readRaw(EO.LOG_FILE).catch(function () { return null; });
     if (fresh != null) {
       opfsStore.writeText(cacheKey, fresh);
-      LOG_TEXT = fresh;
       applyLog(fresh);
     }
   }
@@ -204,8 +200,24 @@ function applyLog(text) {
   ENTITIES = folded.entities;
   CONNECTIONS = folded.connections;
 }
-function projectArticle(slug) {
-  ARTICLE = LOG_TEXT != null ? Fold.foldArticle(LOG_TEXT, slug) : null;
+async function loadArticle(slug) {
+  if (!slug) { ARTICLE = null; return; }
+  var cacheKey = 'cache/article-' + EO.slugify(slug) + '.jsonl';
+  var cached = await opfsStore.readText(cacheKey);
+  if (cached != null) {
+    ARTICLE = Fold.foldArticle(cached);
+    PublishAPI.readRaw(EO.articleFile(slug)).then(function (fresh) {
+      if (fresh != null && fresh !== cached) {
+        opfsStore.writeText(cacheKey, fresh);
+        ARTICLE = Fold.foldArticle(fresh);
+        displayArticleRoute(slug);
+      }
+    }).catch(function () {});
+  } else {
+    var fresh = await PublishAPI.readRaw(EO.articleFile(slug)).catch(function () { return null; });
+    ARTICLE = fresh != null ? Fold.foldArticle(fresh) : null;
+    if (fresh != null) opfsStore.writeText(cacheKey, fresh);
+  }
 }
 
 // ── article reader ─────────────────────────────────────────────────────
@@ -482,11 +494,10 @@ function initGraph() {
 
 // ── routing ────────────────────────────────────────────────────────────
 var ROUTE = null;
-// Project + display the article route. Safe to re-run when a fresh log
-// arrives from the background refresh: an article missing from the stale
-// OPFS cache flips from "not found" to rendered without a reload.
-function showArticleRoute(slug) {
-  projectArticle(slug);
+// Pure display for the article route — no fetching. loadArticle() owns the
+// fetch (and its background refresh); this only flips between the reader
+// view and the "not found" state, so it is safe to re-run on any refresh.
+function displayArticleRoute(slug) {
   document.getElementById('loading').style.display = 'none';
   var empty = document.getElementById('empty-state');
   var reader = document.getElementById('reader-view');
@@ -504,7 +515,7 @@ function showArticleRoute(slug) {
   renderArticle();
 }
 function rerender() {
-  if (ROUTE === 'article') showArticleRoute(param('slug') || param('article'));
+  if (ROUTE === 'article') displayArticleRoute(param('slug') || param('article'));
   else if (ROUTE === 'profile') renderProfile(param('entity'));
 }
 async function boot() {
@@ -518,7 +529,8 @@ async function boot() {
     renderProfile(entityId);
   } else if (slug) {
     ROUTE = 'article';
-    showArticleRoute(slug);
+    await loadArticle(slug);
+    displayArticleRoute(slug);
   } else {
     document.getElementById('loading').style.display = 'none';
     document.getElementById('empty-state').style.display = 'block';

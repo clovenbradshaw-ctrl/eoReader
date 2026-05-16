@@ -19,7 +19,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const incoming = $input.first();\nconst authHeader = incoming.json.headers?.authorization || '';\nconst valid = authHeader === 'Bearer Provoking0-Cranium7-Penpal4-Childlike0-Uranium9';\nif (!valid) throw new Error('Unauthorized');\nreturn [{ json: { body: incoming.json.body || {} } }];"
+        "jsCode": "const incoming = $input.first();\nconst authHeader = incoming.json.headers?.authorization || '';\nconst valid = authHeader === 'Bearer Provoking0-Cranium7-Penpal4-Childlike0-Uranium9';\nif (!valid) throw new Error('Unauthorized');\n\nconst body = incoming.json.body || {};\n// Routing target. Articles publish to articles/<slug>.jsonl; entities and\n// connections to the shared eo-log.jsonl. Reject anything that could escape\n// the repo root.\nconst filename = body.filename || 'eo-log.jsonl';\nif (filename.includes('..') || !/^[A-Za-z0-9][A-Za-z0-9._/-]*\\.jsonl$/.test(filename)) {\n  throw new Error('Invalid filename: ' + filename);\n}\nbody.filename = filename;\nreturn [{ json: { body } }];"
       },
       "id": "3885583b-ca72-4195-b366-1f6956bc540f",
       "name": "Auth",
@@ -33,7 +33,7 @@
     },
     {
       "parameters": {
-        "url": "https://api.github.com/repos/clovenbradshaw-ctrl/plain-text/contents/eo-log.jsonl",
+        "url": "=https://api.github.com/repos/clovenbradshaw-ctrl/plain-text/contents/{{ $json.body.filename }}",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "githubOAuth2Api",
         "sendHeaders": true,
@@ -79,7 +79,7 @@
     {
       "parameters": {
         "method": "PUT",
-        "url": "https://api.github.com/repos/clovenbradshaw-ctrl/plain-text/contents/eo-log.jsonl",
+        "url": "=https://api.github.com/repos/clovenbradshaw-ctrl/plain-text/contents/{{ $('Auth').item.json.body.filename }}",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "githubOAuth2Api",
         "sendHeaders": true,
