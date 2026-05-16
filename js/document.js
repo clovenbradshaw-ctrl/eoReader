@@ -43,7 +43,8 @@ function openDocument(id) {
   currentDocTab = 'read';
   s.lastInteracted = Date.now();
   saveGraph();
-  // The open doc is always part of the chat/summary scope.
+  // Opening a doc adds it to the chat/summary scope; the user can still
+  // toggle it back off from the source strip.
   const idx = ensureItemForSource(s);
   const key = summaryArticleKey(allItems[idx]);
   if (key) summaryPicks.articleIds.add(key);
@@ -137,6 +138,10 @@ function renderDocPane() {
 
 // ---- source strip ----
 
+// Each chip is two distinct controls: a padded checkbox that toggles whether
+// the source feeds chat/summary, and the name which opens the document. They
+// are siblings (the chip wrapper itself has no click handler) so a click can
+// never be ambiguous between "toggle scope" and "open doc".
 function renderDocSourceStrip(visibleSources) {
   if (!visibleSources.length) return '<div style="padding:6px 16px;font-size:10px;color:var(--text-dim);">no documents.</div>';
   // current doc anchored first, rest follow
@@ -149,11 +154,17 @@ function renderDocSourceStrip(visibleSources) {
     const enabled = summaryPicks.articleIds.has(key);
     const isCurrent = s.id === currentDocId;
     const meta = s.processed ? countDocSites(s.url, s.title) + ' sites' : 'new';
-    html += '<span class="doc-src-chip' + (isCurrent ? ' current' : '') + (enabled ? ' on' : '') +
-      '" title="' + escapeAttr(meta) + '" onclick="openDocument(\'' + escapeAttr(s.id) + '\')">';
-    html += '<span class="dsc-toggle" onclick="event.stopPropagation();docToggleSource(\'' +
-      escapeAttr(s.id) + '\')">' + (enabled ? '✓' : '+') + '</span>';
-    html += '<span class="dsc-name">' + escapeAttr(s.title || '(untitled)') + '</span>';
+    const toggleTitle = enabled
+      ? 'in chat/summary scope — click to remove'
+      : 'not in scope — click to add to chat/summary';
+    html += '<span class="doc-src-chip' + (isCurrent ? ' current' : '') + (enabled ? ' on' : '') + '">';
+    html += '<button type="button" class="dsc-toggle' + (enabled ? ' on' : '') +
+      '" title="' + escapeAttr(toggleTitle) + '" onclick="docToggleSource(\'' +
+      escapeAttr(s.id) + '\')"><i class="ph ' +
+      (enabled ? 'ph-check-square' : 'ph-square') + '"></i></button>';
+    html += '<span class="dsc-name" title="' + escapeAttr('open document · ' + meta) +
+      '" onclick="openDocument(\'' + escapeAttr(s.id) + '\')">' +
+      escapeAttr(s.title || '(untitled)') + '</span>';
     html += '</span>';
   });
   return html;
@@ -165,7 +176,6 @@ function docToggleSource(id) {
   const idx = ensureItemForSource(s);
   const key = summaryArticleKey(allItems[idx]);
   if (summaryPicks.articleIds.has(key)) {
-    if (id === currentDocId) return; // the open doc stays in scope
     summaryPicks.articleIds.delete(key);
   } else {
     summaryPicks.articleIds.add(key);
