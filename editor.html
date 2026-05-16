@@ -656,21 +656,15 @@ function openPublishPreview(stance) {
 
 async function executePublishPlan(plan) {
   closeModal();
+  // One webhook call appends every record (INS/CON before the article DEF) in
+  // a single server-side commit — no per-record GET/PUT race on the log file.
+  var records = plan.entityEntries.concat(plan.connEntries, [plan.articleEntry]);
   try {
-    var i;
-    for (i = 0; i < plan.entityEntries.length; i++) {
-      status('Publishing entity ' + (i + 1) + '/' + plan.entityEntries.length + '…');
-      await PublishAPI.publish(EO.LOG_FILE, plan.entityEntries[i]);
-      loadedEntityHash[plan.entityEntries[i].slug] = plan.entityEntries[i].hash;
-    }
-    for (i = 0; i < plan.connEntries.length; i++) {
-      status('Publishing connection ' + (i + 1) + '/' + plan.connEntries.length + '…');
-      await PublishAPI.publish(EO.LOG_FILE, plan.connEntries[i]);
-      loadedConnHash[plan.connEntries[i].slug] = plan.connEntries[i].hash;
-    }
-
-    status('Publishing article…');
-    await PublishAPI.publish(EO.LOG_FILE, plan.articleEntry);
+    status('Publishing ' + records.length + ' record' +
+      (records.length === 1 ? '' : 's') + '…');
+    await PublishAPI.publish(EO.LOG_FILE, records);
+    plan.entityEntries.forEach(function (e) { loadedEntityHash[e.slug] = e.hash; });
+    plan.connEntries.forEach(function (c) { loadedConnHash[c.slug] = c.hash; });
 
     renderEntityList();
     renderConnList();

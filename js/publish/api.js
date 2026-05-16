@@ -32,12 +32,14 @@
     });
   }
 
-  // Append one line to the log. `filename` is passed through for the n8n
-  // workflow; the file is created on first append. The server adds `ts`.
-  function publish(filename, entry) {
-    var body = { filename: filename };
-    for (var k in entry) if (entry.hasOwnProperty(k)) body[k] = entry[k];
-    return post('/site/publish', body);
+  // Append one or more records to the log in a single GET+PUT on the server.
+  // Batching every record of a publish into one request avoids the GitHub
+  // Contents API read-after-write lag that made sequential appends collide on
+  // a stale blob sha. `filename` routes the n8n workflow; the file is created
+  // on first append and the server stamps each record with `ts`.
+  function publish(filename, entries) {
+    var list = Array.isArray(entries) ? entries : [entries];
+    return post('/site/publish', { filename: filename, entries: list });
   }
 
   // Public read — raw GitHub, no auth. Returns null on 404 (file not yet created).
