@@ -3,28 +3,45 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{plain text}</title>
+<title>readerEO</title>
 <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&display=swap" rel="stylesheet">
 <style>
   :root {
-    --accent: #88C070;
-    --bg: #1a1a1a;
-    --surface: #242424;
-    --border: #333;
-    --text: #ccc;
-    --text-bright: #eee;
-    --text-dim: #888;
+    --bg:         #0b0d0a;
+    --surface:    #161a14;
+    --surface-2:  #1d211a;
+    --surface-3:  #232822;
+    --border:     #2a2f27;
+    --border-2:   #3a4036;
+    --text:       #d8d6cf;
+    --text-bright:#ece9df;
+    --text-brighter:#f1eee3;
+    --text-dim:   #8b8a82;
+    --text-faint: #5a5b54;
+    --accent:     #88C070;
+    --accent-2:   #6a9f54;
+    --accent-bg:  #88c07012;
+    --warn:       #d4a84d;
+    --danger:     #c06a5e;
+    --mono:  'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    --sans:  'Inter', -apple-system, 'Segoe UI', Helvetica, sans-serif;
+    --serif: 'Source Serif 4', Georgia, 'Times New Roman', serif;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-family: var(--mono);
     background: var(--bg);
     color: var(--text);
     font-size: 13px;
     line-height: 1.5;
   }
+  /* === v2 top strip — wayfinding only === */
   header {
-    padding: 10px 16px;
+    height: 46px;
+    padding: 0 16px;
     border-bottom: 1px solid var(--border);
     position: sticky;
     top: 0;
@@ -32,9 +49,40 @@
     z-index: 10;
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 14px;
+    flex-shrink: 0;
   }
-  header h1 { font-size: 15px; color: var(--accent); font-weight: 400; white-space: nowrap; }
+  .brand {
+    font-family: var(--mono); font-size: 14px; font-weight: 600;
+    color: var(--accent); letter-spacing: -0.01em; white-space: nowrap;
+    cursor: pointer;
+  }
+  .topsearch {
+    flex: 1; max-width: 520px;
+    display: flex; align-items: center; gap: 8px;
+    height: 28px; padding: 0 10px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .topsearch:focus-within { border-color: var(--accent); }
+  .topsearch i { color: var(--text-faint); font-size: 13px; }
+  .topsearch input {
+    flex: 1; background: none; border: none; outline: none;
+    color: var(--text-bright); font-family: var(--sans); font-size: 12.5px;
+    padding: 0;
+  }
+  .topsearch input::placeholder { color: var(--text-faint); }
+  .topsearch .kbd {
+    font-family: var(--mono); font-size: 9.5px; color: var(--text-faint);
+    border: 1px solid var(--border-2); border-radius: 3px; padding: 1px 5px;
+  }
+  .icon-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; border-radius: 6px;
+    background: none; border: 1px solid transparent;
+    color: var(--text-dim); cursor: pointer; font-size: 15px;
+  }
+  .icon-btn:hover { color: var(--accent); border-color: var(--border); background: var(--surface); }
   .controls { display: flex; gap: 8px; flex: 1; align-items: center; }
   input[type="text"] {
     background: var(--surface);
@@ -270,8 +318,8 @@
     gap: 12px; margin-bottom: 12px; flex-wrap: wrap;
   }
   .record-title {
-    font-size: 16px; font-weight: 700; color: var(--text-bright);
-    font-family: -apple-system, sans-serif;
+    font-size: 20px; font-weight: 600; color: var(--text-brighter);
+    font-family: var(--serif); line-height: 1.22;
   }
   .record-meta { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
   .record-url { font-size: 11px; margin-top: 2px; }
@@ -372,33 +420,139 @@
   .walk-controls button:hover { background: #1e2a1e; }
   .walk-controls button:disabled { opacity: 0.4; cursor: default; }
 
-  /* app layout */
-  #app-layout { display: flex; height: calc(100vh - 57px); overflow: hidden; }
+  /* === v2 three-pane app layout === */
+  #app-layout { display: flex; height: calc(100vh - 46px); overflow: hidden; }
   #left-panel {
-    width: 260px; flex-shrink: 0;
+    width: 268px; flex-shrink: 0;
     border-right: 1px solid var(--border);
-    overflow-y: auto; background: var(--bg);
+    overflow-y: auto; background: var(--surface);
     display: flex; flex-direction: column;
+    transition: width 0.16s ease;
   }
-  #left-panel .lp-section { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  #left-panel .lp-section { padding: 12px 14px; border-bottom: 1px solid var(--border); }
   #left-panel .lp-label {
-    font-size: 10px; color: var(--accent); text-transform: uppercase;
-    letter-spacing: 0.5px; margin-bottom: 6px;
-    display: flex; align-items: center; gap: 4px;
+    font-family: var(--mono);
+    font-size: 10px; color: var(--text-faint); text-transform: uppercase;
+    letter-spacing: 1.4px; margin-bottom: 8px;
+    display: flex; align-items: center; gap: 5px;
   }
   #left-panel .lp-item {
     padding: 5px 8px; border-radius: 3px; cursor: pointer;
     font-size: 11px; margin-bottom: 2px; color: var(--text);
     display: flex; align-items: flex-start; gap: 6px;
   }
-  #left-panel .lp-item:hover { background: var(--surface); }
-  #left-panel .lp-item.active { background: var(--surface); border-left: 2px solid var(--accent); }
+  #left-panel .lp-item:hover { background: var(--surface-2); }
+  #left-panel .lp-item.active { background: var(--surface-2); border-left: 2px solid var(--accent); }
   #left-panel .lp-item .lp-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #left-panel .lp-item .lp-meta { font-size: 9px; color: var(--text-dim); white-space: nowrap; }
   #left-panel .lp-item .lp-badge { font-size: 8px; padding: 0 4px; border-radius: 2px; white-space: nowrap; }
   #left-panel input[type="text"] { width: 100%; margin-bottom: 6px; }
   #left-panel .lp-actions { display: flex; gap: 4px; flex-wrap: wrap; }
-  #main-content { flex: 1; overflow: hidden; display: flex; flex-direction: column; position: relative; }
+  #main-content { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: column; position: relative; background: var(--bg); }
+
+  /* shared pane header — kicker + title + collapse */
+  .pane-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 11px 14px 10px; border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .pane-head .pane-icon { font-size: 14px; color: var(--accent); }
+  .pane-head .pane-titles { flex: 1; min-width: 0; }
+  .pane-kicker {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: 1.6px;
+    color: var(--text-faint); text-transform: uppercase;
+  }
+  .pane-title {
+    font-family: var(--serif); font-size: 16px; font-weight: 600;
+    color: var(--text-bright); margin-top: 1px;
+  }
+  .rail-collapse {
+    width: 24px; height: 24px; border-radius: 5px; flex-shrink: 0;
+    background: none; border: 1px solid transparent;
+    color: var(--text-dim); cursor: pointer; font-size: 13px; line-height: 1;
+  }
+  .rail-collapse:hover { color: var(--accent); border-color: var(--border); background: var(--surface-2); }
+
+  /* === Studio (right pane) === */
+  #right-panel {
+    width: 304px; flex-shrink: 0;
+    border-left: 1px solid var(--border);
+    background: var(--surface);
+    display: flex; flex-direction: column; overflow: hidden;
+    transition: width 0.16s ease;
+  }
+  .studio-body { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+  .studio-kicker {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: 1.4px;
+    color: var(--text-faint); text-transform: uppercase;
+    padding: 14px 14px 8px;
+  }
+  .studio-cards {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 14px;
+  }
+  .studio-card {
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 11px 12px; background: var(--surface-2);
+    display: flex; flex-direction: column; gap: 5px; cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
+  }
+  .studio-card:hover { border-color: var(--border-2); background: var(--surface-3); }
+  .studio-card.primary {
+    border-color: #88c07044;
+    background: linear-gradient(180deg, #88c07014, var(--surface-2));
+  }
+  .studio-card.primary:hover { border-color: var(--accent); }
+  .studio-card.soon { opacity: 0.5; cursor: default; }
+  .studio-card .sc-top { display: flex; align-items: center; justify-content: space-between; }
+  .studio-card .sc-ico { font-size: 14px; color: var(--text-dim); }
+  .studio-card.primary .sc-ico { color: var(--accent); }
+  .studio-card .sc-soon {
+    font-family: var(--mono); font-size: 8px; letter-spacing: 1px; color: var(--text-faint);
+  }
+  .studio-card .sc-title {
+    font-family: var(--serif); font-size: 14px; font-weight: 600; color: var(--text-bright);
+  }
+  .studio-card .sc-meta { font-family: var(--mono); font-size: 9.5px; color: var(--text-faint); }
+  .studio-ask {
+    border-top: 1px solid var(--border); padding: 10px 14px;
+    display: flex; gap: 8px; align-items: center; flex-shrink: 0;
+  }
+  .studio-ask input {
+    flex: 1; background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); font-family: var(--sans); font-size: 12px;
+    padding: 7px 10px; border-radius: 5px; outline: none; margin: 0;
+  }
+  .studio-ask input:focus { border-color: var(--accent); }
+  .studio-ask button {
+    background: var(--accent-bg); border: 1px solid var(--accent);
+    color: var(--accent); border-radius: 5px; padding: 6px 11px;
+    font-family: var(--mono); font-size: 12px; cursor: pointer;
+  }
+
+  /* === collapsed rails (56px icon strips) === */
+  #left-panel.collapsed, #right-panel.collapsed { width: 52px; }
+  #left-panel.collapsed > .lp-section,
+  #left-panel.collapsed .pane-titles,
+  #right-panel.collapsed .studio-body,
+  #right-panel.collapsed .studio-ask,
+  #right-panel.collapsed .pane-titles { display: none; }
+  #left-panel.collapsed .pane-head,
+  #right-panel.collapsed .pane-head {
+    flex-direction: column; gap: 8px; padding: 12px 0;
+  }
+  .rail-icons { display: none; }
+  #left-panel.collapsed .rail-icons,
+  #right-panel.collapsed .rail-icons {
+    display: flex; flex-direction: column; align-items: center;
+    gap: 6px; padding: 12px 0;
+  }
+  .rail-icons button {
+    width: 34px; height: 34px; border-radius: 7px;
+    background: none; border: 1px solid var(--border);
+    color: var(--text-dim); cursor: pointer; font-size: 14px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .rail-icons button:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); }
   #view-feed { flex: 1; padding: 0 24px 40px; overflow-y: auto; }
   #view-index { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   .library-scroll { flex: 1; overflow-y: auto; }
@@ -407,6 +561,8 @@
   @media (max-width: 720px) {
     #app-layout { flex-direction: column; }
     #left-panel { width: 100%; border-right: none; border-bottom: 1px solid var(--border); max-height: 200px; }
+    #right-panel { width: 100%; border-left: none; border-top: 1px solid var(--border); max-height: 240px; }
+    #left-panel.collapsed, #right-panel.collapsed { width: 100%; }
     .graph-entities { width: 100%; }
     #view-index > div { flex-direction: column !important; }
   }
@@ -456,7 +612,7 @@
     padding: 10px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0;
   }
   .doc-header-main { flex: 1; min-width: 0; }
-  .doc-title { font-size: 15px; font-weight: 700; color: var(--text-bright); font-family: -apple-system, sans-serif; }
+  .doc-title { font-size: 21px; font-weight: 600; color: var(--text-brighter); font-family: var(--serif); line-height: 1.2; letter-spacing: -0.01em; }
   .doc-meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
   .doc-header-actions { display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
   .doc-tabs { display: flex; gap: 4px; padding: 6px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; align-items: center; }
@@ -507,9 +663,9 @@
 
   /* read tab + inline site highlighting */
   .doc-read-body {
-    font-family: -apple-system, 'Segoe UI', Helvetica, sans-serif;
-    font-size: 14px; line-height: 1.95; color: var(--text);
-    padding: 18px 22px; max-width: 760px;
+    font-family: var(--serif);
+    font-size: 16.5px; line-height: 1.85; color: var(--text);
+    padding: 24px 28px; max-width: 760px;
   }
   mark.doc-site-hl {
     background: transparent; color: inherit; cursor: pointer;
@@ -543,16 +699,16 @@
 <body>
 
 <header>
-  <h1>{plain text}</h1>
-  <div class="controls">
-    <input type="text" id="search" placeholder="search..." style="width:180px;" />
-    <div style="flex:1;"></div>
-    <button class="prompt-toggle" onclick="location.href='editor.html'" title="Write a post for the minisite"><i class="ph ph-pencil-simple"></i> write</button>
-    <button class="prompt-toggle" onclick="toggleGraph()" id="graph-toggle"><i class="ph ph-graph"></i> <span id="graph-toggle-label">all entities</span> <span id="graph-count">0</span></button>
-    <span id="matrix-status" class="matrix-indicator" onclick="togglePrompt()"></span>
-    <button class="prompt-toggle" onclick="togglePrompt()"><i class="ph ph-gear"></i></button>
-    <div class="status" id="status"></div>
+  <div class="brand" onclick="showView('library')" title="readerEO">readerEO</div>
+  <div class="topsearch">
+    <i class="ph ph-magnifying-glass"></i>
+    <input type="text" id="search" placeholder="search corpus, sites, threads…" />
+    <span class="kbd">⌘K</span>
   </div>
+  <div style="flex:1;"></div>
+  <span id="matrix-status" class="matrix-indicator" onclick="togglePrompt()"></span>
+  <span class="status" id="status"></span>
+  <button class="icon-btn" onclick="togglePrompt()" title="Settings"><i class="ph ph-gear"></i></button>
 </header>
 
 <div id="prompt-editor">
@@ -640,6 +796,20 @@
 <div id="app-layout">
 
 <div id="left-panel">
+  <div class="pane-head">
+    <span class="pane-icon">◧</span>
+    <div class="pane-titles">
+      <div class="pane-kicker">left pane</div>
+      <div class="pane-title">Sources</div>
+    </div>
+    <button class="rail-collapse" onclick="toggleRail('left')" title="Collapse rail">‹</button>
+  </div>
+  <div class="rail-icons">
+    <button onclick="toggleRail('left')" title="Expand Sources">◧</button>
+    <button onclick="showView('library')" title="Library"><i class="ph ph-table"></i></button>
+    <button onclick="showView('feed')" title="Feed items"><i class="ph ph-rss"></i></button>
+    <button onclick="openDiscover()" title="Discover sources"><i class="ph ph-compass"></i></button>
+  </div>
   <div class="lp-section">
     <div class="lp-label" onclick="toggleLpSection('ingest')" style="cursor:pointer;"><i class="ph ph-caret-down lp-caret" id="caret-ingest"></i><i class="ph ph-plus-circle"></i> ingest</div>
     <div id="section-ingest">
@@ -685,6 +855,7 @@
       <div style="flex:1;"></div>
       <button class="graph-tab" id="tab-summary" onclick="switchToSummarizeView()"><i class="ph ph-chats-circle"></i> chat with docs</button>
       <button class="graph-tab" onclick="exportAllSites()"><i class="ph ph-export"></i> export</button>
+      <button class="graph-tab" onclick="toggleGraph()" title="Back to workspace"><i class="ph ph-x"></i> close</button>
     </div>
     <div class="index-toolbar">
       <span class="mode-group" data-mode="sites">
@@ -730,6 +901,71 @@
   </div>
 </div>
 
+<aside id="right-panel">
+  <div class="pane-head">
+    <span class="pane-icon">◨</span>
+    <div class="pane-titles">
+      <div class="pane-kicker">right pane</div>
+      <div class="pane-title">Studio</div>
+    </div>
+    <button class="rail-collapse" onclick="toggleRail('right')" title="Collapse rail">›</button>
+  </div>
+  <div class="rail-icons">
+    <button onclick="toggleRail('right')" title="Expand Studio">◨</button>
+    <button onclick="location.href='editor.html'" title="Write a post"><i class="ph ph-pencil-simple"></i></button>
+    <button onclick="openStudio('matrix')" title="Matrix"><i class="ph ph-graph"></i></button>
+    <button onclick="switchToSummarizeView()" title="Summary"><i class="ph ph-list-bullets"></i></button>
+    <button onclick="openStudio('story')" title="Story"><i class="ph ph-arrow-bend-down-right"></i></button>
+  </div>
+  <div class="studio-body">
+    <div class="studio-kicker">Outputs · make from your corpus</div>
+    <div class="studio-cards">
+      <div class="studio-card primary" onclick="location.href='editor.html'">
+        <div class="sc-top"><span class="sc-ico"><i class="ph ph-pencil-simple"></i></span></div>
+        <div class="sc-title">write a post</div>
+        <div class="sc-meta">minisite editor</div>
+      </div>
+      <div class="studio-card" onclick="openStudio('matrix')">
+        <div class="sc-top"><span class="sc-ico"><i class="ph ph-graph"></i></span></div>
+        <div class="sc-title">matrix</div>
+        <div class="sc-meta">sites &amp; connections · <span id="graph-count">0</span></div>
+      </div>
+      <div class="studio-card" onclick="switchToSummarizeView()">
+        <div class="sc-top"><span class="sc-ico"><i class="ph ph-list-bullets"></i></span></div>
+        <div class="sc-title">summary</div>
+        <div class="sc-meta">chat across docs</div>
+      </div>
+      <div class="studio-card" onclick="openStudio('story')">
+        <div class="sc-top"><span class="sc-ico"><i class="ph ph-arrow-bend-down-right"></i></span></div>
+        <div class="sc-title">story</div>
+        <div class="sc-meta">thread timeline</div>
+      </div>
+      <div class="studio-card" onclick="openStudio('lab')">
+        <div class="sc-top"><span class="sc-ico"><i class="ph ph-flask"></i></span></div>
+        <div class="sc-title">lab</div>
+        <div class="sc-meta">dream · evaluate</div>
+      </div>
+      <div class="studio-card soon" title="Coming soon">
+        <div class="sc-top"><span class="sc-ico"><i class="ph ph-waveform"></i></span><span class="sc-soon">SOON</span></div>
+        <div class="sc-title">audio</div>
+        <div class="sc-meta">~14 min overview</div>
+      </div>
+    </div>
+    <div class="studio-kicker">Discover</div>
+    <div class="studio-cards">
+      <div class="studio-card" onclick="openDiscover()" style="grid-column:1/-1;">
+        <div class="sc-top"><span class="sc-ico"><i class="ph ph-compass"></i></span></div>
+        <div class="sc-title">browse sources</div>
+        <div class="sc-meta">find feeds by medium &amp; publisher</div>
+      </div>
+    </div>
+  </div>
+  <div class="studio-ask">
+    <input type="text" id="studio-ask-input" placeholder="ask the corpus…" onkeydown="if(event.key==='Enter')studioAsk()" />
+    <button onclick="studioAsk()" title="Ask">↵</button>
+  </div>
+</aside>
+
 </div>
 
 <div id="modal-root" hidden></div>
@@ -761,6 +997,45 @@
 <script src="js/eva.js"></script>
 <script src="js/eo.js"></script>
 <script src="js/app.js"></script>
+
+<script>
+  // === Reader v2 shell wiring ===
+  // The three panes each own one job: Sources (scope) · Workspace (read) · Studio (make).
+  function toggleRail(side) {
+    var el = document.getElementById(side === 'left' ? 'left-panel' : 'right-panel');
+    if (el) el.classList.toggle('collapsed');
+  }
+
+  // Studio cards route to the existing index surfaces; the index renders as an
+  // overlay over the Workspace pane, so both rails stay visible.
+  function openStudio(which) {
+    if (typeof showView !== 'function') return;
+    if (which === 'matrix')      { showView('index'); if (typeof setIndexMode === 'function') setIndexMode('sites'); }
+    else if (which === 'story')  { showView('index'); if (typeof setIndexMode === 'function') setIndexMode('story'); }
+    else if (which === 'lab')    { showView('index'); if (typeof setIndexMode === 'function') setIndexMode('lab'); }
+  }
+
+  function studioAsk() {
+    var inp = document.getElementById('studio-ask-input');
+    var q = inp ? (inp.value || '').trim() : '';
+    if (typeof switchToSummarizeView === 'function') switchToSummarizeView();
+    if (q && inp) {
+      inp.value = '';
+      setTimeout(function () {
+        try { if (typeof summaryAsk === 'function') summaryAsk(q); } catch (e) { /* view not ready */ }
+      }, 0);
+    }
+  }
+
+  // ⌘K / Ctrl+K focuses the global search.
+  window.addEventListener('keydown', function (e) {
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault();
+      var s = document.getElementById('search');
+      if (s) s.focus();
+    }
+  });
+</script>
 
 </body>
 </html>
