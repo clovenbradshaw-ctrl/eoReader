@@ -482,8 +482,29 @@ function initGraph() {
 
 // ── routing ────────────────────────────────────────────────────────────
 var ROUTE = null;
+// Project + display the article route. Safe to re-run when a fresh log
+// arrives from the background refresh: an article missing from the stale
+// OPFS cache flips from "not found" to rendered without a reload.
+function showArticleRoute(slug) {
+  projectArticle(slug);
+  document.getElementById('loading').style.display = 'none';
+  var empty = document.getElementById('empty-state');
+  var reader = document.getElementById('reader-view');
+  if (!ARTICLE) {
+    reader.classList.add('hidden');
+    document.getElementById('view-tabs').style.display = 'none';
+    empty.style.display = 'block';
+    empty.innerHTML = '<h2>Article not found</h2><p>No published article with slug <code>' +
+      esc(slug) + '</code>.</p>';
+    return;
+  }
+  empty.style.display = 'none';
+  document.getElementById('view-tabs').style.display = 'flex';
+  reader.classList.remove('hidden');
+  renderArticle();
+}
 function rerender() {
-  if (ROUTE === 'article') { projectArticle(param('slug') || param('article')); renderArticle(); }
+  if (ROUTE === 'article') showArticleRoute(param('slug') || param('article'));
   else if (ROUTE === 'profile') renderProfile(param('entity'));
 }
 async function boot() {
@@ -497,17 +518,7 @@ async function boot() {
     renderProfile(entityId);
   } else if (slug) {
     ROUTE = 'article';
-    projectArticle(slug);
-    document.getElementById('loading').style.display = 'none';
-    if (!ARTICLE) {
-      document.getElementById('empty-state').style.display = 'block';
-      document.getElementById('empty-state').innerHTML =
-        '<h2>Article not found</h2><p>No published article with slug <code>' + esc(slug) + '</code>.</p>';
-      return;
-    }
-    document.getElementById('view-tabs').style.display = 'flex';
-    document.getElementById('reader-view').classList.remove('hidden');
-    renderArticle();
+    showArticleRoute(slug);
   } else {
     document.getElementById('loading').style.display = 'none';
     document.getElementById('empty-state').style.display = 'block';
