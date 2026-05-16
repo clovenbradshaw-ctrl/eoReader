@@ -149,12 +149,7 @@ async function startWalk(idx) {
   const item = allItems[idx];
   if (!item) { console.error('No item at index', idx); return; }
 
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    await showAlert('Set your Anthropic API key in settings first');
-    document.getElementById('prompt-editor').classList.add('open');
-    return;
-  }
+  if (!(await ensureProviderReady('walk'))) return;
 
   if (!item.body || item.body.length < 50) {
     await showAlert('Article body too short to process');
@@ -708,13 +703,10 @@ async function generateDigest(idx, btn) {
   const item = allItems[idx];
   if (!item) return;
 
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    btn.textContent = '✗ no api key';
+  if (!(await ensureProviderReady('digest'))) {
+    btn.textContent = '✗ provider';
     btn.classList.add('errored');
     setTimeout(() => { btn.textContent = 'generate'; btn.classList.remove('errored'); }, 2000);
-    document.getElementById('prompt-editor').classList.add('open');
-    document.getElementById('api-key').focus();
     return;
   }
 

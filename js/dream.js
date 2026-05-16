@@ -80,8 +80,7 @@ function computeDreamCandidates() {
 // parallel up to QUEUE_MAX_CONCURRENCY. UI returns immediately; the
 // process tab + the dream tab update as each job lands.
 async function runDreamPass() {
-  const apiKey = getApiKey();
-  if (!apiKey) { await showAlert('Set your Anthropic API key first'); return; }
+  if (!(await ensureProviderReady('dream'))) return;
 
   const cands = computeDreamCandidates();
   if (!cands.length) {
