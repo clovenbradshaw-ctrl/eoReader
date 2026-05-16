@@ -33,7 +33,20 @@
     },
     {
       "parameters": {
-        "url": "=https://api.github.com/repos/clovenbradshaw-ctrl/plain-text/contents/{{ $json.body.filename || 'eo-log.jsonl' }}",
+        "jsCode": "// Resolve + sanitize the target file from the client's body.filename.\n// Falls back to eo-log.jsonl so legacy callers keep working.\nconst body = $input.first().json.body || {};\nlet filename = body.filename || 'eo-log.jsonl';\n// Only allow alphanumerics, hyphens, underscores, dots, slashes.\nfilename = filename.replace(/[^a-zA-Z0-9\\-_.\\/]/g, '');\n// Prevent directory traversal.\nfilename = filename.replace(/\\.\\./g, '');\nif (!filename) throw new Error('Invalid filename');\nreturn [{ json: { body, filename } }];"
+      },
+      "id": "b1f0c2d3-1111-4a00-9000-000000000001",
+      "name": "Resolve File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.github.com/repos/clovenbradshaw-ctrl/plain-text/contents/{{ $json.filename }}",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "githubOAuth2Api",
         "sendHeaders": true,
@@ -52,7 +65,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        -400,
+        -176,
         304
       ],
       "credentials": {
@@ -65,14 +78,14 @@
     },
     {
       "parameters": {
-        "jsCode": "// Route the appended line to the file named by the client (body.filename).\n// Falls back to eo-log.jsonl so legacy callers keep working.\nconst prev = $input.first().json;\nconst body = $('Auth').first().json.body;\nconst filename = body.filename || 'eo-log.jsonl';\n\nlet existing = '';\nlet sha = null;\nif (prev && prev.content) {\n  existing = Buffer.from(prev.content, 'base64').toString('utf-8');\n  sha = prev.sha;\n}\n\n// Log every field the client sent (op, site, slug, title, stance, terrain,\n// author, meta, payload, hash, ...) except the routing-only `filename`.\nconst entry = { ts: new Date().toISOString() };\nfor (const k in body) {\n  if (k === 'filename') continue;\n  entry[k] = body[k];\n}\n\nconst line = JSON.stringify(entry);\nconst updated = existing\n  ? (existing.endsWith('\\n') ? existing + line + '\\n' : existing + '\\n' + line + '\\n')\n  : line + '\\n';\n\nconst result = {\n  filename,\n  message: `${body.op || 'append'}(${body.site || '-'}, ${body.slug || '-'})`,\n  content: Buffer.from(updated, 'utf-8').toString('base64')\n};\nif (sha) result.sha = sha;\n\nreturn [{ json: result }];"
+        "jsCode": "// Append one JSONL line to the file named by the client. If GH Get File\n// 404'd (file does not exist yet) there is no sha and the PUT below creates\n// it -- so no separate seed step is needed.\nconst prev = $input.first().json;\nconst resolved = $('Resolve File').first().json;\nconst body = resolved.body;\nconst filename = resolved.filename;\n\nlet existing = '';\nlet sha = null;\nif (prev && prev.content) {\n  existing = Buffer.from(prev.content, 'base64').toString('utf-8');\n  sha = prev.sha;\n}\n\n// Log every field the client sent (op, site, slug, title, stance, terrain,\n// author, meta, payload, hash, ...) except the routing-only `filename`.\nconst entry = { ts: new Date().toISOString() };\nfor (const k in body) {\n  if (k === 'filename') continue;\n  entry[k] = body[k];\n}\n\nconst line = JSON.stringify(entry);\nconst updated = existing\n  ? (existing.endsWith('\\n') ? existing + line + '\\n' : existing + '\\n' + line + '\\n')\n  : line + '\\n';\n\nconst result = {\n  filename,\n  message: `${body.op || 'append'}(${body.site || '-'}, ${body.slug || '-'})`,\n  content: Buffer.from(updated, 'utf-8').toString('base64')\n};\nif (sha) result.sha = sha;\n\nreturn [{ json: result }];"
       },
       "id": "4d7213ef-0a1f-45c1-a135-88c333620028",
       "name": "Append",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -176,
+        48,
         304
       ]
     },
@@ -101,7 +114,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        48,
+        272,
         304
       ],
       "credentials": {
@@ -132,7 +145,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
       "position": [
-        272,
+        496,
         304
       ]
     },
@@ -207,194 +220,6 @@
         -176,
         608
       ]
-    },
-    {
-      "parameters": {
-        "httpMethod": "POST",
-        "path": "site/seed",
-        "responseMode": "responseNode",
-        "options": {}
-      },
-      "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1,
-      "position": [
-        -1280,
-        -256
-      ],
-      "id": "3edf279c-5112-449b-9331-df96599d31c8",
-      "name": "Seed Webhook",
-      "webhookId": "e6000001-0001-4000-a000-000000000001"
-    },
-    {
-      "parameters": {
-        "jsCode": "const incoming = $input.first();\nconst authHeader = incoming.json.headers?.authorization || '';\nif (authHeader !== 'Bearer Provoking0-Cranium7-Penpal4-Childlike0-Uranium9') {\n  throw new Error('Unauthorized');\n}\nconst body = incoming.json.body || {};\nlet filename = body.filename || body.site || '';\nif (!filename) throw new Error('No filename or site provided');\n// Ensure .jsonl extension\nif (!filename.endsWith('.jsonl')) filename = filename + '.jsonl';\n// Sanitize: only allow alphanumeric, hyphens, underscores, dots, slashes\nfilename = filename.replace(/[^a-zA-Z0-9\\-_.\\/]/g, '');\nif (!filename) throw new Error('Invalid filename');\nreturn [{ json: { filename } }];"
-      },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        -1056,
-        -256
-      ],
-      "id": "858f510e-fa1d-4bb7-b17c-aebe1a51ce6a",
-      "name": "Parse Filename"
-    },
-    {
-      "parameters": {
-        "url": "=https://api.github.com/repos/clovenbradshaw-ctrl/plain-text/contents/{{ $json.filename }}",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "githubOAuth2Api",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Accept",
-              "value": "application/vnd.github.v3+json"
-            }
-          ]
-        },
-        "options": {}
-      },
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        -832,
-        -256
-      ],
-      "id": "d38408cf-0566-4f22-b140-e0391b08f673",
-      "name": "Check Exists",
-      "credentials": {
-        "githubOAuth2Api": {
-          "id": "818QKPlLgc22aSHm",
-          "name": "GitHub account"
-        }
-      },
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "jsCode": "const prev = $input.first().json;\nconst filename = $('Parse Filename').first().json.filename;\n// If file already exists (has sha), skip creation\nif (prev.sha) {\n  return [{ json: { filename, alreadyExists: true, sha: prev.sha } }];\n}\n// File doesn't exist, create it\nreturn [{ json: { filename, alreadyExists: false } }];"
-      },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        -624,
-        -256
-      ],
-      "id": "29577459-a7d1-4007-97c0-6d9dc4ae95b9",
-      "name": "Check Result"
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true
-          },
-          "conditions": [
-            {
-              "leftValue": "={{ $json.alreadyExists }}",
-              "rightValue": true,
-              "operator": {
-                "type": "boolean",
-                "operation": "equal"
-              }
-            }
-          ]
-        },
-        "options": {}
-      },
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [
-        -400,
-        -256
-      ],
-      "id": "acb884f2-dfcf-485e-a2a2-0bc4ea657204",
-      "name": "Already Exists?"
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ ok: true, created: false, filename: $json.filename, message: 'file already exists' }) }}",
-        "options": {
-          "responseCode": 200,
-          "responseHeaders": {
-            "entries": [
-              {
-                "name": "Access-Control-Allow-Origin",
-                "value": "*"
-              }
-            ]
-          }
-        }
-      },
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1,
-      "position": [
-        -176,
-        -352
-      ],
-      "id": "cb4015d3-6efe-4a81-a630-e490ac5da971",
-      "name": "Already Exists OK"
-    },
-    {
-      "parameters": {
-        "method": "PUT",
-        "url": "=https://api.github.com/repos/clovenbradshaw-ctrl/plain-text/contents/{{ $json.filename }}",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "githubOAuth2Api",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Accept",
-              "value": "application/vnd.github.v3+json"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ message: 'seed ' + $json.filename, content: Buffer.from('').toString('base64') }) }}",
-        "options": {}
-      },
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        -176,
-        -160
-      ],
-      "id": "5fa42144-96ae-4b4e-80a5-8781643a3699",
-      "name": "Create File",
-      "credentials": {
-        "githubOAuth2Api": {
-          "id": "818QKPlLgc22aSHm",
-          "name": "GitHub account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ ok: true, created: true, filename: $('Parse Filename').first().json.filename }) }}",
-        "options": {
-          "responseCode": 201,
-          "responseHeaders": {
-            "entries": [
-              {
-                "name": "Access-Control-Allow-Origin",
-                "value": "*"
-              }
-            ]
-          }
-        }
-      },
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1,
-      "position": [
-        48,
-        -160
-      ],
-      "id": "51551e02-313a-43fb-9eab-be7f0fb4c90a",
-      "name": "Created OK"
     }
   ],
   "connections": {
@@ -410,6 +235,17 @@
       ]
     },
     "Auth": {
+      "main": [
+        [
+          {
+            "node": "Resolve File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve File": {
       "main": [
         [
           {
@@ -480,79 +316,6 @@
         [
           {
             "node": "Serve Feed",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Seed Webhook": {
-      "main": [
-        [
-          {
-            "node": "Parse Filename",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Parse Filename": {
-      "main": [
-        [
-          {
-            "node": "Check Exists",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Check Exists": {
-      "main": [
-        [
-          {
-            "node": "Check Result",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Check Result": {
-      "main": [
-        [
-          {
-            "node": "Already Exists?",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Already Exists?": {
-      "main": [
-        [
-          {
-            "node": "Already Exists OK",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Create File",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Create File": {
-      "main": [
-        [
-          {
-            "node": "Created OK",
             "type": "main",
             "index": 0
           }

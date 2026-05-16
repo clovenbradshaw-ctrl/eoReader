@@ -630,8 +630,6 @@ function openPublishPreview(stance) {
   var plan = buildPublishPlan(stance);
   if (!plan) return;
   var rows = [];
-  rows.push('<div><b style="color:var(--text-dim)">seed</b> ' + esc(EO.SITE_FILE) + ' · ' +
-    esc(EO.articleFile(plan.slug)) + ' <span style="color:var(--text-faint)">(only if new)</span></div>');
   plan.entityEntries.forEach(function (e) {
     rows.push('<div><b style="color:var(--media)">INS</b> sites.jsonl · ' +
       esc(e.slug) + ' · ' + esc(e.payload.entityType) + '</div>');
@@ -659,10 +657,6 @@ function openPublishPreview(stance) {
 async function executePublishPlan(plan) {
   closeModal();
   try {
-    status('Seeding files…');
-    await PublishAPI.seed(EO.SITE_FILE);
-    await PublishAPI.seed(EO.articleFile(plan.slug));
-
     var i;
     for (i = 0; i < plan.entityEntries.length; i++) {
       status('Publishing entity ' + (i + 1) + '/' + plan.entityEntries.length + '…');

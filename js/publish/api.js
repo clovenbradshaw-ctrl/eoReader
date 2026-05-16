@@ -32,18 +32,16 @@
     });
   }
 
-  // Seed a JSONL file (idempotent). Accepts any filename incl. subdirectories.
-  function seed(filename) { return post('/site/seed', { filename: filename }); }
-
   // Append one line. `filename` tells the n8n workflow which file to route to
-  // (articles/<slug>.jsonl or sites.jsonl). The server adds `ts`.
+  // (articles/<slug>.jsonl or sites.jsonl). The file is created on first
+  // append, so no separate seed step is needed. The server adds `ts`.
   function publish(filename, entry) {
     var body = { filename: filename };
     for (var k in entry) if (entry.hasOwnProperty(k)) body[k] = entry[k];
     return post('/site/publish', body);
   }
 
-  // Public read — raw GitHub, no auth. Returns null on 404 (file not seeded).
+  // Public read — raw GitHub, no auth. Returns null on 404 (file not yet created).
   async function readRaw(filename) {
     var r = await fetch(RAW + '/' + filename + '?t=' + Date.now(), { cache: 'no-store' });
     if (r.status === 404) return null;
@@ -52,6 +50,6 @@
   }
 
   root.PublishAPI = {
-    seed: seed, publish: publish, readRaw: readRaw, N8N: N8N, RAW: RAW,
+    publish: publish, readRaw: readRaw, N8N: N8N, RAW: RAW,
   };
 })(typeof window !== 'undefined' ? window : this);
