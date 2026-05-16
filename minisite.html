@@ -101,6 +101,22 @@ body { font-family: var(--sans); font-size: 16px; line-height: 1.7; -webkit-font
 .profile-conn { display: block; padding: 14px 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; text-decoration: none; }
 .profile-conn:hover { border-color: var(--border-hover); }
 #profile-graph { width: 100%; height: 320px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); margin-bottom: 8px; cursor: pointer; }
+/* home / index page */
+.home-view { max-width: 760px; margin: 0 auto; padding: 52px 24px 140px; }
+.home-view.hidden { display: none; }
+.home-hero-title { font-size: clamp(26px, 5vw, 38px); font-weight: 700; color: #e8e6e3; line-height: 1.2; margin-bottom: 12px; }
+.home-hero-sub { font-size: 16px; color: var(--text-dim); line-height: 1.7; margin-bottom: 32px; }
+.home-graph-wrap { position: relative; height: 380px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); overflow: hidden; }
+#home-graph-canvas { width: 100%; height: 100%; cursor: pointer; }
+.home-h { font-family: var(--mono); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 2px; color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 10px; margin: 44px 0 18px; }
+.home-card { display: block; padding: 16px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; text-decoration: none; transition: border-color 0.15s; }
+.home-card:hover { border-color: var(--border-hover); }
+.home-card-title { font-size: 15px; font-weight: 600; color: #e8e6e3; line-height: 1.4; }
+.home-card-meta { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-top: 5px; }
+.entity-dir { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px; }
+.entity-dir-item { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; text-decoration: none; transition: border-color 0.15s; }
+.entity-dir-item:hover { border-color: var(--border-hover); }
+.entity-dir-name { font-size: 13px; font-weight: 500; color: #e8e6e3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty-state { max-width: 600px; margin: 120px auto; text-align: center; color: var(--text-dim); padding: 0 24px; }
 .empty-state h2 { font-family: var(--mono); color: var(--accent); font-size: 16px; margin-bottom: 12px; }
 .loading { color: var(--text-faint); font-family: var(--mono); font-size: 12px; text-align: center; padding: 120px 24px; }
@@ -134,6 +150,8 @@ body { font-family: var(--sans); font-size: 16px; line-height: 1.7; -webkit-font
   <div class="legend-items" id="legend-items"></div>
   <div id="article-body"></div>
 </div>
+
+<div class="home-view hidden" id="home-view"></div>
 
 <div class="profile-view hidden" id="profile-view"></div>
 
@@ -403,8 +421,9 @@ function switchView(view) {
   document.getElementById('graph-view').classList.toggle('active', view === 'graph');
   if (view === 'graph' && !graphInitialized) { graphInitialized = true; initGraph(); }
 }
-function initGraph() {
-  var canvas = document.getElementById('graph-canvas');
+function initGraph(canvasId) {
+  var canvas = document.getElementById(canvasId || 'graph-canvas');
+  if (!canvas) return;
   var ctx = canvas.getContext('2d');
   var W = canvas.offsetWidth, H = canvas.offsetHeight;
   canvas.width = W * 2; canvas.height = H * 2; ctx.scale(2, 2);
@@ -480,11 +499,90 @@ function initGraph() {
   tick();
 }
 
+// ── home / index page ──────────────────────────────────────────────────
+function legendHtml() {
+  return Object.keys(TYPE_LABELS).map(function (k) {
+    return '<span class="graph-legend-item"><span class="legend-dot" style="background:' +
+      TYPE_COLORS[k] + '"></span>' + TYPE_LABELS[k] + '</span>';
+  }).join('');
+}
+function renderHome() {
+  var el = document.getElementById('home-view');
+  var articles = LOG_TEXT != null ? Fold.foldArticles(LOG_TEXT) : [];
+  var entIds = Object.keys(ENTITIES);
+
+  if (!articles.length && !entIds.length) {
+    document.getElementById('home-view').classList.add('hidden');
+    var empty = document.getElementById('empty-state');
+    empty.innerHTML = '<h2>Entity Reader</h2><p>Nothing has been published here yet. ' +
+      'Articles and entity dossiers appear once they are published from the reader.</p>';
+    empty.style.display = 'block';
+    return;
+  }
+
+  document.title = 'Entity Reader';
+  document.getElementById('stats').textContent =
+    entIds.length + ' entities · ' + CONNECTIONS.length + ' connections · ' + articles.length + ' articles';
+
+  articles.sort(function (a, b) {
+    return String((b.meta || {}).date || '').localeCompare(String((a.meta || {}).date || ''));
+  });
+
+  var html = '<h1 class="home-hero-title">Entity Reader</h1>' +
+    '<p class="home-hero-sub">A living graph of people, organizations, and the connections between them — drawn from ' +
+    articles.length + ' published ' + (articles.length === 1 ? 'article' : 'articles') +
+    '. Explore the graph below, read the dossiers, or follow the threads.</p>';
+
+  if (entIds.length) {
+    html += '<div class="home-graph-wrap"><canvas id="home-graph-canvas"></canvas></div>' +
+      '<div class="graph-legend" style="position:static;margin-top:10px;">' + legendHtml() + '</div>';
+  }
+
+  html += '<div class="home-h">Articles (' + articles.length + ')</div>';
+  if (articles.length) {
+    articles.forEach(function (a) {
+      var m = a.meta || {};
+      var meta = [m.publication, m.date].filter(Boolean).join(' · ');
+      html += '<a class="home-card" href="?slug=' + encodeURIComponent(a.slug) + '">' +
+        '<div class="home-card-title">' + esc(a.title || a.slug) + '</div>' +
+        (m.subtitle ? '<div class="home-card-meta" style="font-style:italic;color:var(--text-dim)">' +
+          esc(m.subtitle) + '</div>' : '') +
+        (meta ? '<div class="home-card-meta">' + esc(meta) + '</div>' : '') + '</a>';
+    });
+  } else {
+    html += '<p style="color:var(--text-faint);font-size:13px;">No articles published yet.</p>';
+  }
+
+  html += '<div class="home-h">Entity Directory (' + entIds.length + ')</div>';
+  var byType = {};
+  entIds.forEach(function (id) {
+    var t = ENTITIES[id].type || 'org';
+    (byType[t] = byType[t] || []).push(id);
+  });
+  Object.keys(TYPE_LABELS).forEach(function (t) {
+    var ids = byType[t];
+    if (!ids || !ids.length) return;
+    ids.sort(function (a, b) { return ENTITIES[a].name.localeCompare(ENTITIES[b].name); });
+    html += '<div style="font-family:var(--mono);font-size:11px;color:var(--text-dim);margin:16px 0 8px;">' +
+      esc(TYPE_LABELS[t]) + ' (' + ids.length + ')</div><div class="entity-dir">';
+    ids.forEach(function (id) {
+      html += '<a class="entity-dir-item" href="?entity=' + encodeURIComponent(id) + '">' +
+        '<span class="connection-dot" style="background:' + colorFor(t) + '"></span>' +
+        '<span class="entity-dir-name">' + esc(ENTITIES[id].name) + '</span></a>';
+    });
+    html += '</div>';
+  });
+
+  el.innerHTML = html;
+  if (entIds.length) initGraph('home-graph-canvas');
+}
+
 // ── routing ────────────────────────────────────────────────────────────
 var ROUTE = null;
 function rerender() {
   if (ROUTE === 'article') { projectArticle(param('slug') || param('article')); renderArticle(); }
   else if (ROUTE === 'profile') renderProfile(param('entity'));
+  else if (ROUTE === 'home') renderHome();
 }
 async function boot() {
   await loadLog();
@@ -509,8 +607,10 @@ async function boot() {
     document.getElementById('reader-view').classList.remove('hidden');
     renderArticle();
   } else {
+    ROUTE = 'home';
     document.getElementById('loading').style.display = 'none';
-    document.getElementById('empty-state').style.display = 'block';
+    document.getElementById('home-view').classList.remove('hidden');
+    renderHome();
   }
 }
 boot();
