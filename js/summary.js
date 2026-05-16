@@ -493,8 +493,7 @@ function summaryFocusedFromPicks() {
 async function summaryAsk(question) {
   question = (question || '').trim();
   if (!question) return;
-  const apiKey = getApiKey();
-  if (!apiKey) { await showAlert('Set your Anthropic API key first'); return; }
+  if (!(await ensureProviderReady('summary'))) return;
 
   const focused = summaryFocusedFromPicks();
   if (!focused.size && !summaryPicks.articleIds.size) {
@@ -559,8 +558,7 @@ async function summaryAsk(question) {
 // chat as an assistant turn. Uses the queue so it's cancellable and
 // visible on the process tab.
 async function generateSummaryFromPicks() {
-  const apiKey = getApiKey();
-  if (!apiKey) { await showAlert('Set your Anthropic API key first'); return; }
+  if (!(await ensureProviderReady('summary'))) return;
 
   const focused = summaryFocusedFromPicks();
   if (!focused.size && !summaryPicks.articleIds.size) {

@@ -562,7 +562,12 @@ async function maybeRunLLMEva(step) {
   const cost = step.usage?.input_tokens || 0;
   const hasTension = (step.suggestions || []).some(s => s.op === 'EVA' && s.verdict === 'tension');
   if (cost < LIBRARIAN_LLM_EVA_THRESHOLD_INPUT_TOKENS && !hasTension) return;
-  if (!getApiKey()) return;
+  // Optional LLM enhancement — skip only when it would hit the Anthropic
+  // API without a key. A local provider (ollama) configured for 'eva'
+  // needs no key, so let callLLM route to it.
+  if ((typeof LLMProviders !== 'undefined'
+        ? LLMProviders.configuredProviderName('eva') : 'anthropic') === 'anthropic'
+      && !getApiKey()) return;
 
   const payload = {
     question: step.question,

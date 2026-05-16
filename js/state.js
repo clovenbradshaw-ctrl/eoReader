@@ -320,6 +320,46 @@ function loadSettings() {
 }
 function getPrompt() { return document.getElementById('system-prompt').value; }
 function getApiKey() { return document.getElementById('api-key').value.trim(); }
+
+// Verify the provider configured for `role` is ready before a processing
+// action runs. Anthropic needs an API key; a local provider (ollama /
+// webllm) needs to be reachable. Probing the local provider here also
+// warms its availability cache so callLLM routes to it instead of
+// silently falling back to the Anthropic API. Returns true when ready;
+// otherwise shows an alert and returns false.
+async function ensureProviderReady(role) {
+  const name = (typeof LLMProviders !== 'undefined')
+    ? LLMProviders.configuredProviderName(role)
+    : 'anthropic';
+
+  if (name === 'anthropic') {
+    if (getApiKey()) return true;
+    await showAlert('Set your Anthropic API key in settings first');
+    const editor = document.getElementById('prompt-editor');
+    if (editor) editor.classList.add('open');
+    const keyEl = document.getElementById('api-key');
+    if (keyEl) keyEl.focus();
+    return false;
+  }
+
+  const provider = (typeof LLMProviders !== 'undefined') ? LLMProviders.get(name) : null;
+  let ok = false;
+  if (provider) {
+    try {
+      ok = (typeof provider.probe === 'function')
+        ? await provider.probe()
+        : !!provider.available();
+    } catch { ok = false; }
+  }
+  if (ok) return true;
+
+  const label = (typeof MODELS_PROVIDER_LABELS !== 'undefined' && MODELS_PROVIDER_LABELS[name])
+    || name;
+  await showAlert('The "' + label + '" provider configured for ' + role +
+    ' is not reachable. Make sure it is running, or change the provider in settings.');
+  return false;
+}
+if (typeof window !== 'undefined') window.ensureProviderReady = ensureProviderReady;
 function saveSettings() {
   localStorage.setItem('plaintext_prompt', getPrompt());
   const key = getApiKey();

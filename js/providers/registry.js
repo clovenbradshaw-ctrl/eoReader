@@ -70,23 +70,39 @@ const LLMProviders = {
     return 'auto';
   },
 
+  // The provider name the user configured for this role, ignoring any
+  // availability-driven fallback. Used by callers that need to know the
+  // intended provider (e.g. to decide whether an Anthropic key is needed).
+  configuredProviderName(role) {
+    const policy = this.getPolicy();
+    return policy[role] || PROVIDER_DEFAULT_POLICY[role] || 'anthropic';
+  },
+
   // Resolve the provider object for a given role, with fallback if the
   // configured provider is unavailable.
   routeFor(role) {
-    const policy = this.getPolicy();
-    const chosen = policy[role] || PROVIDER_DEFAULT_POLICY[role] || 'anthropic';
+    const chosen = this.configuredProviderName(role);
     const primary = this.get(chosen);
     if (primary && primary.available()) {
       return { provider: primary, fallback: false };
     }
-    // Fallback chain — first available provider in PROVIDER_FALLBACK_ORDER.
+    // The user explicitly configured a non-Anthropic provider (e.g. a local
+    // Ollama server). Its availability probe is best-effort and goes stale
+    // mid-job; silently falling back here would route processing onto the
+    // Anthropic API and burn through its rate limits. Surface the chosen
+    // provider so the call fails loudly if it is genuinely down.
+    if (primary && chosen !== 'anthropic') {
+      return { provider: primary, fallback: false };
+    }
+    // Anthropic was configured but is unavailable (no API key) — fall back
+    // to the first available provider in PROVIDER_FALLBACK_ORDER.
     for (const name of PROVIDER_FALLBACK_ORDER) {
       const p = this.get(name);
       if (p && p.available()) {
         return { provider: p, fallback: true, fallbackFrom: chosen };
       }
     }
-    return { provider: null, fallback: false };
+    return { provider: primary || null, fallback: false };
   },
 };
 
