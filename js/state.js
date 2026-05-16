@@ -478,6 +478,16 @@ async function populateOllamaModels(preferred) {
   if (hint) hint.textContent = models.length + ' model' + (models.length === 1 ? '' : 's') + ' available locally';
 }
 
+// Quick action: point every role's policy dropdown at one provider so
+// the whole processing pipeline runs through it. Does not persist until
+// saveModelsSettings() runs.
+function setAllRolesProvider(name) {
+  for (const role of MODELS_ROLES) {
+    const sel = document.getElementById('role-policy-' + role);
+    if (sel) sel.value = name;
+  }
+}
+
 async function probeProviders() {
   const statusEl = document.getElementById('provider-status');
   if (!statusEl) return;
