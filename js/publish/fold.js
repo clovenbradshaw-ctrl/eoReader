@@ -73,5 +73,35 @@
     };
   }
 
-  root.Fold = { parseLines: parseLines, foldSites: foldSites, foldArticle: foldArticle };
+  // List every live article in the log: latest live DEF per slug.
+  function foldArticles(text) {
+    var lines = parseLines(text);
+    var bySlug = {}, retracted = {};
+    for (var i = 0; i < lines.length; i++) {
+      var e = lines[i];
+      if (e.op !== 'DEF' && e.op !== 'NUL') continue;
+      var key = e.site + ':' + e.slug;
+      if (e.op === 'NUL') { retracted[key] = true; continue; }
+      bySlug[e.slug] = e; delete retracted[key];
+    }
+    var out = [];
+    for (var slug in bySlug) {
+      if (!bySlug.hasOwnProperty(slug)) continue;
+      var d = bySlug[slug];
+      if (retracted[d.site + ':' + slug]) continue;
+      var pl = d.payload || {};
+      out.push({
+        id: d.slug, slug: d.slug, site: d.site, title: d.title,
+        meta: d.meta || {}, stance: d.stance,
+        sectionCount: (pl.sections || []).length,
+        entityRefs: pl.entityRefs || [],
+      });
+    }
+    return out;
+  }
+
+  root.Fold = {
+    parseLines: parseLines, foldSites: foldSites,
+    foldArticle: foldArticle, foldArticles: foldArticles,
+  };
 })(typeof window !== 'undefined' ? window : this);

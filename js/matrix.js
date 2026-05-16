@@ -32,11 +32,25 @@ function mxApi(method, path, body, retries) {
     });
 }
 
+// Which status element login feedback is routed to — the settings-panel
+// form ('mx-status') or the full-screen gate ('gate-mx-status').
+let mxActiveStatusEl = 'mx-status';
+
 function setMxStatus(msg, isError) {
-  const el = document.getElementById('mx-status');
+  const el = document.getElementById(mxActiveStatusEl) || document.getElementById('mx-status');
   if (!el) return;
   el.textContent = msg;
   el.style.color = isError ? '#c06060' : 'var(--text-dim)';
+}
+
+// --- login gate: the app is unusable until Matrix is connected ---
+function showMxGate() {
+  const g = document.getElementById('mx-gate');
+  if (g) g.classList.remove('hidden');
+}
+function hideMxGate() {
+  const g = document.getElementById('mx-gate');
+  if (g) g.classList.add('hidden');
 }
 
 function updateMxIndicator() {
@@ -197,10 +211,13 @@ function scheduleMatrixSave() {
 }
 
 // --- login / rooms ---
-async function matrixLogin() {
-  const hsInput = document.getElementById('mx-homeserver').value.trim();
-  const user = document.getElementById('mx-user').value.trim();
-  const pass = document.getElementById('mx-pass').value;
+// prefix '' = settings-panel form, 'gate-' = full-screen login gate.
+async function matrixLogin(prefix) {
+  prefix = prefix || '';
+  mxActiveStatusEl = prefix + 'mx-status';
+  const hsInput = document.getElementById(prefix + 'mx-homeserver').value.trim();
+  const user = document.getElementById(prefix + 'mx-user').value.trim();
+  const pass = document.getElementById(prefix + 'mx-pass').value;
   if (!hsInput || !user || !pass) { setMxStatus('fill all fields', true); return; }
 
   let hs = hsInput;
@@ -242,6 +259,16 @@ async function matrixLogin() {
     setMxStatus('logged in, finding room...');
     await matrixFindOrCreateRoom();
     showMxConnected();
+
+    if (mx.roomId) {
+      setMxStatus('loading your graph...');
+      await matrixLoadState();
+      if (typeof renderLibrary === 'function') renderLibrary();
+      if (typeof renderEntityList === 'function') renderEntityList();
+      if (typeof currentView !== 'undefined' && currentView === 'index' &&
+          typeof renderGraphPanel === 'function') renderGraphPanel();
+      setMxStatus('');
+    }
 
   } catch (e) {
     console.error('Matrix login error:', e);
@@ -288,6 +315,9 @@ function showMxConnected() {
   document.getElementById('mx-room-info').textContent = mx.roomId ? 'active: ' + mx.roomId : 'no room selected';
   updateMxIndicator();
   matrixListRooms();
+  // The hard gate only lifts once we have both a session and a room.
+  if (mx.accessToken && mx.roomId) hideMxGate();
+  else showMxGate();
 }
 
 async function matrixListRooms() {
@@ -387,6 +417,7 @@ function matrixLogout() {
   document.getElementById('mx-pass').value = '';
   setMxStatus('');
   updateMxIndicator();
+  showMxGate();
 }
 
 async function matrixRestoreSession() {
@@ -396,7 +427,7 @@ async function matrixRestoreSession() {
   const roomId = localStorage.getItem('mx_room_id');
   const hsDisplay = localStorage.getItem('mx_hs_display');
 
-  if (!hs || !token || !userId) { updateMxIndicator(); return; }
+  if (!hs || !token || !userId) { updateMxIndicator(); showMxGate(); return; }
 
   mx.homeserver = hs;
   mx.accessToken = token;
