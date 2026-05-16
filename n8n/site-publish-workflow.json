@@ -33,20 +33,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Resolve + sanitize the target file from the client's body.filename.\n// Falls back to eo-log.jsonl so legacy callers keep working.\nconst body = $input.first().json.body || {};\nlet filename = body.filename || 'eo-log.jsonl';\n// Only allow alphanumerics, hyphens, underscores, dots, slashes.\nfilename = filename.replace(/[^a-zA-Z0-9\\-_.\\/]/g, '');\n// Prevent directory traversal.\nfilename = filename.replace(/\\.\\./g, '');\nif (!filename) throw new Error('Invalid filename');\nreturn [{ json: { body, filename } }];"
-      },
-      "id": "b1f0c2d3-1111-4a00-9000-000000000001",
-      "name": "Resolve File",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        -400,
-        304
-      ]
-    },
-    {
-      "parameters": {
-        "url": "=https://api.github.com/repos/clovenbradshaw-ctrl/plain-text/contents/{{ $json.filename }}",
+        "url": "https://api.github.com/repos/clovenbradshaw-ctrl/plain-text/contents/eo-log.jsonl",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "githubOAuth2Api",
         "sendHeaders": true,
@@ -65,7 +52,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        -176,
+        -400,
         304
       ],
       "credentials": {
@@ -78,21 +65,21 @@
     },
     {
       "parameters": {
-        "jsCode": "// Append one JSONL line to the file named by the client. If GH Get File\n// 404'd (file does not exist yet) there is no sha and the PUT below creates\n// it -- so no separate seed step is needed.\nconst prev = $input.first().json;\nconst resolved = $('Resolve File').first().json;\nconst body = resolved.body;\nconst filename = resolved.filename;\n\nlet existing = '';\nlet sha = null;\nif (prev && prev.content) {\n  existing = Buffer.from(prev.content, 'base64').toString('utf-8');\n  sha = prev.sha;\n}\n\n// Log every field the client sent (op, site, slug, title, stance, terrain,\n// author, meta, payload, hash, ...) except the routing-only `filename`.\nconst entry = { ts: new Date().toISOString() };\nfor (const k in body) {\n  if (k === 'filename') continue;\n  entry[k] = body[k];\n}\n\nconst line = JSON.stringify(entry);\nconst updated = existing\n  ? (existing.endsWith('\\n') ? existing + line + '\\n' : existing + '\\n' + line + '\\n')\n  : line + '\\n';\n\nconst result = {\n  filename,\n  message: `${body.op || 'append'}(${body.site || '-'}, ${body.slug || '-'})`,\n  content: Buffer.from(updated, 'utf-8').toString('base64')\n};\nif (sha) result.sha = sha;\n\nreturn [{ json: result }];"
+        "jsCode": "// Append one JSONL line to eo-log.jsonl. If GH Get File 404'd (file does\n// not exist yet) there is no sha and the PUT below creates it.\nconst prev = $input.first().json;\nconst body = $('Auth').first().json.body;\n\nlet existing = '';\nlet sha = null;\nif (prev && prev.content) {\n  existing = Buffer.from(prev.content, 'base64').toString('utf-8');\n  sha = prev.sha;\n}\n\n// Log every field the client sent (op, site, slug, title, stance, terrain,\n// author, meta, payload, hash, ...). `filename` is routing-only, drop it.\nconst entry = { ts: new Date().toISOString() };\nfor (const k in body) {\n  if (k === 'filename') continue;\n  entry[k] = body[k];\n}\n\nconst line = JSON.stringify(entry);\nconst updated = existing\n  ? (existing.endsWith('\\n') ? existing + line + '\\n' : existing + '\\n' + line + '\\n')\n  : line + '\\n';\n\nconst result = {\n  message: `${body.op || 'append'}(${body.site || '-'}, ${body.slug || '-'})`,\n  content: Buffer.from(updated, 'utf-8').toString('base64')\n};\nif (sha) result.sha = sha;\n\nreturn [{ json: result }];"
       },
       "id": "4d7213ef-0a1f-45c1-a135-88c333620028",
       "name": "Append",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        48,
+        -176,
         304
       ]
     },
     {
       "parameters": {
         "method": "PUT",
-        "url": "=https://api.github.com/repos/clovenbradshaw-ctrl/plain-text/contents/{{ $json.filename }}",
+        "url": "https://api.github.com/repos/clovenbradshaw-ctrl/plain-text/contents/eo-log.jsonl",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "githubOAuth2Api",
         "sendHeaders": true,
@@ -106,7 +93,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json.sha ? { message: $json.message, content: $json.content, sha: $json.sha } : { message: $json.message, content: $json.content }) }}",
+        "jsonBody": "={{ JSON.stringify($json) }}",
         "options": {}
       },
       "id": "ec5de7f1-2411-47be-b04c-b989cd35f37d",
@@ -114,7 +101,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        272,
+        48,
         304
       ],
       "credentials": {
@@ -145,7 +132,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
       "position": [
-        496,
+        272,
         304
       ]
     },
@@ -167,7 +154,7 @@
     },
     {
       "parameters": {
-        "url": "=https://raw.githubusercontent.com/clovenbradshaw-ctrl/plain-text/main/{{ $json.query?.file || 'eo-log.jsonl' }}",
+        "url": "https://raw.githubusercontent.com/clovenbradshaw-ctrl/plain-text/main/eo-log.jsonl",
         "options": {}
       },
       "id": "d1917b76-76cb-463b-84e0-dbcae5b23dd9",
@@ -235,17 +222,6 @@
       ]
     },
     "Auth": {
-      "main": [
-        [
-          {
-            "node": "Resolve File",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Resolve File": {
       "main": [
         [
           {

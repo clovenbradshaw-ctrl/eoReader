@@ -4,8 +4,9 @@
 (function (root) {
   'use strict';
 
-  var SITE_FILE = 'sites.jsonl';
-  function articleFile(slug) { return 'articles/' + slug + '.jsonl'; }
+  // One append-only log holds every record — DEF (articles), INS (entities),
+  // CON (connections), NUL (retractions). Readers download it once and fold.
+  var LOG_FILE = 'eo-log.jsonl';
 
   function slugify(s) {
     return String(s == null ? '' : s).toLowerCase().trim()
@@ -77,7 +78,7 @@
   }
 
   root.EO = {
-    SITE_FILE: SITE_FILE, articleFile: articleFile, slugify: slugify, hash: hash,
+    LOG_FILE: LOG_FILE, slugify: slugify, hash: hash,
     connectionSlug: connectionSlug, articleEntry: articleEntry, entityEntry: entityEntry,
     connectionEntry: connectionEntry, retractEntry: retractEntry,
   };

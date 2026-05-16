@@ -479,12 +479,12 @@ function closeModal() { $('modal-backdrop').classList.remove('open'); }
 
 // ── load existing data ─────────────────────────────────────────────────
 async function loadSites() {
-  var text = await PublishAPI.readRaw(EO.SITE_FILE).catch(function () { return null; });
+  var text = await PublishAPI.readRaw(EO.LOG_FILE).catch(function () { return null; });
   if (text == null) {
-    var cached = await opfsStore.readText('cache/sites.jsonl');
+    var cached = await opfsStore.readText('cache/eo-log.jsonl');
     text = cached || '';
   } else {
-    opfsStore.writeText('cache/sites.jsonl', text);
+    opfsStore.writeText('cache/eo-log.jsonl', text);
   }
   var folded = Fold.foldSites(text);
   workingEntities = {};
@@ -522,9 +522,9 @@ function snapshotHashes() {
   });
 }
 async function loadArticle(slug) {
-  var text = await PublishAPI.readRaw(EO.articleFile(slug)).catch(function () { return null; });
+  var text = await PublishAPI.readRaw(EO.LOG_FILE).catch(function () { return null; });
   if (text == null) return;
-  var art = Fold.foldArticle(text);
+  var art = Fold.foldArticle(text, slug);
   if (art) { loadArticleIntoEditor(art); status('Loaded article "' + slug + '" for editing'); }
 }
 
@@ -631,14 +631,14 @@ function openPublishPreview(stance) {
   if (!plan) return;
   var rows = [];
   plan.entityEntries.forEach(function (e) {
-    rows.push('<div><b style="color:var(--media)">INS</b> sites.jsonl · ' +
+    rows.push('<div><b style="color:var(--media)">INS</b> ' + esc(EO.LOG_FILE) + ' · ' +
       esc(e.slug) + ' · ' + esc(e.payload.entityType) + '</div>');
   });
   plan.connEntries.forEach(function (c) {
-    rows.push('<div><b style="color:var(--accent)">CON</b> sites.jsonl · ' +
+    rows.push('<div><b style="color:var(--accent)">CON</b> ' + esc(EO.LOG_FILE) + ' · ' +
       esc(c.payload.from) + ' → ' + esc(c.payload.to) + ' · ' + esc(c.payload.rel) + '</div>');
   });
-  rows.push('<div><b style="color:var(--person)">DEF</b> ' + esc(EO.articleFile(plan.slug)) +
+  rows.push('<div><b style="color:var(--person)">DEF</b> ' + esc(EO.LOG_FILE) +
     ' · ' + esc(plan.slug) + ' · ' + plan.refCount + ' refs · ' + esc(plan.stance) + '</div>');
   $('modal').innerHTML = '<h3>About to append</h3>' +
     '<div class="hint">' + plan.entityEntries.length + ' entit' +
@@ -660,17 +660,17 @@ async function executePublishPlan(plan) {
     var i;
     for (i = 0; i < plan.entityEntries.length; i++) {
       status('Publishing entity ' + (i + 1) + '/' + plan.entityEntries.length + '…');
-      await PublishAPI.publish(EO.SITE_FILE, plan.entityEntries[i]);
+      await PublishAPI.publish(EO.LOG_FILE, plan.entityEntries[i]);
       loadedEntityHash[plan.entityEntries[i].slug] = plan.entityEntries[i].hash;
     }
     for (i = 0; i < plan.connEntries.length; i++) {
       status('Publishing connection ' + (i + 1) + '/' + plan.connEntries.length + '…');
-      await PublishAPI.publish(EO.SITE_FILE, plan.connEntries[i]);
+      await PublishAPI.publish(EO.LOG_FILE, plan.connEntries[i]);
       loadedConnHash[plan.connEntries[i].slug] = plan.connEntries[i].hash;
     }
 
     status('Publishing article…');
-    await PublishAPI.publish(EO.articleFile(plan.slug), plan.articleEntry);
+    await PublishAPI.publish(EO.LOG_FILE, plan.articleEntry);
 
     renderEntityList();
     renderConnList();

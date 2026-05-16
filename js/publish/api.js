@@ -32,9 +32,8 @@
     });
   }
 
-  // Append one line. `filename` tells the n8n workflow which file to route to
-  // (articles/<slug>.jsonl or sites.jsonl). The file is created on first
-  // append, so no separate seed step is needed. The server adds `ts`.
+  // Append one line to the log. `filename` is passed through for the n8n
+  // workflow; the file is created on first append. The server adds `ts`.
   function publish(filename, entry) {
     var body = { filename: filename };
     for (var k in entry) if (entry.hasOwnProperty(k)) body[k] = entry[k];

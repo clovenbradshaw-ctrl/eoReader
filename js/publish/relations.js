@@ -1,6 +1,6 @@
 // relations.js — the connection-relation vocabulary for CON records.
 // A seed list of canonical relations; on editor load this is unioned with
-// every relation already present in sites.jsonl so the vocabulary grows with
+// every relation already present in the log so the vocabulary grows with
 // the corpus. A genuinely new relation is allowed but should carry a one-line
 // definition (stored on the CON record as meta.relDef) to keep the graph
 // queryable instead of drifting into synonyms.

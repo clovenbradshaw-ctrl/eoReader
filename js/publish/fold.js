@@ -14,7 +14,7 @@
     return out;
   }
 
-  // sites.jsonl -> { entities: {id->entity}, connections: [], entryCount }
+  // log -> { entities: {id->entity}, connections: [], entryCount }
   function foldSites(text) {
     var lines = parseLines(text);
     var entities = {}, conns = {}, retracted = {};
@@ -52,12 +52,14 @@
     return { entities: outEntities, connections: outConns, entryCount: lines.length };
   }
 
-  // articles/<slug>.jsonl -> latest live DEF, or null if none / retracted.
-  function foldArticle(text) {
+  // Project one article out of the log: latest live DEF for `slug`, or null
+  // if none / retracted. With no `slug`, folds the latest DEF of any slug.
+  function foldArticle(text, slug) {
     var lines = parseLines(text);
     var latest = null, dropped = false;
     for (var i = 0; i < lines.length; i++) {
       var e = lines[i];
+      if (slug && e.slug !== slug) continue;
       if (e.op === 'NUL') { dropped = true; continue; }
       if (e.op === 'DEF') { latest = e; dropped = false; }
     }

@@ -170,44 +170,42 @@ function esc(s) { var d = document.createElement('div'); d.textContent = s == nu
 function param(k) { return new URLSearchParams(location.search).get(k); }
 function colorFor(t) { return TYPE_COLORS[t] || TYPE_COLORS.org; }
 
-// ── load + fold (OPFS cache-first, then background refresh) ────────────
-async function loadSites() {
-  var cached = await opfsStore.readText('cache/sites.jsonl');
-  if (cached != null) applySites(cached);
-  PublishAPI.readRaw(EO.SITE_FILE).then(function (fresh) {
-    if (fresh != null && fresh !== cached) {
-      opfsStore.writeText('cache/sites.jsonl', fresh);
-      applySites(fresh);
-      rerender();
+// ── load + fold ────────────────────────────────────────────────────────
+// The whole log is downloaded once (OPFS cache-first, background refresh);
+// the entity graph and the requested article are projected from that text,
+// so the network cost is paid a single time per visit.
+var LOG_TEXT = null;
+
+async function loadLog() {
+  var cacheKey = 'cache/eo-log.jsonl';
+  var cached = await opfsStore.readText(cacheKey);
+  if (cached != null) {
+    LOG_TEXT = cached;
+    applyLog(cached);
+    PublishAPI.readRaw(EO.LOG_FILE).then(function (fresh) {
+      if (fresh != null && fresh !== cached) {
+        opfsStore.writeText(cacheKey, fresh);
+        LOG_TEXT = fresh;
+        applyLog(fresh);
+        rerender();
+      }
+    }).catch(function () {});
+  } else {
+    var fresh = await PublishAPI.readRaw(EO.LOG_FILE).catch(function () { return null; });
+    if (fresh != null) {
+      opfsStore.writeText(cacheKey, fresh);
+      LOG_TEXT = fresh;
+      applyLog(fresh);
     }
-  }).catch(function () {});
-  if (cached == null) {
-    var fresh = await PublishAPI.readRaw(EO.SITE_FILE).catch(function () { return null; });
-    if (fresh != null) { opfsStore.writeText('cache/sites.jsonl', fresh); applySites(fresh); }
   }
 }
-function applySites(text) {
+function applyLog(text) {
   var folded = Fold.foldSites(text);
   ENTITIES = folded.entities;
   CONNECTIONS = folded.connections;
 }
-
-async function loadArticle(slug) {
-  var file = EO.articleFile(slug);
-  var cacheKey = 'cache/article-' + slug + '.jsonl';
-  var cached = await opfsStore.readText(cacheKey);
-  if (cached != null) ARTICLE = Fold.foldArticle(cached);
-  PublishAPI.readRaw(file).then(function (fresh) {
-    if (fresh != null && fresh !== cached) {
-      opfsStore.writeText(cacheKey, fresh);
-      ARTICLE = Fold.foldArticle(fresh);
-      rerender();
-    }
-  }).catch(function () {});
-  if (cached == null) {
-    var fresh = await PublishAPI.readRaw(file).catch(function () { return null; });
-    if (fresh != null) { opfsStore.writeText(cacheKey, fresh); ARTICLE = Fold.foldArticle(fresh); }
-  }
+function projectArticle(slug) {
+  ARTICLE = LOG_TEXT != null ? Fold.foldArticle(LOG_TEXT, slug) : null;
 }
 
 // ── article reader ─────────────────────────────────────────────────────
@@ -485,11 +483,11 @@ function initGraph() {
 // ── routing ────────────────────────────────────────────────────────────
 var ROUTE = null;
 function rerender() {
-  if (ROUTE === 'article') renderArticle();
+  if (ROUTE === 'article') { projectArticle(param('slug') || param('article')); renderArticle(); }
   else if (ROUTE === 'profile') renderProfile(param('entity'));
 }
 async function boot() {
-  await loadSites();
+  await loadLog();
   var entityId = param('entity');
   var slug = param('slug') || param('article');
   if (entityId) {
@@ -499,7 +497,7 @@ async function boot() {
     renderProfile(entityId);
   } else if (slug) {
     ROUTE = 'article';
-    await loadArticle(slug);
+    projectArticle(slug);
     document.getElementById('loading').style.display = 'none';
     if (!ARTICLE) {
       document.getElementById('empty-state').style.display = 'block';
