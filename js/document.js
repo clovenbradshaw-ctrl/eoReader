@@ -285,6 +285,11 @@ function renderDocSummaryTab(s) {
   html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap;">';
   html += '<button class="act-btn" onclick="docGenerate(this)"><i class="ph ph-lightning"></i> ' +
     (item.generatedRaw ? 'regenerate' : 'generate') + ' formatted output</button>';
+  if (item.generatedRaw) {
+    html += '<button class="act-btn" onclick="processDigestAsSource()" ' +
+      'title="Re-ingest this digest as a new source and walk it through coreference resolution">' +
+      '<i class="ph ph-arrows-clockwise"></i> process digest as source</button>';
+  }
   if (summaryPicks.articleIds.size > 1) {
     html += '<button class="act-btn" onclick="generateSummaryFromPicks()"><i class="ph ph-files"></i> digest all ' +
       summaryPicks.articleIds.size + ' sources</button>';
@@ -319,6 +324,72 @@ async function docGenerate(btn) {
   const idx = ensureItemForSource(s);
   try { await generateDigest(idx, btn); } catch (e) { console.warn('digest failed', e); }
   if (currentView === 'document' && currentDocTab === 'summary') renderDocPane();
+}
+
+// Flatten generated digest markdown into the kind of plain text the walk
+// pipeline expects from an ingested source — node-ref braces and markdown
+// syntax stripped so splitSentences sees clean prose.
+function digestToPlainText(md) {
+  return String(md || '')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\{([^{}]+)\}/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/^\s{0,3}[-*+]\s+/gm, '')
+    .replace(/^\s{0,3}\d+\.\s+/gm, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    .replace(/^\s*[-=*]{3,}\s*$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// Take the digest this app wrote and feed it back as a source: a new
+// document is ingested from the generated text and walked through the same
+// coreference pipeline, so its claims resolve against the live graph and
+// deepen existing entity hypotheses (DEF) in place.
+async function processDigestAsSource() {
+  const s = currentDoc();
+  if (!s) return;
+  const idx = ensureItemForSource(s);
+  const item = allItems[idx];
+  if (!item || !item.generatedRaw) {
+    await showAlert('No generated output to process yet — generate a digest first.');
+    return;
+  }
+  const text = digestToPlainText(item.generatedRaw);
+  if (text.length < 50) {
+    await showAlert('Generated output is too short to process.');
+    return;
+  }
+  const newId = addSource('Digest · ' + (s.title || 'untitled'), null, 'digest', text);
+  const newIdx = allItems.findIndex(it => it._sourceId === newId);
+  if (newIdx < 0) return;
+  try { await startWalk(newIdx); } catch (e) { console.warn('digest walk failed', e); }
+  if (sources.find(x => x.id === newId)) openDocument(newId);
+}
+
+// The minisite editor (editor.html) hands off draft article bodies through
+// localStorage. On boot we ingest any pending draft as a source and walk it,
+// so editor-authored text runs the same coreference pass as feed input.
+async function consumePendingIngest() {
+  let raw;
+  try { raw = localStorage.getItem('plaintext_pending_ingest'); } catch (e) { return; }
+  if (!raw) return;
+  try { localStorage.removeItem('plaintext_pending_ingest'); } catch (e) { /* ignore */ }
+  let handoff;
+  try { handoff = JSON.parse(raw); } catch (e) { return; }
+  if (!handoff || typeof handoff.body !== 'string' || handoff.body.trim().length < 50) return;
+  const newId = addSource(handoff.title || 'Editor draft', null, 'draft', handoff.body.trim());
+  const newIdx = allItems.findIndex(it => it._sourceId === newId);
+  if (newIdx < 0) return;
+  try { await startWalk(newIdx); } catch (e) { console.warn('draft walk failed', e); }
+  if (sources.find(x => x.id === newId)) openDocument(newId);
 }
 
 async function docDelete() {
