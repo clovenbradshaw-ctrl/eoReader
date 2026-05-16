@@ -28,6 +28,9 @@ async function init() {
 
   document.getElementById('search').addEventListener('input', applyFilters);
 
+  // Ingest + walk any draft handed off from the minisite editor.
+  if (typeof consumePendingIngest === 'function') consumePendingIngest();
+
   // Resume any queue items that were running at shutdown — their walks
   // checkpoint per sentence so they pick up where they left off.
   if (typeof tickScheduler === 'function') tickScheduler();

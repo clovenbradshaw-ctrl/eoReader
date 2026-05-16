@@ -96,6 +96,7 @@ a.link { color: var(--accent); }
   <button onclick="setBlockType('section')">§ Section</button>
   <button onclick="tagEntity()">+ Tag Entity</button>
   <div class="spacer"></div>
+  <button onclick="processBody()" title="Walk this draft through the reader's coreference pipeline">process body</button>
   <button onclick="viewMinisite()">view minisite</button>
   <div class="status" id="status">ready</div>
   <button onclick="doPublish('draft')">Save Draft</button>
@@ -559,6 +560,39 @@ function loadWalkGraph() {
     walkEntities[id] = walkEntityToWorking(id, ents[id]);
   });
 }
+// ── process body in the reader ─────────────────────────────────────────
+// Hand the draft body to the reader app (index.html) so it runs the same
+// clause-by-clause walk as ingested input data — coreference resolution
+// against the live graph, revising entity definitions in place. The handoff
+// rides through localStorage (same origin); the reader consumes it on boot.
+function processBody() {
+  var ser = serializeBody();
+  var text = ser.sections.map(function (s) {
+    if (s.type === 'section') return s.label;
+    return (s.text || '').replace(/\{\{([^}]+)\}\}/g, function (m, id) {
+      var e = workingEntities[id] || walkEntities[id];
+      return e ? e.name : id;
+    });
+  }).filter(Boolean).join('\n\n');
+  if (text.trim().length < 50) {
+    status('Body is too short to process (need at least 50 characters)', 'err');
+    return;
+  }
+  if (!confirm('Process this draft in the reader? Unpublished editor changes are not saved — publish or save a draft first if you want to keep them.')) {
+    return;
+  }
+  var title = val('f-title') || val('f-slug') || 'Editor draft';
+  try {
+    localStorage.setItem('plaintext_pending_ingest', JSON.stringify({
+      title: title, body: text, ts: Date.now(),
+    }));
+  } catch (e) {
+    status('Could not hand off to the reader: ' + e.message, 'err');
+    return;
+  }
+  location.href = 'index.html';
+}
+
 function viewMinisite() {
   var slug = EO.slugify(val('f-slug'));
   location.href = slug ? 'minisite.html?slug=' + encodeURIComponent(slug) : 'minisite.html';
