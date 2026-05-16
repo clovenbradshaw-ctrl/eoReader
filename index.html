@@ -803,7 +803,12 @@
     <div style="font-size:10px;color:var(--text-dim);margin-bottom:6px;line-height:1.4;">
       route each role to a provider. defaults to anthropic. local providers (webllm/ollama/window-ai) keep traffic on-device.
     </div>
-    <div id="role-policy-grid" style="display:grid;grid-template-columns:80px 1fr;gap:4px 8px;align-items:center;font-size:11px;margin-bottom:10px;"></div>
+    <div id="role-policy-grid" style="display:grid;grid-template-columns:80px 1fr;gap:4px 8px;align-items:center;font-size:11px;margin-bottom:6px;"></div>
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;">
+      <span style="font-size:10px;color:var(--text-dim);">route all roles to</span>
+      <button class="act-btn" type="button" onclick="setAllRolesProvider('ollama')" style="padding:2px 8px;" title="route every role through local Ollama">ollama</button>
+      <button class="act-btn" type="button" onclick="setAllRolesProvider('anthropic')" style="padding:2px 8px;" title="route every role through Anthropic">anthropic</button>
+    </div>
     <details style="margin-top:6px;">
       <summary style="font-size:10px;color:var(--text-dim);cursor:pointer;">webllm model</summary>
       <div style="padding:6px 0;display:flex;gap:6px;align-items:center;">
