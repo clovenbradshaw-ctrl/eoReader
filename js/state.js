@@ -410,16 +410,72 @@ async function loadModelsSettings() {
   }
 
   // Ollama config
+  let ollamaModel = 'llama3.2:3b';
   try {
     const raw = localStorage.getItem('eo.providers.ollama');
     const cfg = raw ? JSON.parse(raw) : { host: 'http://localhost:11434', model: 'llama3.2:3b' };
     const h = document.getElementById('ollama-host');
-    const m = document.getElementById('ollama-model');
     if (h) h.value = cfg.host || '';
-    if (m) m.value = cfg.model || '';
+    if (cfg.model) ollamaModel = cfg.model;
   } catch {}
+  await populateOllamaModels(ollamaModel);
 
   await probeProviders();
+}
+
+// Fill the Ollama model <select> with whatever models the local Ollama
+// server currently has pulled (via /api/tags). `preferred` is the model
+// to keep selected; defaults to the saved config. Callable from the
+// "↻ models" button to re-fetch after changing the host.
+async function populateOllamaModels(preferred) {
+  const sel = document.getElementById('ollama-model');
+  if (!sel) return;
+  const hint = document.getElementById('ollama-models-hint');
+
+  let want = (typeof preferred === 'string') ? preferred : null;
+  if (want == null) {
+    want = sel.value || '';
+    if (!want) {
+      try {
+        const raw = localStorage.getItem('eo.providers.ollama');
+        want = raw ? (JSON.parse(raw).model || '') : '';
+      } catch {}
+    }
+  }
+
+  const host = document.getElementById('ollama-host')?.value?.trim() || undefined;
+  const provider = (typeof LLMProviders !== 'undefined') ? LLMProviders.get('ollama') : null;
+
+  sel.innerHTML = '<option>loading…</option>';
+  if (hint) hint.textContent = 'querying ollama…';
+
+  let models = [];
+  if (provider && typeof provider.listModels === 'function') {
+    try { models = await provider.listModels(host); } catch {}
+  }
+
+  sel.innerHTML = '';
+  if (!models.length) {
+    const opt = document.createElement('option');
+    opt.value = want || 'llama3.2:3b';
+    opt.textContent = opt.value;
+    sel.appendChild(opt);
+    sel.value = opt.value;
+    if (hint) hint.textContent = 'no models found — is ollama running? run `ollama pull <model>` then ↻';
+    return;
+  }
+
+  // Keep a previously-pinned model selectable even if it is not in the
+  // current /api/tags list (e.g. host temporarily offline).
+  if (want && !models.includes(want)) models.unshift(want);
+  for (const name of models) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  }
+  sel.value = (want && models.includes(want)) ? want : models[0];
+  if (hint) hint.textContent = models.length + ' model' + (models.length === 1 ? '' : 's') + ' available locally';
 }
 
 async function probeProviders() {

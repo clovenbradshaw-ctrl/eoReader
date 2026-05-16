@@ -43,6 +43,24 @@ const OllamaProvider = {
     }
   },
 
+  // Enumerate the models the local Ollama server actually has pulled.
+  // `host` overrides the saved config so the settings UI can probe an
+  // unsaved host. Returns a sorted array of model name strings.
+  async listModels(host) {
+    const h = (host || _ollamaConfig().host || OLLAMA_DEFAULT_HOST).replace(/\/+$/, '');
+    try {
+      const resp = await fetch(h + '/api/tags', { method: 'GET' });
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      return (data.models || [])
+        .map(m => m && m.name)
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+    } catch {
+      return [];
+    }
+  },
+
   async call({ system, user, maxTokens, model, opts, responseFormat, temperature, onToken }) {
     const cfg = _ollamaConfig();
     const host = cfg.host.replace(/\/+$/, '');
