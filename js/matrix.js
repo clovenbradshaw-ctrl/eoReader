@@ -6,6 +6,23 @@ const MX_ROOM_TYPE = 'io.groundtruth.plaintext.graph';
 const MX_EO_BATCH = 'io.groundtruth.eo.batch';
 const MX_EO_STATE = 'io.groundtruth.eo.state';
 
+// fetch with an abort-based timeout so a homeserver that accepts the
+// connection but never responds can't hang the UI indefinitely.
+function fetchWithTimeout(url, opts, ms) {
+  opts = opts || {};
+  ms = ms || 20000;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, Object.assign({}, opts, { signal: ctrl.signal }))
+    .catch(err => {
+      if (err && err.name === 'AbortError') {
+        throw new Error('request timed out after ' + Math.round(ms / 1000) + 's');
+      }
+      throw err;
+    })
+    .finally(() => clearTimeout(timer));
+}
+
 function mxApi(method, path, body, retries) {
   retries = retries || 0;
   const opts = {
@@ -13,7 +30,7 @@ function mxApi(method, path, body, retries) {
     headers: { 'Authorization': 'Bearer ' + mx.accessToken, 'Content-Type': 'application/json' },
   };
   if (body) opts.body = JSON.stringify(body);
-  return fetch(mx.homeserver + '/_matrix/client/v3' + path, opts)
+  return fetchWithTimeout(mx.homeserver + '/_matrix/client/v3' + path, opts, 20000)
     .then(r => r.json())
     .then(data => {
       if (data.errcode === 'M_LIMIT_EXCEEDED' && retries < 3) {
@@ -74,14 +91,14 @@ function updateMxIndicator() {
 async function matrixUploadJson(data, filename) {
   try {
     const json = JSON.stringify(data);
-    const resp = await fetch(mx.homeserver + '/_matrix/media/v3/upload?filename=' + encodeURIComponent(filename), {
+    const resp = await fetchWithTimeout(mx.homeserver + '/_matrix/media/v3/upload?filename=' + encodeURIComponent(filename), {
       method: 'POST',
       headers: {
         'Authorization': 'Bearer ' + mx.accessToken,
         'Content-Type': 'application/octet-stream',
       },
       body: json,
-    });
+    }, 30000);
     const result = await resp.json();
     return result.content_uri || null;
   } catch (e) {
@@ -94,7 +111,7 @@ async function matrixDownloadJson(mxcUri) {
   try {
     const parts = mxcUri.replace('mxc://', '').split('/');
     const url = mx.homeserver + '/_matrix/media/v3/download/' + parts[0] + '/' + parts[1];
-    const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + mx.accessToken } });
+    const resp = await fetchWithTimeout(url, { headers: { 'Authorization': 'Bearer ' + mx.accessToken } }, 30000);
     const text = await resp.text();
     try { return JSON.parse(text); } catch (e) { return null; }
   } catch (e) {
@@ -229,13 +246,13 @@ async function matrixLogin(prefix) {
   try {
     let baseUrl = hs;
     try {
-      const wk = await fetch(hs + '/.well-known/matrix/client').then(r => r.json());
+      const wk = await fetchWithTimeout(hs + '/.well-known/matrix/client', {}, 8000).then(r => r.json());
       if (wk['m.homeserver'] && wk['m.homeserver'].base_url) {
         baseUrl = wk['m.homeserver'].base_url.replace(/\/+$/, '');
       }
     } catch (e) {}
 
-    const loginResp = await fetch(baseUrl + '/_matrix/client/v3/login', {
+    const loginResp = await fetchWithTimeout(baseUrl + '/_matrix/client/v3/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -243,7 +260,7 @@ async function matrixLogin(prefix) {
         identifier: { type: 'm.id.user', user: user },
         password: pass,
       }),
-    }).then(r => r.json());
+    }, 20000).then(r => r.json());
 
     if (loginResp.errcode) { setMxStatus(loginResp.error || loginResp.errcode, true); return; }
 
