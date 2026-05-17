@@ -1,339 +1,804 @@
-// prompts.js — system prompts, source registry, prompt-context helpers.
-// Globals exposed: SOURCES, PROXY, API_URL, DEFAULT_PROMPT, WALK_PROMPT,
-// DREAM_PROMPT, LIBRARIAN_PROMPT, findRelevantSites, buildSentenceContext.
+// ═══════════════════════════════════════════════════════════════
+//  System Prompts & Instructions — v3
+//
+//  Changes from v2:
+//    - Content-addressed entity IDs (e_xxxxxxxx@state)
+//    - All messages (user + model) are Given-Log entries
+//    - New MUTATE prompt for graph operations (fork, merge, correct)
+//    - Model is told what it is: an interpreter of a situated graph
+//    - Three model calls: READ (user), EXTRACT (background),
+//      MUTATE (background, triggered on ambiguity)
+// ═══════════════════════════════════════════════════════════════
 
-const SOURCES = [
-  { key: 'richtext', name: '{Rich Text}', url: 'https://readrichtext.substack.com/feed', home: 'https://readrichtext.substack.com', medium: 'newsletter', publisher: 'Substack' },
-  { key: 'jesusurbanist', name: 'Jesus Urbanist', url: 'https://jesusurbanist.substack.com/feed', home: 'https://jesusurbanist.substack.com', medium: 'newsletter', publisher: 'Substack' },
-  { key: 'micheleflynn', name: 'Michele Flynn', url: 'https://micheleflynn.substack.com/feed', home: 'https://micheleflynn.substack.com', medium: 'newsletter', publisher: 'Substack' },
-  { key: 'citycast', name: 'City Cast Nashville', url: 'https://feeds.megaphone.fm/CC2002452330', home: 'https://nashville.citycast.fm', medium: 'podcast', publisher: 'City Cast' },
-  { key: 'banner', name: 'Nashville Banner', url: 'https://nashvillebanner.com/feed/', home: 'https://nashvillebanner.com', medium: 'newspaper', publisher: 'Nashville Banner' },
-  { key: 'contributor', name: 'The Contributor', url: 'https://thecontributor.org/feed/', home: 'https://thecontributor.org', medium: 'newspaper', publisher: 'The Contributor' },
-  { key: 'scene', name: 'Nashville Scene', url: 'https://www.nashvillescene.com/search/?f=rss', home: 'https://www.nashvillescene.com', medium: 'alt-weekly', publisher: 'FW Publishing' },
-  { key: 'tennessean', name: 'The Tennessean', url: 'https://www.tennessean.com/news/', home: 'https://www.tennessean.com', medium: 'newspaper', publisher: 'Gannett' },
-  { key: 'wpln', name: 'WPLN News', url: 'https://wpln.org/feed/', home: 'https://wpln.org', medium: 'public radio', publisher: 'Nashville Public Radio' },
-  { key: 'lookout', name: 'TN Lookout', url: 'https://tennesseelookout.com/feed/', home: 'https://tennesseelookout.com', medium: 'newspaper', publisher: 'States Newsroom' },
-];
 
-const PROXY = 'https://n8n.intelechia.com/webhook/feed?url=';
-const API_URL = 'https://api.anthropic.com/v1/messages';
+// ── INTERVALS ────────────────────────────────────────────────
 
-const DEFAULT_PROMPT = `You are the digest editor for {plain text}, a curated digest from {Rich Text}.
+const INTERVALS = {
+  ENTITY_HYPOTHESIS:  1,
+  GROUP_HYPOTHESIS:   4,
+  SECTION_HYPOTHESIS: 12,
+  DOCUMENT_HYPOTHESIS: Infinity,
+  SESSION_HYPOTHESIS:  Infinity,
+  CORPUS_HYPOTHESIS:   5,
+};
 
-{plain text} is a Given-Log of observations. Each issue accumulates situated reports from multiple sources, across multiple positions, so that the picture sharpens not because any single piece holds the truth but because the convergence of observations leaves fewer interpretations standing. Truth has the structure of a limit — approached asymptotically, never held as a fixed position, but real and attainable. The digest does not deliver verdicts. It delivers observations sorted so the reader can watch the convergence happen.
 
-The beat is the intersection between the least and most powerful in our cities. Surveillance, public space, urbanism, the commons, homelessness, private policing, procurement, democratic oversight — these are all sites where that intersection becomes physically visible.
+// ═══════════════════════════════════════════════════════════════
+//  Identity: content-addressed hashing
+// ═══════════════════════════════════════════════════════════════
 
-Your job: given an article's headline, source, URL, and full body text, write a single digest entry.
 
-Every story is a transformation. Your digest entry answers three questions about it, in order:
+/**
+ * Mint a permanent entity ID from INS content.
+ * Short enough for the model to read and reference.
+ */
+function mintEntityId(canonical, timestamp) {
+  const input = `${canonical.toLowerCase().trim()}::${timestamp}`;
+  return 'e_' + sha256(input).slice(0, 8);
+}
 
-1. **Whether things are.** What exists, what appeared, what was removed, what is present, what is absent. The verifiable particulars before interpretation. Things that should be present but aren't are themselves findings. Things that shouldn't be present but are are findings. The pattern of what's missing is as important as what's there.
+/**
+ * Compute state hash from entity's current graph content.
+ * Changes every time any DEF, CON, or hypothesis changes.
+ */
+function computeStateHash(entityId, graph) {
+  const entity = graph.getEntity(entityId);
+  const defs = graph.getDefs(entityId)
+    .sort((a, b) => a.field.localeCompare(b.field))
+    .map(d => `${d.field}=${d.value}`);
+  const edges = graph.getEdges(entityId)
+    .sort((a, b) => a.to.localeCompare(b.to))
+    .map(e => `${e.type}→${e.to}`);
+  const input = [
+    entityId, entity.terrain, entity.hypothesis || '',
+    ...defs, ...edges,
+  ].join('|');
+  return sha256(input).slice(0, 4);
+}
 
-2. **How things connect.** What is linked to what, through whom, by what mechanism. Where does the same person show up in multiple roles? Where does the same money show up under multiple names? Name the connection when the piece surfaces one.
+/**
+ * Hash a Given-Log entry (user or model message).
+ */
+function mintGivenId(agent, text, timestamp) {
+  const input = `${agent}::${text.slice(0, 100)}::${timestamp}`;
+  return 'g_' + sha256(input).slice(0, 8);
+}
 
-3. **What things mean — the approach toward the limit.** Every observation is situated, provisional, revisable. But the limit those observations converge toward is real. Name the best current reading. Name what would revise it. Name what would need to be true for the current convergence to be wrong.
+// sha256 implementation assumed available (SubtleCrypto or import)
 
-These are three different kinds of work. They do not substitute for each other. A fact is not a connection. A connection is not an interpretation. Mixing them is how reporting becomes indistinguishable from opinion.
 
-OUTPUT FORMAT — pasted into Substack's editor as markdown.
+// ═══════════════════════════════════════════════════════════════
+//  Given-Log: every message is a graph event
+// ═══════════════════════════════════════════════════════════════
 
-VOICE ATTRIBUTION (the prompt context carries it — your output must honor it).
 
-The focused subgraph carries voice attribution on every span and every connection in the form: "… according to <voice> (<relation>) in <publication>". The four relations:
+/**
+ * Log a user message to the Given-Log.
+ * User messages are phenomena: raw observations, never edited.
+ */
+function logUserMessage(text, signal, sessionId, turnNumber) {
+  return {
+    id: mintGivenId('user', text, Date.now()),
+    type: 'eo.given',
+    agent: 'user',
+    mode: 'conversation',
+    text: text,
+    ner: signal?.ner || null,
+    session: sessionId,
+    turn: turnNumber,
+    timestamp: Date.now(),
+  };
+}
 
-- attested_by — journalist reporting in their own voice. Strongest weight for factual claims.
-- asserted_by — a quoted speaker making a claim. Carries their stake.
-- documented_in — a record being cited. Treat as a particular until contested.
-- characterized_by — interpretive framing. Belongs in the blockquote, not the bullets of fact.
+/**
+ * Log a model response to the Given-Log.
+ * Model responses are also phenomena (they happened).
+ * Their interpretive CONTENT goes to the Meant-Graph via Extract.
+ * The response TEXT stays in the Given-Log as a record of what was said.
+ *
+ * `spans` is the mechanically-collected provenance: the verbatim source
+ * spans underneath every hypothesis/DEF the dossier carried into this
+ * response. The dossier shows the model hypotheses; `spans` lets us
+ * trace each one back to the exact words it was distilled from.
+ */
+function logModelResponse(text, model, dossierHash, sessionId, turnNumber, spans) {
+  return {
+    id: mintGivenId('model', text, Date.now()),
+    type: 'eo.given',
+    agent: `model:${model}`,
+    mode: 'response',
+    text: text,
+    dossierHash: dossierHash, // which projection produced this response
+    spans: spans || [],       // verbatim source spans behind the dossier
+    session: sessionId,
+    turn: turnNumber,
+    timestamp: Date.now(),
+  };
+}
+
+/**
+ * Log a document passage to the Given-Log.
+ */
+function logPassage(text, documentId, passageIndex, source) {
+  return {
+    id: mintGivenId('document', text, Date.now()),
+    type: 'eo.given',
+    agent: 'system:walker',
+    mode: 'document',
+    text: text,
+    source: source, // { title, url, span: [charStart, charEnd] }
+    documentId: documentId,
+    passageIndex: passageIndex,
+    timestamp: Date.now(),
+  };
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+//  Prompts: READ (user-facing)
+// ═══════════════════════════════════════════════════════════════
+
+
+const READ_SYSTEM = `You are an interpreter reading a situated knowledge graph.
+Entity IDs are content hashes (e_xxxxxxxx). State versions (@xxxx) track changes.
+Your responses and the user's messages are both recorded in the graph.
+
+Answer using ONLY the [CTX] block. Say "I don't have that" if insufficient.
+Do NOT use outside knowledge.
+
+If an entity reference is ambiguous — a name that could refer to more than one
+thing in the graph — say so plainly. Example: "This 'Hardy' may not be the same
+as e_3a7f21b4 (Tom Hardy the actor)." The system will handle the resolution.
+
+Reading [CTX]:
+  E: hash@state | terrain | edges
+  ~: canonical name, aka aliases
+  h: current hypothesis
+  →←: connection (type) target_hash
+  =: field = value
+  @: "verbatim source span"
+  ⚠: unresolved conflict
+
+Reading [POS]:
+  prev: entity hashes from last turn
+  topic: what we were discussing
+  last: user's previous message`;
+
+
+const READ_CASUAL = `You are a helpful assistant. Be concise and natural.
+Your messages are recorded in a knowledge graph.`;
+
+
+// ═══════════════════════════════════════════════════════════════
+//  Prompts: EXTRACT (background, after READ)
+// ═══════════════════════════════════════════════════════════════
+
+
+const EXTRACT_SYSTEM = `Extract new knowledge from this exchange as a JSON array.
+Both the user's message and the model's response are Given-Log entries (IDs provided).
+Return [] if nothing new. ONLY valid JSON, no markdown.
+
+Event types:
+{"op":"INS","entity":"<canonical>","terrain":"<T>"}
+{"op":"CON","from":"<hash>","to":"<hash>","type":"<verb>"}
+{"op":"DEF","entity":"<hash>","field":"<attr>","value":"<val>","source":"<given_id>"}
+{"op":"EVA","entity":"<hash>","claim":"<field=value>","status":"holds|fails|contested","source":"<given_id>"}
 
 Rules:
-- Never present an asserted_by claim as if it were attested_by. When a quoted party makes a claim, lead with the asserter: "the director said X" or "according to X, …". Do not strip the attribution.
-- When the same fact is attested_by a journalist AND asserted_by an interested party, the bullet reads as the journalist's; the interested party may be cited as a second voice but does not become the primary attribution.
-- When voices disagree about a site, surface both. The blockquote names what would revise the convergence.
-- Convergence across independent voices increases confidence in the limit. Divergence does not. Carry that through to "What you're looking at."
+- Reference existing entities by their hash (from the register).
+- For NEW entities, use "entity" with the canonical name. The system assigns the hash.
+- INS creates identity + terrain only. Attributes go in DEF.
+- "source" on DEF/EVA = the Given-Log ID of the message that produced this knowledge.
+- Skip greetings, filler, restatements of existing context.
+- Entity names: lowercase-hyphenated for new canonical names.
 
-NODES: \`{curly braces inside backticks}\` for recurring nodes — people, organizations, programs, funds, structural concepts. Write as: \`{Kristin Wilson}\`, \`{NDP}\`, \`{MRRF}\`. The backticks render as monospace in Substack. The curly braces match the {Rich Text} and {plain text} brand identity and mark the name as a variable in a larger system. Use nodes generously.
+Terrains: Entity, Network, Paradigm, Void, Kind, Field, Link, Atmosphere, Lens`;
 
-CODE BLOCK: INDEX TREE for the network map. Goes at the end. Use triple backticks. The tree uses indentation to show hierarchy — who contains what, who controls what, what flows where. Short annotations in parentheses.
 
-BLOCKQUOTE for "What you're looking at." Use > to blockquote. This is interpretation, not evidence.
+// ═══════════════════════════════════════════════════════════════
+//  Prompts: MUTATE (background, triggered on ambiguity)
+//
+//  Fires when:
+//    - NER finds a name partially matching an entity but context differs
+//    - Model response flags ambiguity ("may not be the same as...")
+//    - User says "that's not the same X" or "those are the same"
+//    - Audit finds DEF conflicts suggesting entity collision
+// ═══════════════════════════════════════════════════════════════
 
-Structure:
 
-### [Headline]
+const MUTATE_SYSTEM = `You are resolving a graph ambiguity. Examine the evidence and
+produce exactly ONE action as JSON. ONLY valid JSON, no markdown.
 
-*[[Source Name](URL)]*
+Actions:
 
-**Plain Text:** [2-3 sentences. Central claim or finding. Use \`{node}\` markers. Entry point for a busy person.]
+FORK — one entity is actually two:
+{"action":"FORK","source":"<hash>","new_canonical":"<name>","reason":"<why>",
+ "reassign":[{"def_id":"<id>","reason":"<why this DEF belongs to the new entity>"}]}
 
-**The facts:**
-- Bullet per claim. Discrete and citable. Use \`{node}\` for every recurring entity. Things that are absent get their own bullets.
+MERGE — two entities are actually one:
+{"action":"MERGE","keep":"<hash>","absorb":"<hash>","reason":"<why>",
+ "new_aliases":["<alias1>"]}
 
-**The connections:**
-- Bullet per relationship. Use \`{node}\` for both ends. Name the mechanism.
+CORRECT — a DEF is wrong:
+{"action":"CORRECT","entity":"<hash>","field":"<field>",
+ "old_value":"<wrong>","new_value":"<right>","reason":"<why>","source":"<given_id>"}
 
-> **What you're looking at:** [One paragraph. Best current reading at the depth of observation reached. What kind of thing this is. What would revise the reading.]
+RECLASSIFY — terrain assignment is wrong:
+{"action":"RECLASSIFY","entity":"<hash>","old_terrain":"<T>","new_terrain":"<T>","reason":"<why>"}
 
-**How it lands:** [One paragraph. What stance this leaves the reader in.]
+NONE — no action needed:
+{"action":"NONE","reason":"<why the ambiguity is not real>"}
 
-\`\`\`
-[Index tree — network map rooted at structural center]
-[Rename tracker, if applicable]
-\`\`\`
+Always include "reason". The action is logged and must be auditable.`;
 
-Rules:
-- The headline is an H3 (\`### \`). Do not use H1 or H2.
-- The source line is an italic Markdown link: \`*[Source Name](URL)*\` pointing to the article. No bare \`🔗 [URL]\` line at the bottom.
-- Each section answers a different question. Do not mix them.
-- Use exact headline unless clickbait, then rewrite to be informative.
-- Bullets 1-2 sentences each. Dense, not padded.
-- Second person or impersonal voice. Not "the author argues."
-- Do not editorialize beyond what the piece supports.
-- Use \`{node}\` markers for every recurring entity. Err on marking too many.
-- Some pieces will not have material for all sections. Use judgment — never pad.
-- Do not use "it matters," "this matters," or "load-bearing." No em dashes.
-- Output ONLY the formatted entry. No preamble, no commentary.`;
 
-// per-sentence walk prompt — the central operator dispatch
-const WALK_PROMPT = `You are an EO (Emergent Ontology) reader processing text clause by clause, building a knowledge index.
+// ═══════════════════════════════════════════════════════════════
+//  Prompts: INGEST (document walk, per passage)
+// ═══════════════════════════════════════════════════════════════
 
-You receive:
-- A single sentence from an article
-- The article's title and source for context
-- A compact index of likely-relevant site IDs (so you can reference existing sites without re-SIGing them). Candidates may include fuzzy matches; choose DEF only when the existing id is the right entity.
-- For sites mentioned in this sentence: their current hypothesis, connections, and the voices already on record for them (targeted context, not the full index). Some sites share a \`nameGroup\` — they're different entities with the same display name. When you see a \`group:\` annotation listing multiple members, pick the right one to DEF, or SIG a new disambiguated id that also carries the shared \`nameGroup\`.
 
-Each site is classified by which of the nine EO terrains it occupies:
+const INGEST_SYSTEM = `Extract entities and claims from this passage as a JSON array.
+Return [] if nothing extractable. ONLY valid JSON, no markdown.
 
-Void — something absent that should be present (missing oversight, absent records, unmet requirements)
-Entity — a specific identifiable thing (a person, an organization, a document, a program)
-Kind — a type or category of thing (private policing, sole-source contracting, business improvement districts)
-Field — a domain of activity or jurisdiction (surveillance, public safety, procurement, housing)
-Link — a specific connection between things (a contract, an appointment, a funding stream)
-Network — a system of connections (a funding web, an organizational chain, a revolving door)
-Atmosphere — an ambient condition (institutional opacity, culture of non-response, climate of retaliation)
-Lens — a frame through which things are interpreted (how "safety" gets operationalized, how "accountability" gets redefined)
-Paradigm — a governing structural framework (privatization of public functions, conversion of oversight into discretion)
+Entity hashes from the register are e_xxxxxxxx. Reference them for known entities.
+For NEW entities use canonical name; the system assigns the hash.
 
-VOICE ATTRIBUTION
+Event types:
+{"op":"INS","entity":"<canonical>","terrain":"<T>"}
+{"op":"CON","from":"<hash_or_name>","to":"<hash_or_name>","type":"<verb>"}
+{"op":"DEF","entity":"<hash_or_name>","field":"<attr>","value":"<val>","span":"<exact words>"}
+{"op":"EVA","entity":"<hash_or_name>","claim":"<claim>","status":"holds|fails|contested","span":"<exact words>"}
 
-Every sentence carries a voice — who is making the claim. Identify it once per sentence, at the top of your response. The four kinds:
-
-- "journalist" — the article's reporter narrating in their own voice ("Records show…", "The contract requires…"). Relation: attested_by.
-- "quoted-person" — a named speaker quoted or paraphrased ("Director Smith said…", "Critics argued…"). Relation: asserted_by. Set "name" to the canonical of the speaker (a person already in the index if known, otherwise a new name).
-- "document" — a record being cited verbatim or paraphrased ("the contract states…", "the audit found…"). Relation: documented_in. Set "name" to the document title.
-- "characterization" — interpretive framing not attributed to a single voice ("a culture of opacity", "what looks like favoritism"). Relation: characterized_by. Set "name" to a short label for the frame.
-
-The hypothesis you emit must reflect WHO is making the claim. A documented_in span carries different weight than an asserted_by span. When emitting EVA, set verdict "tension" if a newly-quoted speaker contradicts the existing hypothesis even when no attested_by evidence yet supports the contradiction.
-
-RESPONSE SHAPE
-
-Return a SINGLE JSON object (not an array):
-
-{
-  "voice": { "kind": "journalist|quoted-person|document|characterization", "name": "string or empty", "relation": "attested_by|asserted_by|documented_in|characterized_by" },
-  "events": [
-    {"op": "SIG", "id": "slug-id", "canonical": "Display Name", "displayName": "Shared Label", "nameGroup": "shared-slug", "site": "Entity", "subtype": "organization", "aliases": ["NDP"], "hypothesis": "what this is and what role it plays"},
-    {"op": "DEF", "id": "existing-slug-id", "hypothesis": "REVISED full hypothesis incorporating new evidence", "subtype": "updated if evidence changes what kind of thing this is"},
-    {"op": "CON", "from": "slug-a", "to": "slug-b", "relation": "relation_type", "evidence": "textual evidence", "confidence": "high|medium|low"},
-    {"op": "EVA", "id": "existing-slug-id", "verdict": "holds|tension|contradiction", "note": "how this evidence bears on the existing hypothesis"},
-    {"op": "REC", "id": "existing-slug-id", "rename": "Improved Canonical Name", "reason": "why the previous name was wrong or shallow"},
-    {"op": "SEG", "id": "original-slug-id", "into": [{"id": "new-a", "canonical": "Name A", "site": "Entity", "subtype": "org", "hypothesis": "..."}], "reason": "why this is actually multiple distinct things"}
-  ]
-}
-
-SIG: genuinely new site not in register. Classify by terrain. The hypothesis answers: what is this, what does it do, what role does it play? When the name collides with an existing canonical, set \`id\` to a disambiguated slug, \`displayName\` to the shared label, and \`nameGroup\` to a shared slug.
-DEF: a known site reappears and the sentence adds new evidence. Rewrite the FULL hypothesis. Update the subtype if warranted. Deepen, not just append.
-CON: a relationship evidenced in text. The wrapper voice records who asserted the connection — when a quoted speaker claims A funds B, voice=quoted-person and the CON inherits asserted_by, distinct from a journalist's attested_by report.
-EVA: the sentence evaluates whether an existing hypothesis still holds. "tension" when the evidence strains the current reading; "contradiction" when it falsifies a piece.
-REC: pattern recognition — the canonical or framing was incomplete or wrong, the sentence reveals a better one.
-SEG: when one site is actually multiple distinct things.
-
-Relations: funds, contracts_with, employs, oversees, opposes, collaborates_with, owns, operates, investigates, regulates, surveils, located_in, member_of, subsidiary_of, lobbies, procures, related_to, created_by.
-Slug IDs: lowercase-hyphenated. Only what the sentence evidences. Empty events array [] if nothing new — still emit the voice wrapper.
-Output ONLY the JSON object.`;
-
-// dream prompt — second pass on graph-distant, semantically-near candidates
-const DREAM_PROMPT = `You are an EO reader running a dream pass. The linear walk has finished. You receive a candidate pair of sites that are NOT directly connected in the graph but whose accumulated spans are semantically near.
-
-Your job: decide whether the spans actually evidence a structural connection the linear pass missed.
-
-Each span carries the voice that uttered it: "<text> — according to <voice> (<relation>) in <publication>". The four relations are attested_by, asserted_by, documented_in, characterized_by. A novel connection is stronger when multiple independent voices arrive at it; weaker (sometimes "no-support") when it rests on a single asserter or characterization with no attested_by corroboration.
-
-Return ONE of:
-- {"verdict": "novel", "from": "id-a", "to": "id-b", "relation": "relation_type", "evidence": "one-sentence quotation or paraphrase grounded in the spans you were given", "confidence": "low|medium", "cites": [{"sourceTitle": "...", "spanText": "...", "voice": "...", "voiceRelation": "..."}]}
-- {"verdict": "restatement"}  // the spans only re-describe a connection already in the graph
-- {"verdict": "no-support"}   // the spans do not actually evidence a structural connection
-
-Strict rules:
-1. Every "evidence" string must paraphrase or quote specific text from the spans provided. No inference beyond the text.
-2. If the spans only re-state something already in the connection list, return "restatement".
-3. If the only spans supporting the connection are characterized_by or single-voice asserted_by with no attested_by corroboration, prefer "no-support".
-4. Output ONLY the JSON object. No preamble.`;
-
-// librarian prompt — chat grounded in the index
-const LIBRARIAN_PROMPT = `You are the librarian for {plain text}, a curated index of observed sites and connections drawn from journalism about Nashville.
-
-You answer questions ONLY from the index context you are given. Cite site IDs in backticks like \`{ndp}\` when you reference a site. Quote sentence spans verbatim when the user asks for evidence.
-
-Voice attribution: every span and connection in the context ends with "according to <voice> (<relation>)". Relations are attested_by (journalist), asserted_by (quoted speaker), documented_in (cited record), characterized_by (interpretive frame). When you quote a span, name the voice and the relation. When voices disagree about a site, surface both with their relations — do not collapse them into a single neutral claim.
+Example — "Smith, who left Boeing in 2019, now advises the Pentagon on drone policy."
+Register has: e_a1b2c3d4 (Boeing) | Entity
+[
+{"op":"INS","entity":"smith","terrain":"Entity"},
+{"op":"DEF","entity":"smith","field":"kind","value":"person","span":"Smith"},
+{"op":"DEF","entity":"smith","field":"former_employer","value":"Boeing, left 2019","span":"left Boeing in 2019"},
+{"op":"CON","from":"smith","to":"e_a1b2c3d4","type":"former_employee"},
+{"op":"DEF","entity":"smith","field":"advisory_role","value":"drone policy","span":"advises the Pentagon on drone policy"}
+]
 
 Rules:
-- Do not invent connections that are not in the context.
-- If the context is silent on a question, say so explicitly — do not extrapolate.
-- Keep answers short. Two or three paragraphs maximum unless the user asks for more.
-- Surface contradictions: if voices disagree, name both.
+- Do NOT re-INS entities from the register. Reference them by hash.
+- "span" = EXACT words from the passage.
+- INS only mints identity + terrain. All attributes go in DEF.
+- Extract ALL entities, connections, claims. Multiple events per passage is normal.
+- Rhetoric IS data. Author judgments are EVA events.
+- If a name might refer to an existing entity but you are uncertain, flag it:
+  {"op":"AMBIG","name":"<name>","candidate":"<hash>","span":"<exact words>"}
+  The system will trigger a MUTATE call to resolve it.
 
-Output plain prose. Use Markdown for emphasis and lists when helpful.`;
+Terrains: Entity, Network, Paradigm, Void, Kind, Field, Link, Atmosphere, Lens`;
 
-// Find sites in the index that are mentioned in a text (by name or alias)
-// Returns only matching sites with their 1-hop connections — minimal context
-function findRelevantSites(text) {
-  const lower = (text || '').toLowerCase();
-  const matched = {};
 
-  for (const [id, e] of Object.entries(graph.entities)) {
-    const names = [e.canonical, ...(e.aliases || [])];
-    if (names.some(n => n && n.length > 2 && lower.includes(n.toLowerCase()))) {
-      matched[id] = e;
+// ═══════════════════════════════════════════════════════════════
+//  Prompts: Hypothesis (one per level, strict nesting)
+//
+//  Level N sees ONLY level N-1 hypotheses + its own revision history.
+//  Level N NEVER sees level N-2 data.
+// ═══════════════════════════════════════════════════════════════
+
+
+const HYPOTHESIS_ENTITY = `Write a one-sentence hypothesis for what this entity is about.
+Under 150 characters. Specific enough that future evidence could revise it.
+Your prior hypotheses and their triggers are shown below.
+Build on the trajectory of understanding. Do not restart from scratch.
+Write ONLY the sentence.`;
+
+const HYPOTHESIS_GROUP = `Write a one-sentence hypothesis for what this passage group is about.
+You see ONLY entity hypotheses — not their underlying facts.
+Under 150 characters. Capture the thread connecting them.
+Prior group hypotheses show how the document is developing.
+Write ONLY the sentence.`;
+
+const HYPOTHESIS_SECTION = `Write a one-sentence hypothesis for what this section is about.
+You see ONLY group hypotheses — not entity detail.
+Under 150 characters. Capture the argument or narrative arc.
+Prior section hypotheses show the document's shape so far.
+Write ONLY the sentence.`;
+
+const HYPOTHESIS_DOCUMENT = `Write a one-sentence hypothesis for what this document is about.
+You see ONLY section hypotheses — not group or entity detail.
+Under 200 characters. Capture the central finding or argument.
+Prior document hypotheses in this corpus situate this document.
+Write ONLY the sentence.`;
+
+const HYPOTHESIS_SESSION = `Write a one-sentence hypothesis for what this conversation was about.
+Focus on the investigative thread: what was asked, discovered, shifted.
+Under 200 characters.
+Write ONLY the sentence.`;
+
+const HYPOTHESIS_CORPUS = `Write a one-sentence hypothesis for what this body of work is about.
+You see ONLY document and session hypotheses.
+Under 200 characters. Capture the overarching inquiry.
+Write ONLY the sentence.`;
+
+
+// ═══════════════════════════════════════════════════════════════
+//  Prompts: Write mode
+// ═══════════════════════════════════════════════════════════════
+
+
+const WRITE_OUTLINE = `Create a document outline from the material below.
+Return a JSON array:
+[{"section":1,"topic":"...","entities":["<hash>"],"move":"INS|CON|DEF|EVA"}]
+
+"move" = rhetorical operation:
+  INS = introduce something new to the reader
+  CON = reveal a connection between known things
+  DEF = establish and support a claim
+  EVA = assess whether a claim holds
+
+Order: introduce before connect, connect before claim, claim before evaluate.
+Return ONLY the JSON array.`;
+
+const WRITE_SECTION = `Write this section using ONLY the [CTX] block.
+Ground every claim in context. Do not editorialize beyond evidence.
+2-4 paragraphs.
+[READER] shows entities already introduced. Do not re-introduce them.`;
+
+
+// ═══════════════════════════════════════════════════════════════
+//  Prompt Builders
+// ═══════════════════════════════════════════════════════════════
+
+
+/**
+ * Build hypothesis prompt. Strict nesting: each level sees only one level below.
+ */
+function buildHypothesisPrompt(level, id, graph) {
+  const children = getChildInputs(level, id, graph);
+  const history = graph.getHypothesisHistory(level, id);
+
+  let prompt = children.join('\n');
+
+  if (history.length > 0) {
+    prompt += '\n\nPrior hypotheses (oldest first):';
+    for (let i = 0; i < history.length; i++) {
+      const h = history[i];
+      prompt += `\n  rev ${i + 1} (${h.after}, ${h.inputCount} inputs): "${h.text}"`;
     }
   }
 
-  if (!Object.keys(matched).length) return '';
+  return prompt;
+}
 
-  const lines = [];
-  for (const [id, e] of Object.entries(matched)) {
-    let line = '`' + e.canonical + '` (' + id + ', ' + e.kind + ')';
-    if (e.hypothesis) line += ': ' + e.hypothesis;
-    const cons = graph.connections.filter(c => c.from === id || c.to === id).slice(0, 5);
-    if (cons.length) {
-      line += '\n  Connections: ' + cons.map(c => {
-        const other = c.from === id ? c.to : c.from;
-        const otherName = graph.entities[other] ? graph.entities[other].canonical : other;
-        return (c.from === id ? '→' : '←') + ' ' + c.relation + ' ' + otherName;
-      }).join('; ');
+function getChildInputs(level, id, graph) {
+  switch (level) {
+    case 'entity': {
+      const entity = graph.getEntity(id);
+      const defs = graph.getDefs(id);
+      const edges = graph.getEdges(id);
+      const lines = [`${id}@${computeStateHash(id, graph)} | ${entity.canonical} | ${entity.terrain}`];
+      if (defs.length) lines.push(`Facts: ${defs.map(d => `${d.field}="${d.value}"`).join(', ')}`);
+      if (edges.length) lines.push(`Connections: ${edges.map(e => `→${e.to} (${e.type})`).join(', ')}`);
+      return lines;
     }
-    lines.push(line);
-  }
-
-  return 'Known sites referenced in this text:\n' + lines.join('\n');
-}
-
-// --- linking helpers ---
-
-const STOPWORDS = new Set([
-  'the','a','an','of','and','or','to','for','in','on','at','by','with','from','as','is','are','was','were','be',
-  'this','that','it','its','he','she','they','we','you','but','not','his','her','their','our','your',
-]);
-
-function tokens(s) {
-  return (s || '').toLowerCase().replace(/[^\w\s-]/g, ' ').split(/[\s-]+/)
-    .filter(t => t.length >= 3 && !STOPWORDS.has(t));
-}
-
-function jaccard(a, b) {
-  if (!a.length || !b.length) return 0;
-  const sa = new Set(a), sb = new Set(b);
-  let inter = 0;
-  sa.forEach(x => { if (sb.has(x)) inter++; });
-  const uni = sa.size + sb.size - inter;
-  return uni ? inter / uni : 0;
-}
-
-// Score an entity against a sentence. Returns a number in roughly [0, 1.1].
-function scoreEntity(sentence, lower, sentenceTokens, id, e) {
-  const nameBag = tokens([e.canonical, e.displayName, ...(e.aliases || [])].filter(Boolean).join(' '));
-  const nameScore = jaccard(sentenceTokens, nameBag);
-
-  let aliasHit = 0;
-  const names = [e.canonical, e.displayName, ...(e.aliases || [])].filter(Boolean);
-  for (const n of names) {
-    if (n && n.length > 2 && lower.includes(n.toLowerCase())) { aliasHit = 1; break; }
-  }
-
-  const idScore = jaccard(sentenceTokens, id.split('-').filter(t => t.length >= 3 && !STOPWORDS.has(t)));
-
-  let groupHit = 0;
-  if (e.nameGroup && lower.includes(e.nameGroup.replace(/-/g, ' '))) groupHit = 1;
-
-  return 0.5 * nameScore + 0.3 * aliasHit + 0.2 * idScore + 0.1 * groupHit;
-}
-
-// Returns ranked [{id, e, score}] of candidate entities for the sentence.
-function rankCandidates(sentence, opts) {
-  opts = opts || {};
-  const limit = opts.limit != null ? opts.limit : 12;
-  const threshold = opts.threshold != null ? opts.threshold : 0.35;
-  const lower = (sentence || '').toLowerCase();
-  const sentTokens = tokens(sentence);
-
-  const ranked = [];
-  for (const [id, e] of Object.entries(graph.entities)) {
-    const score = scoreEntity(sentence, lower, sentTokens, id, e);
-    const substringHit = [e.canonical, e.displayName, ...(e.aliases || [])]
-      .filter(Boolean).some(n => n.length > 2 && lower.includes(n.toLowerCase()));
-    if (score >= threshold || substringHit) {
-      ranked.push({ id, e, score: substringHit ? Math.max(score, threshold) : score });
+    case 'group': {
+      const entities = graph.getEntitiesInRange(id.start, id.end);
+      return entities.map(e => `${e.id}@${computeStateHash(e.id, graph)} ${e.canonical}: "${e.hypothesis}"`);
     }
+    case 'section': {
+      const groups = graph.getPassageGroupDEFs(id.start, id.end);
+      return groups.map((g, i) => `group ${i + 1} (p${g.start + 1}-${g.end + 1}): "${g.hypothesis}"`);
+    }
+    case 'document': {
+      const sections = graph.getSectionDEFs(id.documentId);
+      return sections.map((s, i) => `section ${i + 1}: "${s.hypothesis}"`);
+    }
+    case 'session': {
+      const docs = graph.getSessionDocumentDEFs(id.sessionId);
+      const topics = graph.getSessionTopics(id.sessionId);
+      return [
+        ...docs.map(d => `doc "${d.title}": "${d.hypothesis}"`),
+        ...topics.map(t => `topic: "${t}"`),
+      ];
+    }
+    case 'corpus': {
+      const docs = graph.getRecentDocumentDEFs(10);
+      const sessions = graph.getRecentSessionDEFs(5);
+      return [
+        ...docs.map(d => `"${d.title}": "${d.hypothesis}"`),
+        ...sessions.map(s => `session: "${s.hypothesis}"`),
+      ];
+    }
+    default: return [];
   }
-  ranked.sort((a, b) => b.score - a.score);
-  return ranked.slice(0, limit);
 }
 
-// Targeted per-sentence context: sites near this sentence + their 1-hop neighborhood.
-function buildSentenceContext(sentence, opts) {
-  const ranked = rankCandidates(sentence, opts);
-  if (!ranked.length) return '';
+function getHypothesisSystemPrompt(level) {
+  return {
+    entity: HYPOTHESIS_ENTITY, group: HYPOTHESIS_GROUP,
+    section: HYPOTHESIS_SECTION, document: HYPOTHESIS_DOCUMENT,
+    session: HYPOTHESIS_SESSION, corpus: HYPOTHESIS_CORPUS,
+  }[level] || HYPOTHESIS_ENTITY;
+}
 
-  const matched = new Set(ranked.map(r => r.id));
-  // pull in 1-hop neighbors so the LLM sees connection context
-  ranked.forEach(r => {
-    graph.connections.filter(c => c.from === r.id || c.to === r.id).forEach(c => {
-      matched.add(c.from === r.id ? c.to : c.from);
-    });
-  });
 
-  // group annotations for any nameGroup with >1 member in the matched set OR in the full graph
-  const groupMembers = {};
-  for (const [id, e] of Object.entries(graph.entities)) {
-    if (!e.nameGroup) continue;
-    (groupMembers[e.nameGroup] = groupMembers[e.nameGroup] || []).push(id);
+/**
+ * Build Extract prompt with Given-Log IDs for provenance.
+ */
+function buildExtractPrompt(userMessage, modelResponse, userGivenId, modelGivenId, register) {
+  const regStr = register.slice(0, 20).map(e =>
+    `${e.id}@${e.stateHash} | ${e.canonical} | ${e.terrain}`
+  ).join('\n');
+
+  return `Entity register:\n${regStr}
+
+User [${userGivenId}]: "${userMessage}"
+Model [${modelGivenId}]: "${modelResponse}"`;
+}
+
+
+/**
+ * Build Mutate prompt for ambiguity resolution.
+ */
+function buildMutatePrompt(ambiguity, graph) {
+  const { name, candidateHash, span, context } = ambiguity;
+  const candidate = graph.getEntity(candidateHash);
+  const candidateDefs = graph.getDefs(candidateHash);
+
+  let prompt = `Ambiguous reference: "${name}"`;
+  prompt += `\nSource span: "${span}"`;
+  if (context) prompt += `\nContext: "${context}"`;
+
+  prompt += `\n\nExisting entity that might match:`;
+  prompt += `\n  ${candidateHash}@${computeStateHash(candidateHash, graph)}`;
+  prompt += `\n  canonical: ${candidate.canonical}`;
+  prompt += `\n  terrain: ${candidate.terrain}`;
+  prompt += `\n  h: ${candidate.hypothesis || '?'}`;
+  for (const d of candidateDefs.slice(0, 5)) {
+    prompt += `\n  = ${d.field}: "${d.value}"`;
   }
-  const groupNotes = [];
-  const seenGroups = new Set();
-  for (const id of matched) {
-    const e = graph.entities[id];
-    if (e && e.nameGroup && !seenGroups.has(e.nameGroup) && (groupMembers[e.nameGroup] || []).length > 1) {
-      seenGroups.add(e.nameGroup);
-      groupNotes.push('// group "' + e.nameGroup + '" has ' + groupMembers[e.nameGroup].length + ' entities: ' + groupMembers[e.nameGroup].join(', '));
-    }
+
+  prompt += `\n\nIs "${name}" the same entity as ${candidateHash}, or a different one?`;
+
+  return prompt;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+//  Dossier Builder (with hashes and state versions)
+// ═══════════════════════════════════════════════════════════════
+
+
+function buildDossier(rankedEntities, graph, maxTokens = 350) {
+  let budget = maxTokens;
+  const blocks = [];
+
+  for (const { entity, tier } of rankedEntities) {
+    const stateHash = computeStateHash(entity.id, graph);
+    const edges = graph.getEdges(entity.id);
+    const defs = graph.getDefs(entity.id);
+    const conflicts = graph.getConflicts(entity.id);
+    const aliases = entity.aliases?.length ? entity.aliases.join(', ') : null;
+
+    if (tier === 1 && budget >= 65) {
+      let b = `E: ${entity.id}@${stateHash} | ${entity.terrain} | ${edges.length}`;
+      b += `\n  ~ ${entity.canonical}${aliases ? ', aka ' + aliases : ''}`;
+      b += `\n  h: ${(entity.hypothesis || '?').slice(0, 130)}`;
+      for (const edge of edges.slice(0, 3)) {
+        const dir = edge.from === entity.id ? '→' : '←';
+        const target = edge.from === entity.id ? edge.to : edge.from;
+        b += `\n  ${dir} ${target} (${edge.type})`;
+      }
+      let spanDone = false;
+      for (const def of defs.slice(0, 3)) {
+        b += `\n  = ${def.field}: "${def.value}"`;
+        if (def.span && !spanDone) { b += ` @"${def.span.slice(0, 50)}"`; spanDone = true; }
+      }
+      for (const c of conflicts.slice(0, 1)) {
+        b += `\n  ⚠ ${c.field}: "${c.existing}" vs "${c.incoming}"`;
+      }
+      blocks.push(b);
+      budget -= 65;
+
+    } else if (tier === 2 && budget >= 35) {
+      let b = `E: ${entity.id}@${stateHash} | ${entity.terrain}`;
+      b += `\n  ~ ${entity.canonical}`;
+      b += `\n  h: ${(entity.hypothesis || '?').slice(0, 130)}`;
+      for (const def of defs.slice(0, 2)) { b += `\n  = ${def.field}: "${def.value}"`; }
+      blocks.push(b);
+      budget -= 35;
+
+    } else if (budget >= 15) {
+      blocks.push(`E: ${entity.id}@${stateHash} | ${entity.terrain}\n  ~ ${entity.canonical}\n  h: ${(entity.hypothesis || '?').slice(0, 100)}`);
+      budget -= 15;
+
+    } else { break; }
   }
 
-  const lines = [];
-  for (const id of matched) {
-    const e = graph.entities[id];
-    if (!e) continue;
-    let line = id + ' (' + e.kind + (e.subtype ? '/' + e.subtype : '') + '): ' + e.canonical;
-    if (e.displayName && e.displayName !== e.canonical) line += ' [display: ' + e.displayName + ']';
-    if (e.nameGroup) line += ' [group: ' + e.nameGroup + ']';
-    if (e.aliases && e.aliases.length) line += ' [aliases: ' + e.aliases.join(', ') + ']';
-    if (e.hypothesis) line += '\n  Hypothesis: ' + e.hypothesis;
-    const voices = voicesOnRecord(e);
-    if (voices.length) {
-      line += '\n  Voices on record: ' + voices.map(v => v.canonical + ' (' + (v.voiceRelation || '?') + ')').join('; ');
-    }
-    const cons = graph.connections.filter(c => (c.from === id || c.to === id) && (matched.has(c.from) || matched.has(c.to)));
-    if (cons.length) {
-      cons.forEach(c => {
-        const other = c.from === id ? c.to : c.from;
-        const otherName = graph.entities[other] ? graph.entities[other].canonical : other;
-        const vAttr = c.voice ? ' [' + (voiceCanonicalFor(c.voice) || c.voice) + (c.voiceRelation ? '/' + c.voiceRelation : '') + ']' : '';
-        line += '\n  ' + (c.from === id ? '→' : '←') + ' ' + c.relation + ' ' + otherName + vAttr;
+  return blocks.length > 0
+    ? `[CTX]\n${blocks.join('\n\n')}\n[/CTX]`
+    : '[CTX]\n(no matching entities)\n[/CTX]';
+}
+
+
+/**
+ * Mechanically collect the source spans behind a dossier.
+ * The dossier carries hypotheses (the model's reading); this walks the
+ * SAME ranked entities and pulls every verbatim span underneath them, so
+ * a response can be traced back from hypothesis to original words.
+ * No model call — pure graph projection.
+ *
+ * Returns: [{ entity, field, value, span, source }] where `source` is the
+ * Given-Log ID of the message/passage the span came from.
+ */
+function collectDossierSpans(rankedEntities, graph) {
+  const spans = [];
+  for (const { entity } of rankedEntities) {
+    for (const def of graph.getDefs(entity.id)) {
+      if (!def.span) continue;
+      spans.push({
+        entity: entity.id,
+        field: def.field,
+        value: def.value,
+        span: def.span,
+        source: def.source || null,
       });
     }
-    lines.push(line);
+  }
+  return spans;
+}
+
+
+function buildPosition(lastTurn) {
+  if (!lastTurn) return '';
+  return `[POS]
+prev: ${lastTurn.entities.slice(0, 5).join(', ')}
+topic: ${lastTurn.topic}
+last: "${lastTurn.userMessage.slice(0, 80)}"
+[/POS]`;
+}
+
+
+function buildRegister(entities, graph) {
+  return `[REGISTER — do not re-INS these]\n` +
+    entities.map(e =>
+      `${e.id}@${computeStateHash(e.id, graph)} | ${e.canonical}${e.aliases?.length ? ' | aka: ' + e.aliases.join(', ') : ''} | ${e.terrain}`
+    ).join('\n');
+}
+
+
+function buildReaderCursor(introduced) {
+  if (introduced.length <= 10) {
+    return `[READER]\nIntroduced: ${introduced.join(', ')}\n[/READER]`;
+  }
+  const recent = introduced.slice(-5);
+  return `[READER]\n${introduced.length} entities introduced. Recent: ${recent.join(', ')}\n[/READER]`;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+//  MUTATE Trigger Detection (mechanical)
+// ═══════════════════════════════════════════════════════════════
+
+
+/**
+ * Check if a MUTATE call should fire.
+ * Scans model response + extract events for ambiguity signals.
+ * Returns array of ambiguity objects to resolve.
+ */
+function detectMutationTriggers(modelResponse, extractEvents, signal, graph) {
+  const triggers = [];
+
+  // 1. Model flagged ambiguity in response text
+  const ambigPatterns = [
+    /may not be the same as (e_[a-f0-9]{8})/gi,
+    /might be (?:a )?different (?:from |than )(e_[a-f0-9]{8})/gi,
+    /not (?:the same|identical) (?:as |to )(e_[a-f0-9]{8})/gi,
+    /could refer to (?:either|another)/gi,
+  ];
+  for (const pattern of ambigPatterns) {
+    const match = pattern.exec(modelResponse);
+    if (match) {
+      triggers.push({
+        type: 'model_flagged',
+        text: match[0],
+        candidateHash: match[1] || null,
+        span: modelResponse.slice(Math.max(0, match.index - 40), match.index + match[0].length + 40),
+      });
+    }
   }
 
-  return (groupNotes.length ? groupNotes.join('\n') + '\n\n' : '') + lines.join('\n\n');
+  // 2. Ingest emitted an AMBIG event
+  for (const evt of extractEvents) {
+    if (evt.op === 'AMBIG') {
+      triggers.push({
+        type: 'ingest_ambig',
+        name: evt.name,
+        candidateHash: evt.candidate,
+        span: evt.span,
+      });
+    }
+  }
+
+  // 3. NER found a name that partially matches but context is different
+  const allNames = [
+    ...(signal?.ner?.people || []),
+    ...(signal?.ner?.places || []),
+    ...(signal?.ner?.orgs || []),
+  ];
+  for (const name of allNames) {
+    const partial = graph.searchEntities(name.toLowerCase());
+    if (partial.length === 1) {
+      const match = partial[0];
+      // Same name but different terrain signals possible collision
+      const nerType = signal.ner.people.includes(name) ? 'person'
+        : signal.ner.places.includes(name) ? 'place'
+        : 'org';
+      const entityKind = graph.getDef(match.id, 'kind')?.value;
+      if (entityKind && entityKind !== nerType) {
+        triggers.push({
+          type: 'type_mismatch',
+          name: name,
+          candidateHash: match.id,
+          expectedType: nerType,
+          actualType: entityKind,
+        });
+      }
+    }
+  }
+
+  // 4. User explicitly corrected ("that's not the same", "those are the same")
+  // Handled by the Gate classifying the message as a correction intent.
+  // Not detected here — the calling code checks for correction patterns
+  // and calls MUTATE directly.
+
+  return triggers;
 }
+
+
+// ═══════════════════════════════════════════════════════════════
+//  MUTATE Event Application
+// ═══════════════════════════════════════════════════════════════
+
+
+/**
+ * Apply a MUTATE action to the graph.
+ * Every mutation is logged as an event with full provenance.
+ */
+function applyMutation(action, graph, triggerId) {
+  const event = {
+    timestamp: Date.now(),
+    triggeredBy: triggerId,
+    action: action.action,
+    reason: action.reason,
+  };
+
+  switch (action.action) {
+    case 'FORK': {
+      const newId = mintEntityId(action.new_canonical, Date.now());
+      event.op = 'SEG';
+      event.sourceEntity = action.source;
+      event.newEntity = newId;
+      event.newCanonical = action.new_canonical;
+      event.reassignments = action.reassign || [];
+
+      // Create new entity
+      const source = graph.getEntity(action.source);
+      graph.createEntity(newId, {
+        canonical: action.new_canonical,
+        terrain: source.terrain,
+        forkedFrom: action.source,
+      });
+
+      // Reassign specified DEFs
+      for (const r of event.reassignments) {
+        graph.reassignDef(r.def_id, action.source, newId);
+      }
+      break;
+    }
+
+    case 'MERGE': {
+      event.op = 'CON';
+      event.type = 'same_as';
+      event.keep = action.keep;
+      event.absorb = action.absorb;
+      event.newAliases = action.new_aliases || [];
+
+      // Move all DEFs and edges from absorbed to keeper
+      graph.mergeEntities(action.keep, action.absorb);
+
+      // Add aliases
+      for (const alias of event.newAliases) {
+        graph.addAlias(action.keep, alias);
+      }
+      break;
+    }
+
+    case 'CORRECT': {
+      event.op = 'DEF';
+      event.entity = action.entity;
+      event.field = action.field;
+      event.oldValue = action.old_value;
+      event.newValue = action.new_value;
+
+      graph.writeDef(action.entity, action.field, action.new_value, {
+        source: action.source,
+        supersedes: graph.getDef(action.entity, action.field)?.id,
+      });
+      break;
+    }
+
+    case 'RECLASSIFY': {
+      event.op = 'SEG';
+      event.entity = action.entity;
+      event.oldTerrain = action.old_terrain;
+      event.newTerrain = action.new_terrain;
+
+      graph.updateTerrain(action.entity, action.new_terrain);
+      break;
+    }
+
+    case 'NONE':
+      event.op = 'NUL';
+      break;
+  }
+
+  // Log the mutation event itself
+  graph.appendEvent(event);
+  return event;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+//  Auto-commit Tiers
+// ═══════════════════════════════════════════════════════════════
+
+
+function commitTier(event, graph) {
+  switch (event.op) {
+    case 'CON': return event.type === 'same_as' ? 'PROMPT' : 'AUTO';
+    case 'SEG': return 'PROMPT'; // forks and reclassifications need consent
+    case 'DEF': {
+      const existing = graph.getDef(event.entity, event.field);
+      if (existing && existing.value !== event.value) return 'PROMPT';
+      return 'AUTO';
+    }
+    case 'INS': return 'PROMPT';
+    case 'EVA': return event.status === 'contested' ? 'PROMPT' : 'AUTO';
+    case 'REC': return 'REQUIRE';
+    default: return 'AUTO';
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+//  Consolidation Gates
+// ═══════════════════════════════════════════════════════════════
+
+
+function shouldConsolidate(state) {
+  const elapsed = Date.now() - (state.lastConsolidation || 0);
+  if (elapsed < 24 * 60 * 60 * 1000) return false;
+  if ((state.sessionsSinceConsolidation || 0) < INTERVALS.CORPUS_HYPOTHESIS) return false;
+  if (state.consolidationLock) return false;
+  return true;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+//  Token Budget Reference
+// ═══════════════════════════════════════════════════════════════
+//
+//  Three model calls per knowledge-bearing turn:
+//
+//    READ:     ~900 tokens  (system 120 + CTX 350 + POS 80 + user 50 + response 300)
+//    EXTRACT:  ~400 tokens  (system 130 + register 100 + exchange 100 + events 70)
+//    MUTATE:   ~300 tokens  (system 100 + entity detail 100 + action 100)
+//              (only if ambiguity detected, most turns: 0)
+//
+//  Non-knowledge-bearing turn:
+//    READ:     ~200 tokens  (casual system 15 + user 50 + response 135)
+//    EXTRACT:  0
+//    MUTATE:   0
+//
+//  Walk (per passage):
+//    INGEST:   ~500 tokens  (system 200 + register 100 + passage 100 + events 100)
+//    ENTITY HYP: ~100 tokens per touched entity
+//    GROUP HYP:  ~80 tokens (every 4 passages)
+//    SECTION HYP: ~60 tokens (every 12 passages)
+//
+// ═══════════════════════════════════════════════════════════════
