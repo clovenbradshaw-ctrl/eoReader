@@ -145,6 +145,12 @@
   .mx-gate-btn:hover { background: var(--accent-2); }
   .mx-gate-status { font-family: var(--mono); font-size: 11px; color: var(--text-dim); min-height: 14px; }
   .mx-gate-hint { font-family: var(--sans); font-size: 11px; color: var(--text-faint); line-height: 1.5; }
+  .mx-gate-skip {
+    background: none; border: none; cursor: pointer;
+    font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+    text-decoration: underline; padding: 4px 0;
+  }
+  .mx-gate-skip:hover { color: var(--text); }
 
   /* prompt editor */
   #prompt-editor {
@@ -743,6 +749,8 @@
     <button class="mx-gate-btn" onclick="matrixLogin('gate-')">connect</button>
     <div id="gate-mx-status" class="mx-gate-status"></div>
     <div class="mx-gate-hint">No account? Create one on any Matrix homeserver — matrix.org is free.</div>
+    <button class="mx-gate-skip" onclick="enterWithoutMatrix()">continue without signing in</button>
+    <div class="mx-gate-hint">Your graph and articles stay in this browser. You can connect a Matrix account later from settings to sync and publish.</div>
   </div>
 </div>
 

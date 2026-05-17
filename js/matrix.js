@@ -62,12 +62,23 @@ function setMxStatus(msg, isError) {
 
 // --- login gate: the app is unusable until Matrix is connected ---
 function showMxGate() {
+  // The user can opt out of the hard gate and run the app locally.
+  if (localStorage.getItem('mx_skip') === '1') return;
   const g = document.getElementById('mx-gate');
   if (g) g.classList.remove('hidden');
 }
 function hideMxGate() {
   const g = document.getElementById('mx-gate');
   if (g) g.classList.add('hidden');
+}
+
+// Dismiss the login gate and use the app without Matrix. The graph and
+// sources still persist locally; only cross-device sync/publishing needs
+// a Matrix account, which can be added later from settings.
+function enterWithoutMatrix() {
+  localStorage.setItem('mx_skip', '1');
+  hideMxGate();
+  updateMxIndicator();
 }
 
 function updateMxIndicator() {
@@ -272,6 +283,7 @@ async function matrixLogin(prefix) {
     localStorage.setItem('mx_access_token', mx.accessToken);
     localStorage.setItem('mx_user_id', mx.userId);
     localStorage.setItem('mx_hs_display', hsInput);
+    localStorage.removeItem('mx_skip');
 
     setMxStatus('logged in, finding room...');
     await matrixFindOrCreateRoom();
